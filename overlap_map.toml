@@ -1,0 +1,297 @@
+# paclens overlap map
+#
+# Authoritative Flatpak app ID to pacman package name mappings.
+# Bundled into the binary via include_str!() and carries Confidence::Confirmed.
+# Users can add their own via config.toml [[overlap.extra_mappings]].
+#
+# Fields:
+#   flatpak_id  (required)  Flatpak application ID
+#   pacman_name (required)  primary pacman package name
+#   alt_names   (optional)  alternative pacman names, checked if primary not found
+#   notes       (optional)  human context, not parsed at runtime
+#
+# Rules:
+#   - only verified mappings belong here
+#   - a missing entry is safer than a wrong one
+
+
+# --- Browsers ---
+
+[[mapping]]
+flatpak_id  = "org.mozilla.firefox"
+pacman_name = "firefox"
+
+[[mapping]]
+flatpak_id  = "org.chromium.Chromium"
+pacman_name = "chromium"
+
+[[mapping]]
+flatpak_id  = "com.google.Chrome"
+pacman_name = "google-chrome"
+alt_names   = ["google-chrome-stable"]
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.brave.Browser"
+pacman_name = "brave-bin"
+alt_names   = ["brave-browser"]
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.microsoft.Edge"
+pacman_name = "microsoft-edge-stable-bin"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "io.github.zen_browser.zen"
+pacman_name = "zen-browser-bin"
+notes       = "AUR; common Flatpak vs native pain point"
+
+
+# --- Email and Communication ---
+
+[[mapping]]
+flatpak_id  = "org.mozilla.Thunderbird"
+pacman_name = "thunderbird"
+
+[[mapping]]
+flatpak_id  = "com.discordapp.Discord"
+pacman_name = "discord"
+
+[[mapping]]
+flatpak_id  = "org.signal.Signal"
+pacman_name = "signal-desktop"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.slack.Slack"
+pacman_name = "slack-desktop"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "us.zoom.Zoom"
+pacman_name = "zoom"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "org.telegram.desktop"
+pacman_name = "telegram-desktop"
+
+[[mapping]]
+flatpak_id  = "com.spotify.Client"
+pacman_name = "spotify"
+alt_names   = ["spotify-launcher"]
+notes       = "AUR; spotify-launcher is the official Arch method"
+
+
+# --- Editors and IDEs ---
+
+[[mapping]]
+flatpak_id  = "com.visualstudio.code"
+pacman_name = "visual-studio-code-bin"
+alt_names   = ["code"]
+notes       = "AUR; 'code' is the OSS variant in official repos"
+
+[[mapping]]
+flatpak_id  = "com.vscodium.codium"
+pacman_name = "vscodium"
+alt_names   = ["vscodium-bin"]
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.jetbrains.IntelliJ-IDEA-Ultimate"
+pacman_name = "intellij-idea-ultimate-edition"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.jetbrains.IntelliJ-IDEA-Community"
+pacman_name = "intellij-idea-community-edition"
+
+[[mapping]]
+flatpak_id  = "com.jetbrains.PyCharm-Professional"
+pacman_name = "pycharm-professional"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.jetbrains.PyCharm-Community"
+pacman_name = "pycharm-community-edition"
+
+[[mapping]]
+flatpak_id  = "com.jetbrains.CLion"
+pacman_name = "clion"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.jetbrains.WebStorm"
+pacman_name = "webstorm"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "org.gnome.TextEditor"
+pacman_name = "gnome-text-editor"
+
+[[mapping]]
+flatpak_id  = "org.gnome.gedit"
+pacman_name = "gedit"
+
+[[mapping]]
+flatpak_id  = "org.kde.kate"
+pacman_name = "kate"
+
+
+# --- Media ---
+
+[[mapping]]
+flatpak_id  = "org.videolan.VLC"
+pacman_name = "vlc"
+
+[[mapping]]
+flatpak_id  = "io.mpv.Mpv"
+pacman_name = "mpv"
+
+[[mapping]]
+flatpak_id  = "org.gnome.Totem"
+pacman_name = "totem"
+
+[[mapping]]
+flatpak_id  = "org.kde.kdenlive"
+pacman_name = "kdenlive"
+
+[[mapping]]
+flatpak_id  = "org.audacityteam.Audacity"
+pacman_name = "audacity"
+
+[[mapping]]
+flatpak_id  = "org.kde.gwenview"
+pacman_name = "gwenview"
+
+[[mapping]]
+flatpak_id  = "com.obsproject.Studio"
+pacman_name = "obs-studio"
+
+[[mapping]]
+flatpak_id  = "io.github.celluloid_player.Celluloid"
+pacman_name = "celluloid"
+
+
+# --- Graphics and Design ---
+
+[[mapping]]
+flatpak_id  = "org.gimp.GIMP"
+pacman_name = "gimp"
+
+[[mapping]]
+flatpak_id  = "org.inkscape.Inkscape"
+pacman_name = "inkscape"
+
+[[mapping]]
+flatpak_id  = "org.blender.Blender"
+pacman_name = "blender"
+
+[[mapping]]
+flatpak_id  = "org.kde.krita"
+pacman_name = "krita"
+
+[[mapping]]
+flatpak_id  = "org.darktable.Darktable"
+pacman_name = "darktable"
+
+
+# --- Office and Productivity ---
+
+[[mapping]]
+flatpak_id  = "org.libreoffice.LibreOffice"
+pacman_name = "libreoffice-fresh"
+alt_names   = ["libreoffice-still"]
+
+[[mapping]]
+flatpak_id  = "md.obsidian.Obsidian"
+pacman_name = "obsidian"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.logseq.Logseq"
+pacman_name = "logseq-desktop-bin"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "org.gnome.Evince"
+pacman_name = "evince"
+
+[[mapping]]
+flatpak_id  = "org.kde.okular"
+pacman_name = "okular"
+
+[[mapping]]
+flatpak_id  = "com.github.johnfactotum.Foliate"
+pacman_name = "foliate"
+
+
+# --- System and Utilities ---
+
+[[mapping]]
+flatpak_id  = "org.gnome.Boxes"
+pacman_name = "gnome-boxes"
+
+[[mapping]]
+flatpak_id  = "org.gnome.Calculator"
+pacman_name = "gnome-calculator"
+
+[[mapping]]
+flatpak_id  = "org.gnome.Calendar"
+pacman_name = "gnome-calendar"
+
+[[mapping]]
+flatpak_id  = "org.gnome.clocks"
+pacman_name = "gnome-clocks"
+
+[[mapping]]
+flatpak_id  = "org.kde.konsole"
+pacman_name = "konsole"
+
+[[mapping]]
+flatpak_id  = "org.gnome.Terminal"
+pacman_name = "gnome-terminal"
+
+
+# --- Games ---
+
+[[mapping]]
+flatpak_id  = "com.valvesoftware.Steam"
+pacman_name = "steam"
+
+[[mapping]]
+flatpak_id  = "net.lutris.Lutris"
+pacman_name = "lutris"
+
+[[mapping]]
+flatpak_id  = "org.libretro.RetroArch"
+pacman_name = "retroarch"
+
+[[mapping]]
+flatpak_id  = "com.heroicgameslauncher.hgl"
+pacman_name = "heroic-games-launcher-bin"
+notes       = "AUR"
+
+
+# --- Developer Tools ---
+
+[[mapping]]
+flatpak_id  = "io.podman_desktop.PodmanDesktop"
+pacman_name = "podman-desktop"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "io.dbeaver.DBeaverCommunity"
+pacman_name = "dbeaver"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "rest.insomnia.Insomnia"
+pacman_name = "insomnia-bin"
+notes       = "AUR"
+
+[[mapping]]
+flatpak_id  = "com.getpostman.Postman"
+pacman_name = "postman-bin"
+notes       = "AUR"

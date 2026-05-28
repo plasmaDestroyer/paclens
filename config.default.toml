@@ -1,0 +1,90 @@
+# paclens configuration
+# Location: ~/.config/paclens/config.toml
+# Created with defaults on first run if absent.
+# All values shown below are the defaults.
+
+
+[general]
+
+# Seconds before the scan cache is considered stale.
+# After TTL expires, paclens re-scans automatically on next launch.
+# Set to 0 to always re-scan (slower startup).
+cache_ttl = 3600
+
+# Number of log files to keep before rotating oldest.
+log_keep_count = 10
+
+# Log verbosity: "error", "warn", "info", "debug"
+# "debug" is very verbose — use only for troubleshooting.
+log_level = "info"
+
+# Color theme: "dark", "light", "none"
+# "none" disables colors and uses ASCII box drawing.
+color_theme = "dark"
+
+
+[sources]
+
+# Enable or disable package sources.
+# Disabled sources are skipped entirely and do not appear in the UI.
+pacman  = true
+flatpak = true
+
+
+[scan]
+
+# Include system-wide Flatpak installs.
+flatpak_include_system = true
+
+# Include user-scope Flatpak installs.
+flatpak_include_user = true
+
+# Timeout in seconds for any single provider command.
+# If a provider exceeds this, it is marked as failed and skipped.
+provider_timeout_secs = 10
+
+
+[why]
+
+# Show full transitive dependency chain in why output.
+# false = show only direct (one-hop) dependencies.
+show_transitive = true
+
+# Maximum depth for transitive lookups.
+# Prevents deep or circular chains from hanging.
+max_depth = 20
+
+
+[overlap]
+
+# Package names or Flatpak app IDs to exclude from overlap detection.
+# Use this to suppress false positives you do not care about.
+# Example: ignore = ["firefox", "org.mozilla.firefox"]
+ignore = []
+
+# Minimum confidence level to show in the overlap report.
+#   "Confirmed" = only show known-map matches
+#   "Inferred"  = also show reverse-DNS heuristic matches (recommended)
+#   "Unknown"   = also show speculative display-name matches (noisy)
+min_confidence = "Inferred"
+
+# User-defined overlap mappings, merged with the built-in overlap_map.toml.
+# Each entry maps a Flatpak app ID to a pacman package name.
+# Uncomment and add entries as needed:
+#
+# [[overlap.extra_mappings]]
+# flatpak_id  = "org.example.MyApp"
+# pacman_name = "myapp"
+#
+# [[overlap.extra_mappings]]
+# flatpak_id  = "com.example.Another"
+# pacman_name = "another-app"
+# alt_names   = ["another-app-bin"]
+
+
+[cleanup]
+
+# Package names to exclude from the orphan report.
+# Useful for packages you keep intentionally despite having no dependents.
+# Example: orphan_ignore = ["lib32-vulkan-icd-loader", "wine-staging"]
+orphan_ignore = []
