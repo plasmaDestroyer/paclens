@@ -96,6 +96,12 @@ pub fn run() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // The actual config file in use, for cache invalidation on config changes.
+    let config_path = cli
+        .config
+        .clone()
+        .or_else(|| config::default_config_path().ok());
+
     let command = cli.command.unwrap_or(Command::Ui);
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -105,7 +111,7 @@ pub fn run() -> ExitCode {
 
     match command {
         Command::Ui => report(tui::run()),
-        Command::Status => report(status::run(&config)),
+        Command::Status => report(status::run(&config, cli.refresh, config_path.as_deref())),
         Command::Update { .. } => not_implemented("update"),
         Command::Why { .. } => not_implemented("why"),
         Command::Overlaps => not_implemented("overlaps"),

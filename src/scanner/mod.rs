@@ -1,10 +1,14 @@
 //! Scan orchestration and the scan cache.
 //!
-//! Detects available providers, runs them, assembles a `ScanResult`, and (from
-//! v0.0.3) persists it to the cache. Never analyzes data (dev-notes §3).
+//! Detects available providers, runs them, assembles a `ScanResult`, and
+//! persists it to the cache ([`cache`]). Never analyzes data (dev-notes §3).
 //!
-//! v0.0.2 runs providers sequentially; the concurrent `tokio::join!` path and
-//! the cache layer arrive in v0.0.3.
+//! Providers run sequentially; concurrent scanning (spec Q5) is a deferred
+//! optimization, not required by any milestone.
+
+pub mod cache;
+
+use std::path::Path;
 
 use chrono::Utc;
 
@@ -17,6 +21,40 @@ use crate::providers::flatpak::FlatpakProvider;
 use crate::providers::pacman::PacmanProvider;
 use crate::providers::{CommandRunner, Provider};
 
+/// pacman's package cache; its size is reported under cleanup advisories.
+const PACMAN_CACHE_DIR: &str = "/var/cache/pacman/pkg/";
+
+/// Return a usable `ScanResult`: a fresh cache hit when possible, otherwise a
+/// new scan that is then written back to the cache.
+///
+/// `refresh` forces a re-scan. A failed cache write is logged but non-fatal —
+/// the in-memory result is still returned (spec §15 recovery table).
+pub fn load_or_scan(
+    runner: &dyn CommandRunner,
+    config: &Config,
+    refresh: bool,
+    config_path: Option<&Path>,
+) -> anyhow::Result<ScanResult> {
+    let cache = cache::Cache::locate()?;
+    if refresh {
+        tracing::info!("--refresh: ignoring cache");
+    } else if let Some(scan) = cache.read()? {
+        match cache::staleness(&scan, cache.path(), config, config_path) {
+            None => {
+                tracing::info!("using cached scan");
+                return Ok(scan);
+            }
+            Some(reason) => tracing::info!(reason, "cache stale; re-scanning"),
+        }
+    }
+
+    let scan = scan(runner, config);
+    if let Err(err) = cache.write(&scan) {
+        tracing::error!(error = %err, "failed to write scan cache; continuing in-memory");
+    }
+    Ok(scan)
+}
+
 /// Run every enabled, available provider and assemble a `ScanResult`.
 ///
 /// Provider failures are isolated: a source that errors is logged and skipped,
@@ -26,10 +64,12 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
     let mut sources = Vec::new();
     let mut packages = Vec::new();
     let mut updates = Vec::new();
+    let mut pacman_available = false;
 
     if config.sources.pacman {
         let provider = PacmanProvider::new(runner);
         let available = provider.is_available();
+        pacman_available = available;
         let mut last_scanned = None;
         if available {
             run_provider(&provider, "pacman", &mut packages, &mut updates);
@@ -87,8 +127,30 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
         sources,
         packages,
         updates,
-        cache_sizes: CacheSizes::default(),
+        cache_sizes: gather_cache_sizes(runner, pacman_available),
     }
+}
+
+/// Gather disk-usage figures. Currently the pacman package cache; flatpak
+/// unused-runtime sizing arrives with the cleanup screen (v0.1.5).
+fn gather_cache_sizes(runner: &dyn CommandRunner, pacman_available: bool) -> CacheSizes {
+    // `du` exits non-zero when a transient root-owned `download-*` subdir is
+    // unreadable, but still prints the grand total to stdout — so parse stdout
+    // regardless of exit code.
+    let pacman_cache_bytes = pacman_available
+        .then(|| runner.run("du", &["-sb", PACMAN_CACHE_DIR]))
+        .and_then(Result::ok)
+        .and_then(|out| parse_du_bytes(&out.stdout));
+    CacheSizes {
+        pacman_cache_bytes,
+        flatpak_unused_runtime_count: None,
+        flatpak_unused_runtime_bytes: None,
+    }
+}
+
+/// `du -sb <dir>` prints `<bytes>\t<path>`; take the leading byte count.
+fn parse_du_bytes(stdout: &str) -> Option<u64> {
+    stdout.split_whitespace().next()?.parse().ok()
 }
 
 /// Run one provider's scans, appending results and logging any failure.
@@ -130,6 +192,16 @@ fn is_flatpak(id: &SourceId) -> bool {
 mod tests {
     use super::*;
     use crate::model::InstallReason;
+
+    #[test]
+    fn parse_du_bytes_reads_leading_field() {
+        assert_eq!(
+            parse_du_bytes("5986725560\t/var/cache/pacman/pkg/\n"),
+            Some(5_986_725_560)
+        );
+        assert_eq!(parse_du_bytes(""), None);
+        assert_eq!(parse_du_bytes("not-a-number /path"), None);
+    }
 
     fn flatpak_pkg(name: &str, version: &str, scope: SourceId) -> Package {
         Package {
