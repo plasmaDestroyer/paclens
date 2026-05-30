@@ -1,0 +1,21 @@
+Name            : libfoo
+Version         : 1.2.3-1
+Description     : A foundational library that does many useful things
+                  across multiple subsystems and wraps onto a second line
+Provides        : libfoo.so=1-64  foo-compat=1.2
+Depends On      : glibc  gcc-libs>=13
+Optional Deps   : None
+Required By     : barapp
+Installed Size  : 956.00 KiB
+Install Reason  : Installed as a dependency for another package
+
+Name            : bigpkg
+Version         : 9.0-1
+Description     : Large package
+Provides        : None
+Depends On      : None
+Optional Deps   : optdep-one: does a thing [installed]
+                  optdep-two: does another thing
+Required By     : None
+Installed Size  : 1.23 GiB
+Install Reason  : Explicitly installed

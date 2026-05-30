@@ -1,0 +1,23 @@
+Installed From  : None
+Name            : adwaita-cursors
+Version         : 50.0-1
+Description     : GNOME standard cursors
+Architecture    : any
+URL             : https://gitlab.gnome.org/GNOME/adwaita-icon-theme
+Licenses        : CC-BY-SA-3.0 OR LGPL-3.0-only
+Groups          : None
+Provides        : None
+Depends On      : None
+Optional Deps   : None
+Required By     : adwaita-icon-theme
+Optional For    : default-cursors
+Conflicts With  : None
+Replaces        : None
+Installed Size  : 11.41 MiB
+Packager        : Fabian Bornschein <fabiscafe@archlinux.org>
+Build Date      : Wednesday 18 March 2026 11:36:35 PM
+Install Date    : Saturday 30 May 2026 01:31:10 AM
+Install Reason  : Installed as a dependency for another package
+Install Script  : No
+Validated By    : Signature
+

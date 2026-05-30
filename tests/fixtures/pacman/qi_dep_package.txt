@@ -1,0 +1,23 @@
+Installed From  : None
+Name            : bash
+Version         : 5.3.9-2
+Description     : The GNU Bourne Again shell
+Architecture    : x86_64_v3
+URL             : https://www.gnu.org/software/bash/bash.html
+Licenses        : GPL-3.0-or-later
+Groups          : None
+Provides        : sh
+Depends On      : readline  libreadline.so=8-64  glibc  ncurses
+Optional Deps   : bash-completion: for tab completion [installed]
+Required By     : 7zip  archlinux-contrib  at-spi2-core  audit  aurorae  autoconf  automake  avahi  base  bash-completion  bind  bison  bzip2  ca-certificates-utils  cachy-update  cairo  cpupower  db5.3  dconf  device-mapper  diffutils  dkms  e2fsprogs  ebook-tools  elfutils  fakeroot  fftw  firefox  flatpak  flex  fontconfig  fwupd  fzf  gawk  gdb  gdbm  gettext  ghostscript  glib2  gnupg  gparted  gpm  gtk-update-icon-cache  gtk4  gzip  hunspell  hwdetect  icu  ijs  iptables  java-runtime-common  kate  kde-cli-tools  kde-gtk-config  keyutils  kinfocenter  kio-extras  konsole  krb5  kwallet-pam  libassuan  libcups  libdca  libftdi  libgpg-error  libksba  libmakepkg-dropins  libmbim  libnet  libpcap  libpng  libpulse  libqmi  libreoffice-fresh  libteam  libtool  libusb-compat  libxml2  libxslt  limine-mkinitcpio-hook  limine-snapper-sync  lm_sensors  lsb-release  lvm2  man-db  mjpegtools  mkinitcpio  modemmanager  mtools  nfs-utils  npth  nspr  nss  nvidia-prime  os-prober  ostree  pacman  pahole  pcre  plasma-login-manager  plasma-workspace  plymouth  proton-cachyos-slr  rasqal  redland  scx-scheds  shelly  smartmontools  source-highlight  spirv-tools  srt  steam  systemd  taglib  texinfo  umu-launcher  unzip  vlc  vlc-cli  vlc-gui-qt  which  winetricks  wireless-regdb  wqy-zenhei  xdg-utils  xfsprogs  xmlsec  xz
+Optional For    : alsa-utils  mdadm  ncurses  openssh  pcre2  tzdata  usbutils  vim-runtime
+Conflicts With  : None
+Replaces        : None
+Installed Size  : 9.53 MiB
+Packager        : CachyOS <admin@cachyos.org>
+Build Date      : Friday 19 December 2025 03:42:44 AM
+Install Date    : Saturday 30 May 2026 01:30:06 AM
+Install Reason  : Installed as a dependency for another package
+Install Script  : Yes
+Validated By    : Signature
+
