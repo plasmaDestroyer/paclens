@@ -2,6 +2,9 @@
 name = "paclens"
 version = "0.0.1"
 edition = "2024"
+description = "A TUI-first pacman + Flatpak inspection and update tool for Arch Linux."
+license = "MIT"
+repository = "https://github.com/plasmaDestroyer/paclens"
 
 [dependencies]
 anyhow = "1.0.102"
