@@ -138,4 +138,35 @@ mod tests {
     fn binary_on_path_rejects_nonsense() {
         assert!(!binary_on_path("paclens-definitely-not-a-real-binary"));
     }
+
+    #[test]
+    fn system_runner_captures_stdout_and_zero_exit() {
+        let out = SystemCommandRunner.run("echo", &["hello"]).unwrap();
+        assert_eq!(out.stdout.trim(), "hello");
+        assert_eq!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn system_runner_reports_nonzero_exit() {
+        let out = SystemCommandRunner.run("false", &[]).unwrap();
+        assert_ne!(out.exit_code, 0);
+    }
+
+    #[test]
+    fn system_runner_errors_when_binary_missing() {
+        let result = SystemCommandRunner.run("paclens-definitely-not-a-real-binary", &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn provider_error_display_includes_context() {
+        let failed = ProviderError::CommandFailed {
+            program: "pacman -Qi".to_string(),
+            exit_code: 1,
+            stderr: "db locked".to_string(),
+        };
+        let text = failed.to_string();
+        assert!(text.contains("pacman -Qi"));
+        assert!(text.contains("db locked"));
+    }
 }

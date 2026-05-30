@@ -369,4 +369,73 @@ mod tests {
             0
         );
     }
+
+    // --- pure helper tests (small + specific) ---
+
+    #[test]
+    fn strip_constraint_handles_every_operator() {
+        assert_eq!(strip_constraint("glibc"), "glibc");
+        assert_eq!(strip_constraint("glibc>=2.38"), "glibc");
+        assert_eq!(strip_constraint("sh=5.2"), "sh");
+        assert_eq!(strip_constraint("libfoo.so=1-64"), "libfoo.so");
+        assert_eq!(strip_constraint("python<4"), "python");
+    }
+
+    #[test]
+    fn parse_reason_maps_known_strings() {
+        assert_eq!(
+            parse_reason("Explicitly installed"),
+            InstallReason::Explicit
+        );
+        assert_eq!(
+            parse_reason("Installed as a dependency for another package"),
+            InstallReason::Dependency
+        );
+        assert_eq!(parse_reason("something else"), InstallReason::Unknown);
+    }
+
+    #[test]
+    fn parse_size_handles_each_unit() {
+        assert_eq!(parse_size("512.00 B"), Some(512));
+        assert_eq!(parse_size("956.00 KiB"), Some(956 * 1024));
+        assert_eq!(parse_size("12.00 MiB"), Some(12 * 1024 * 1024));
+        assert_eq!(parse_size("1.00 GiB"), Some(1024u64.pow(3)));
+    }
+
+    #[test]
+    fn parse_size_rejects_garbage() {
+        assert_eq!(parse_size("not-a-number MiB"), None);
+        assert_eq!(parse_size("12.0 Petabytes"), None);
+        assert_eq!(parse_size(""), None);
+    }
+
+    #[test]
+    fn parse_pkg_list_drops_none_and_strips_constraints() {
+        let field = vec!["readline  libreadline.so=8-64  glibc".to_string()];
+        assert_eq!(
+            parse_pkg_list(Some(&field)),
+            vec!["readline", "libreadline.so", "glibc"]
+        );
+        assert_eq!(
+            parse_pkg_list(Some(&vec!["None".to_string()])),
+            Vec::<String>::new()
+        );
+        assert_eq!(parse_pkg_list(None), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_optional_deps_keeps_only_names() {
+        let field = vec![
+            "hunspell-en_US: Spell checking, American English".to_string(),
+            "libnotify: Notification integration [installed]".to_string(),
+        ];
+        assert_eq!(
+            parse_optional_deps(Some(&field)),
+            vec!["hunspell-en_US", "libnotify"]
+        );
+        assert_eq!(
+            parse_optional_deps(Some(&vec!["None".to_string()])),
+            Vec::<String>::new()
+        );
+    }
 }

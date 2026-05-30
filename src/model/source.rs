@@ -39,6 +39,31 @@ impl std::fmt::Display for SourceId {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_id_constructors_use_canonical_strings() {
+        assert_eq!(SourceId::pacman().as_str(), "pacman");
+        assert_eq!(SourceId::flatpak().as_str(), "flatpak");
+        assert_eq!(SourceId::flatpak_user().as_str(), "flatpak-user");
+        assert_eq!(SourceId::flatpak_system().as_str(), "flatpak-system");
+    }
+
+    #[test]
+    fn source_id_display_matches_inner() {
+        assert_eq!(SourceId::flatpak_user().to_string(), "flatpak-user");
+    }
+
+    #[test]
+    fn flatpak_scoped_ids_share_the_flatpak_prefix() {
+        assert!(SourceId::flatpak_user().as_str().starts_with("flatpak"));
+        assert!(SourceId::flatpak_system().as_str().starts_with("flatpak"));
+        assert!(!SourceId::pacman().as_str().starts_with("flatpak"));
+    }
+}
+
 /// A package source, as recorded in a scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {

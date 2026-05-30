@@ -57,19 +57,33 @@ pub fn load_or_scan(
 
 /// Run every enabled, available provider and assemble a `ScanResult`.
 ///
+/// Detects provider availability on PATH, then delegates to [`assemble`].
+pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
+    let pacman_available = PacmanProvider::new(runner).is_available();
+    let flatpak_available = FlatpakProvider::new(runner).is_available();
+    assemble(runner, config, pacman_available, flatpak_available)
+}
+
+/// Assemble a `ScanResult` from the providers, given which binaries are
+/// available. Availability is passed in (not probed) so the whole pipeline is
+/// hermetically testable with a mock runner.
+///
 /// Provider failures are isolated: a source that errors is logged and skipped,
 /// never aborting the others (dev-notes §3).
-pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
+fn assemble(
+    runner: &dyn CommandRunner,
+    config: &Config,
+    pacman_available: bool,
+    flatpak_available: bool,
+) -> ScanResult {
     let now = Utc::now();
     let mut sources = Vec::new();
     let mut packages = Vec::new();
     let mut updates = Vec::new();
-    let mut pacman_available = false;
 
     if config.sources.pacman {
         let provider = PacmanProvider::new(runner);
-        let available = provider.is_available();
-        pacman_available = available;
+        let available = pacman_available;
         let mut last_scanned = None;
         if available {
             run_provider(&provider, "pacman", &mut packages, &mut updates);
@@ -87,7 +101,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
 
     if config.sources.flatpak {
         let provider = FlatpakProvider::new(runner);
-        let available = provider.is_available();
+        let available = flatpak_available;
         let last_scanned = available.then_some(now);
         let mut flatpak_updates = Vec::new();
         if available {
@@ -127,7 +141,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
         sources,
         packages,
         updates,
-        cache_sizes: gather_cache_sizes(runner, pacman_available),
+        cache_sizes: gather_cache_sizes(runner, config.sources.pacman && pacman_available),
     }
 }
 
@@ -192,6 +206,100 @@ fn is_flatpak(id: &SourceId) -> bool {
 mod tests {
     use super::*;
     use crate::model::InstallReason;
+    use crate::providers::test_support::MockRunner;
+
+    const QI_SMALL: &str = include_str!("../../tests/fixtures/pacman/qi_small_system.txt");
+    const QU_SAMPLE: &str = include_str!("../../tests/fixtures/pacman/qu_sample.txt");
+    const FP_LIST: &str = include_str!("../../tests/fixtures/flatpak/list_apps.txt");
+    const FP_UPDATES: &str = include_str!("../../tests/fixtures/flatpak/remote_ls_updates.txt");
+    const FP_LIST_KEY: &str =
+        "flatpak list --app --columns=application,name,version,origin,installation";
+    const FP_UPDATES_KEY: &str = "flatpak remote-ls --updates --app --columns=application,version";
+    const DU_KEY: &str = "du -sb /var/cache/pacman/pkg/";
+
+    /// A runner with every command this pipeline issues stubbed to succeed.
+    fn full_runner() -> MockRunner {
+        MockRunner::new()
+            .with("pacman -Qi", QI_SMALL, 0)
+            .with("pacman -Qu", QU_SAMPLE, 0)
+            .with(DU_KEY, "12345\t/var/cache/pacman/pkg/\n", 0)
+            .with(FP_LIST_KEY, FP_LIST, 0)
+            .with(FP_UPDATES_KEY, FP_UPDATES, 0)
+    }
+
+    #[test]
+    fn assemble_full_pipeline_combines_both_sources() {
+        let scan = assemble(&full_runner(), &Config::default(), true, true);
+        // pacman + flatpak-user + flatpak-system
+        assert_eq!(scan.sources.len(), 3);
+        assert!(scan.sources.iter().all(|s| s.available));
+        // 3 pacman packages + 3 flatpak apps
+        assert_eq!(scan.packages.len(), 6);
+        // 4 pacman updates + 2 flatpak updates
+        assert_eq!(scan.updates.len(), 6);
+        assert_eq!(scan.cache_sizes.pacman_cache_bytes, Some(12345));
+        assert_eq!(scan.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn assemble_respects_disabled_pacman_source() {
+        let mut config = Config::default();
+        config.sources.pacman = false;
+        let scan = assemble(&full_runner(), &config, true, true);
+        assert!(scan.sources.iter().all(|s| s.id != SourceId::pacman()));
+        assert!(
+            scan.packages
+                .iter()
+                .all(|p| p.source_id != SourceId::pacman())
+        );
+        // No pacman source => no pacman cache size gathered.
+        assert_eq!(scan.cache_sizes.pacman_cache_bytes, None);
+    }
+
+    #[test]
+    fn assemble_omits_flatpak_scopes_when_excluded() {
+        let mut config = Config::default();
+        config.scan.flatpak_include_system = false;
+        let scan = assemble(&full_runner(), &config, true, true);
+        assert!(
+            scan.sources
+                .iter()
+                .all(|s| s.id != SourceId::flatpak_system())
+        );
+        assert!(
+            scan.sources
+                .iter()
+                .any(|s| s.id == SourceId::flatpak_user())
+        );
+    }
+
+    #[test]
+    fn assemble_isolates_a_failing_provider() {
+        // pacman installed-scan fails; flatpak still succeeds.
+        let runner = MockRunner::new()
+            .with("pacman -Qi", "", 1)
+            .with("pacman -Qu", "", 1)
+            .with(FP_LIST_KEY, FP_LIST, 0)
+            .with(FP_UPDATES_KEY, FP_UPDATES, 0);
+        let scan = assemble(&runner, &Config::default(), true, true);
+        assert!(
+            scan.packages
+                .iter()
+                .all(|p| p.source_id != SourceId::pacman())
+        );
+        assert_eq!(scan.packages.len(), 3); // flatpak apps survived
+        assert!(scan.sources.iter().any(|s| s.id == SourceId::pacman()));
+    }
+
+    #[test]
+    fn assemble_skips_unavailable_binaries() {
+        let scan = assemble(&full_runner(), &Config::default(), false, false);
+        assert!(scan.packages.is_empty());
+        assert!(scan.updates.is_empty());
+        assert_eq!(scan.cache_sizes.pacman_cache_bytes, None);
+        // Sources are still listed (per config) but marked unavailable.
+        assert!(scan.sources.iter().all(|s| !s.available));
+    }
 
     #[test]
     fn parse_du_bytes_reads_leading_field() {

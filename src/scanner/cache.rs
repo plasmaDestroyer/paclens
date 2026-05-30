@@ -251,18 +251,46 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_then_read_round_trips_on_disk() {
-        let dir = std::env::temp_dir().join(format!("paclens-cache-test-{}", std::process::id()));
-        let _ = fs::create_dir_all(&dir);
-        let cache = Cache {
+    /// A unique scratch cache under the temp dir, plus a cleanup guard.
+    fn scratch_cache(tag: &str) -> Cache {
+        let dir = std::env::temp_dir().join(format!(
+            "paclens-cache-{}-{}-{:?}",
+            tag,
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        Cache {
             path: dir.join(CACHE_FILENAME),
             tmp: dir.join(TMP_FILENAME),
-        };
+        }
+    }
+
+    #[test]
+    fn write_then_read_round_trips_on_disk() {
+        let cache = scratch_cache("roundtrip");
         let scan = sample_scan(Utc::now(), SCHEMA_VERSION);
         cache.write(&scan).expect("write");
         let read = cache.read().expect("read").expect("present");
         assert_eq!(read, scan);
-        let _ = fs::remove_dir_all(&dir);
+        // The atomic temp file must not linger after a successful write.
+        assert!(!cache.tmp.exists());
+        let _ = fs::remove_dir_all(cache.path.parent().unwrap());
+    }
+
+    #[test]
+    fn read_absent_cache_is_none() {
+        let cache = scratch_cache("absent");
+        assert!(cache.read().expect("read").is_none());
+        let _ = fs::remove_dir_all(cache.path.parent().unwrap());
+    }
+
+    #[test]
+    fn read_corrupt_cache_is_none_not_error() {
+        let cache = scratch_cache("corrupt");
+        fs::write(&cache.path, "this is { not valid toml").expect("seed corrupt");
+        assert!(cache.read().expect("read returns Ok").is_none());
+        let _ = fs::remove_dir_all(cache.path.parent().unwrap());
     }
 }

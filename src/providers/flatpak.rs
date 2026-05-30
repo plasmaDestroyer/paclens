@@ -207,5 +207,16 @@ mod tests {
         assert_eq!(ups.len(), 1);
         assert_eq!(ups[0].package_name, "org.mozilla.firefox");
         assert_eq!(ups[0].available_version, "129.0");
+        // Scope is unknown from remote-ls; the scanner reconciles it later.
+        assert_eq!(ups[0].source_id, SourceId::flatpak());
+    }
+
+    #[test]
+    fn scope_source_id_maps_installation_column() {
+        assert_eq!(scope_source_id("user"), SourceId::flatpak_user());
+        assert_eq!(scope_source_id("system"), SourceId::flatpak_system());
+        // Anything unexpected defaults to system (conservative).
+        assert_eq!(scope_source_id("default"), SourceId::flatpak_system());
+        assert_eq!(scope_source_id(" user "), SourceId::flatpak_user());
     }
 }
