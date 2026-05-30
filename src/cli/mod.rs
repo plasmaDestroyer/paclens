@@ -1,5 +1,7 @@
 //! CLI entry: argument parsing, the init sequence, and subcommand dispatch.
 
+mod status;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -102,18 +104,23 @@ pub fn run() -> ExitCode {
     );
 
     match command {
-        Command::Ui => match tui::run() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("error: {err:#}");
-                ExitCode::FAILURE
-            }
-        },
-        Command::Status => not_implemented("status"),
+        Command::Ui => report(tui::run()),
+        Command::Status => report(status::run(&config)),
         Command::Update { .. } => not_implemented("update"),
         Command::Why { .. } => not_implemented("why"),
         Command::Overlaps => not_implemented("overlaps"),
         Command::Cleanup => not_implemented("cleanup"),
+    }
+}
+
+/// Map a fallible handler to an exit code, printing the error chain on failure.
+fn report(result: anyhow::Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
