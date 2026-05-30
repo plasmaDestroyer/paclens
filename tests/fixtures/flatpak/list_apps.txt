@@ -1,0 +1,3 @@
+org.mozilla.firefox	Firefox	128.0	flathub	system
+md.obsidian.Obsidian	Obsidian	1.6.0	flathub	user
+org.gnome.Calculator	Calculator	46.1	flathub	system

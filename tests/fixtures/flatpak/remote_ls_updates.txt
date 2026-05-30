@@ -1,0 +1,2 @@
+org.mozilla.firefox	129.0
+md.obsidian.Obsidian	1.6.7
