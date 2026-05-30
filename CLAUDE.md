@@ -59,6 +59,7 @@ Module contracts (dev-notes.md §3):
 - TUI: rendering fns take `&App` (never mutate); event handlers take `&mut App` (the only mutators). No global mutable state.
 - Colors live only in `src/tui/theme.rs`. `--no-color` switches to ASCII box drawing.
 - Every parser has unit tests against real-output fixtures in `tests/fixtures/`, driven by a mock `CommandRunner`. Capture fixtures from a real Arch system.
+- **Testing is a hard requirement, not an afterthought.** Every module carries unit tests; every feature ships with tests. Keep them small, granular, and specific — test pure helpers directly, not just via their callers. Make logic hermetically testable by injecting the `CommandRunner` seam and passing environment-derived inputs (availability flags, mtimes) into pure cores rather than reading PATH/filesystem inside the logic (see `scan`→`assemble`, `staleness`→`staleness_with`). Integration tests in `tests/` drive the built binary (`CARGO_BIN_EXE_paclens`) sandboxed with temp `XDG_*` dirs; grow them as the surface stabilizes. `cargo test`, `clippy -- -D warnings -D clippy::unwrap_used`, and `fmt --check` stay green on every commit.
 
 ## Build order (locked — see roadmap.md / dev-notes.md §1)
 
