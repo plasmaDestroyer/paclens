@@ -6,6 +6,7 @@ mod cli;
 mod config;
 mod executor;
 mod format;
+mod glyphs;
 mod logging;
 mod model;
 mod providers;

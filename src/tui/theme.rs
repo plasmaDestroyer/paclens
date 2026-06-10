@@ -12,6 +12,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 
 use crate::config::ColorTheme;
+use crate::glyphs::{ASCII, Glyphs, UNICODE};
 
 /// ASCII box-drawing set for the no-color path.
 const ASCII_BORDER: border::Set<'static> = border::Set {
@@ -23,37 +24,6 @@ const ASCII_BORDER: border::Set<'static> = border::Set {
     vertical_right: "|",
     horizontal_top: "-",
     horizontal_bottom: "-",
-};
-
-/// Single-character symbols used across the dashboard. Unicode by default; ASCII
-/// in the no-color path so a `--no-color` terminal never renders tofu boxes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Glyphs {
-    pub available: &'static str,
-    pub unavailable: &'static str,
-    pub bullet: &'static str,
-    pub up: &'static str,
-    pub down: &'static str,
-    /// Leading marker for the selected table row.
-    pub pointer: &'static str,
-}
-
-const UNICODE_GLYPHS: Glyphs = Glyphs {
-    available: "●",
-    unavailable: "○",
-    bullet: "·",
-    up: "↑",
-    down: "↓",
-    pointer: "▶ ",
-};
-
-const ASCII_GLYPHS: Glyphs = Glyphs {
-    available: "*",
-    unavailable: "-",
-    bullet: "-",
-    up: "^",
-    down: "v",
-    pointer: "> ",
 };
 
 /// A resolved set of styles, borders, and glyphs for one render pass.
@@ -109,7 +79,7 @@ impl Theme {
     fn colored() -> Self {
         Theme {
             border_set: border::ROUNDED,
-            glyphs: UNICODE_GLYPHS,
+            glyphs: UNICODE,
             title: Style::new().add_modifier(Modifier::BOLD),
             primary: Style::new(),
             dim: Style::new().add_modifier(Modifier::DIM),
@@ -130,7 +100,7 @@ impl Theme {
     pub fn none() -> Self {
         Theme {
             border_set: ASCII_BORDER,
-            glyphs: ASCII_GLYPHS,
+            glyphs: ASCII,
             title: Style::new().add_modifier(Modifier::BOLD),
             primary: Style::new(),
             dim: Style::new(),
