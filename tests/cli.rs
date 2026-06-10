@@ -76,3 +76,20 @@ fn unknown_subcommand_is_rejected() {
     assert!(!out.status.success());
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn status_no_color_is_plain_and_succeeds() {
+    // `status` scans the host (or finds nothing on a non-Arch runner) and prints
+    // the summary. With --no-color and captured (non-TTY) stdout, the output must
+    // carry the headline and contain no ANSI escape codes.
+    let home = sandbox("status");
+    let out = run(&home, &["status", "--no-color"]);
+    assert!(out.status.success(), "status should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("paclens"), "stdout was: {stdout}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "no-color output must not contain ANSI escapes: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

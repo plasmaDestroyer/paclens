@@ -1,15 +1,20 @@
 //! CLI entry: argument parsing, the init sequence, and subcommand dispatch.
 
 mod status;
+mod style;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::config;
+use crate::config::ColorTheme;
 use crate::logging;
 use crate::tui;
+
+use style::Styles;
 
 /// A TUI-first pacman + Flatpak inspection and update tool for Arch Linux.
 #[derive(Debug, Parser)]
@@ -74,25 +79,36 @@ pub enum Command {
 /// Parse args, load config, initialize logging, and dispatch.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
+    let stderr_tty = std::io::stderr().is_terminal();
 
-    let config = match config::load(cli.config.as_deref()) {
-        Ok(loaded) => {
-            for key in &loaded.unknown_keys {
-                eprintln!("warning: unknown config key ignored: {key}");
-            }
-            for warning in loaded.config.validation_warnings() {
-                eprintln!("warning: {warning}");
-            }
-            loaded.config
-        }
+    // Until the config is loaded we don't know the theme, so assume the default
+    // for any early error. Color is still gated on --no-color and the TTY check.
+    let early_err = Styles::resolve(cli.no_color, ColorTheme::Dark, stderr_tty);
+
+    let loaded = match config::load(cli.config.as_deref()) {
+        Ok(loaded) => loaded,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            eprintln!("{} {err:#}", early_err.error("error:"));
             return ExitCode::FAILURE;
         }
     };
+    let config = loaded.config;
+    let err_styles = Styles::resolve(cli.no_color, config.general.color_theme(), stderr_tty);
+    for key in &loaded.unknown_keys {
+        eprintln!(
+            "{} unknown config key ignored: {key}",
+            err_styles.warn("warning:")
+        );
+    }
+    for warning in config.validation_warnings() {
+        eprintln!("{} {warning}", err_styles.warn("warning:"));
+    }
 
     if let Err(err) = logging::init(&config, cli.debug) {
-        eprintln!("error: failed to initialize logging: {err:#}");
+        eprintln!(
+            "{} failed to initialize logging: {err:#}",
+            err_styles.error("error:")
+        );
         return ExitCode::FAILURE;
     }
 
@@ -110,33 +126,41 @@ pub fn run() -> ExitCode {
     );
 
     match command {
-        Command::Ui => report(tui::run(
-            &config,
-            cli.refresh,
-            config_path.as_deref(),
-            cli.no_color,
-        )),
-        Command::Status => report(status::run(&config, cli.refresh, config_path.as_deref())),
-        Command::Update { .. } => not_implemented("update"),
-        Command::Why { .. } => not_implemented("why"),
-        Command::Overlaps => not_implemented("overlaps"),
-        Command::Cleanup => not_implemented("cleanup"),
+        Command::Ui => report(
+            tui::run(&config, cli.refresh, config_path.as_deref(), cli.no_color),
+            &err_styles,
+        ),
+        Command::Status => {
+            let out_styles = Styles::resolve(
+                cli.no_color,
+                config.general.color_theme(),
+                std::io::stdout().is_terminal(),
+            );
+            report(
+                status::run(&config, cli.refresh, config_path.as_deref(), &out_styles),
+                &err_styles,
+            )
+        }
+        Command::Update { .. } => not_implemented("update", &err_styles),
+        Command::Why { .. } => not_implemented("why", &err_styles),
+        Command::Overlaps => not_implemented("overlaps", &err_styles),
+        Command::Cleanup => not_implemented("cleanup", &err_styles),
     }
 }
 
 /// Map a fallible handler to an exit code, printing the error chain on failure.
-fn report(result: anyhow::Result<()>) -> ExitCode {
+fn report(result: anyhow::Result<()>, styles: &Styles) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            eprintln!("{} {err:#}", styles.error("error:"));
             ExitCode::FAILURE
         }
     }
 }
 
-fn not_implemented(name: &str) -> ExitCode {
-    eprintln!("paclens: `{name}` is not implemented yet");
+fn not_implemented(name: &str, styles: &Styles) -> ExitCode {
+    eprintln!("{} `{name}` is not implemented yet", styles.dim("paclens:"));
     ExitCode::FAILURE
 }
 
