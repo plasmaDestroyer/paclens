@@ -201,6 +201,11 @@ impl General {
     pub fn log_level(&self) -> LogLevel {
         LogLevel::parse(&self.log_level).unwrap_or_default()
     }
+
+    /// Validated color theme, falling back to the default on an invalid value.
+    pub fn color_theme(&self) -> ColorTheme {
+        ColorTheme::parse(&self.color_theme).unwrap_or_default()
+    }
 }
 
 impl Config {
@@ -227,5 +232,42 @@ impl Config {
             ));
         }
         warnings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn general_with_theme(theme: &str) -> General {
+        General {
+            color_theme: theme.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn color_theme_accessor_parses_known_values() {
+        assert_eq!(general_with_theme("light").color_theme(), ColorTheme::Light);
+        assert_eq!(general_with_theme("none").color_theme(), ColorTheme::None);
+        // case-insensitive
+        assert_eq!(general_with_theme("DARK").color_theme(), ColorTheme::Dark);
+    }
+
+    #[test]
+    fn color_theme_accessor_defaults_on_invalid() {
+        assert_eq!(
+            general_with_theme("chartreuse").color_theme(),
+            ColorTheme::Dark
+        );
+    }
+
+    #[test]
+    fn log_level_accessor_defaults_on_invalid() {
+        let g = General {
+            log_level: "loud".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(g.log_level(), LogLevel::Info);
     }
 }

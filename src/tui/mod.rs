@@ -1,77 +1,80 @@
-//! TUI shell. For v0.0.1 this is an empty frame that proves the terminal
-//! setup works and quits cleanly. Screens and widgets arrive from v0.0.4.
+//! TUI shell: load a scan, build the dashboard `App`, and run the event loop.
+//!
+//! The scan is synchronous — `load_or_scan` runs once before the loop (a warm
+//! cache makes this instant). The async scan-with-spinner path (spec §10.1) is
+//! deferred to the v0.0.9 usability pass.
+
+mod app;
+mod draw;
+mod input;
+mod theme;
+
+use std::path::Path;
 
 use anyhow::Context;
 use ratatui::DefaultTerminal;
-use ratatui::Frame;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::widgets::{Block, Borders};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
+
+use crate::config::Config;
+use crate::providers::SystemCommandRunner;
+use crate::scanner;
+
+use app::App;
+use input::{Action, map_key};
+use theme::Theme;
 
 /// Open the TUI, run the event loop, and restore the terminal on exit.
 ///
 /// `ratatui::init` installs a panic hook that restores the terminal, so a panic
 /// inside the loop will not leave the user's terminal in raw mode.
-pub fn run() -> anyhow::Result<()> {
+pub fn run(
+    config: &Config,
+    refresh: bool,
+    config_path: Option<&Path>,
+    no_color: bool,
+) -> anyhow::Result<()> {
+    let theme = Theme::resolve(config.general.color_theme(), no_color);
+    let runner = SystemCommandRunner;
+    let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
+    let mut app = App::new(scan, theme);
+
     let mut terminal = ratatui::init();
-    let result = run_loop(&mut terminal);
+    let result = run_loop(&mut terminal, &mut app, &runner, config, config_path);
     ratatui::restore();
     result
 }
 
-fn run_loop(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
+fn run_loop(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    runner: &SystemCommandRunner,
+    config: &Config,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
     loop {
         terminal
-            .draw(draw)
+            .draw(|frame| draw::draw(frame, app))
             .context("failed to draw the terminal frame")?;
-        if read_should_quit()? {
-            return Ok(());
+
+        match read_action()? {
+            Action::Quit => return Ok(()),
+            Action::Next => app.select_next(),
+            Action::Prev => app.select_prev(),
+            Action::Refresh => {
+                // Synchronous re-scan; blocks briefly. Async spinner is v0.0.9.
+                let scan = scanner::load_or_scan(runner, config, true, config_path)?;
+                app.replace_scan(scan);
+            }
+            Action::Ignore => {}
         }
     }
 }
 
-fn draw(frame: &mut Frame) {
-    let block = Block::default().title("paclens").borders(Borders::ALL);
-    frame.render_widget(block, frame.area());
-}
-
-fn read_should_quit() -> anyhow::Result<bool> {
+/// Block for the next key press and map it to an [`Action`]. Non-key and
+/// non-press events are ignored.
+fn read_action() -> anyhow::Result<Action> {
     match event::read().context("failed to read a terminal event")? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(is_quit(key)),
-        _ => Ok(false),
-    }
-}
-
-fn is_quit(key: KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('q'))
-        || (key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
-        KeyEvent::new(code, modifiers)
-    }
-
-    #[test]
-    fn q_quits() {
-        assert!(is_quit(key(KeyCode::Char('q'), KeyModifiers::NONE)));
-    }
-
-    #[test]
-    fn ctrl_c_quits() {
-        assert!(is_quit(key(KeyCode::Char('c'), KeyModifiers::CONTROL)));
-    }
-
-    #[test]
-    fn plain_c_does_not_quit() {
-        assert!(!is_quit(key(KeyCode::Char('c'), KeyModifiers::NONE)));
-    }
-
-    #[test]
-    fn other_keys_do_not_quit() {
-        assert!(!is_quit(key(KeyCode::Char('x'), KeyModifiers::NONE)));
-        assert!(!is_quit(key(KeyCode::Esc, KeyModifiers::NONE)));
+        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(map_key(key)),
+        _ => Ok(Action::Ignore),
     }
 }

@@ -5,7 +5,7 @@
 
 pub mod schema;
 
-pub use schema::Config;
+pub use schema::{ColorTheme, Config};
 
 use std::fs;
 use std::path::{Path, PathBuf};

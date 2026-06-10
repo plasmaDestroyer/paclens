@@ -110,7 +110,12 @@ pub fn run() -> ExitCode {
     );
 
     match command {
-        Command::Ui => report(tui::run()),
+        Command::Ui => report(tui::run(
+            &config,
+            cli.refresh,
+            config_path.as_deref(),
+            cli.no_color,
+        )),
         Command::Status => report(status::run(&config, cli.refresh, config_path.as_deref())),
         Command::Update { .. } => not_implemented("update"),
         Command::Why { .. } => not_implemented("why"),
