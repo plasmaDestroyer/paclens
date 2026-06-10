@@ -12,6 +12,14 @@ use super::{CommandRunner, Provider, ProviderError};
 
 pub const PACMAN_BIN: &str = "pacman";
 
+/// The argv for a full pacman system update (no `--noconfirm`, per spec Q6 /
+/// dev-notes decisions: it suppresses conflict resolution). Pure — building the
+/// command never runs anything. The privilege prefix (sudo/doas/pkexec) is added
+/// by the executor in v0.0.6; pacman updates require it.
+pub fn update_command() -> Vec<String> {
+    vec![PACMAN_BIN.to_string(), "-Syu".to_string()]
+}
+
 pub struct PacmanProvider<'a> {
     runner: &'a dyn CommandRunner,
 }
@@ -437,5 +445,11 @@ mod tests {
             parse_optional_deps(Some(&vec!["None".to_string()])),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn update_command_is_full_system_upgrade_without_noconfirm() {
+        assert_eq!(update_command(), vec!["pacman", "-Syu"]);
+        assert!(!update_command().iter().any(|a| a == "--noconfirm"));
     }
 }

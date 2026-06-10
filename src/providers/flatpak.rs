@@ -5,7 +5,7 @@
 //! Columns are always requested explicitly — flatpak's default column order is
 //! not stable across versions (dev-notes §2.2).
 
-use crate::model::{InstallReason, Package, PendingUpdate, SourceId};
+use crate::model::{FlatpakScope, InstallReason, Package, PendingUpdate, SourceId};
 
 use super::{CommandRunner, Provider, ProviderError};
 
@@ -13,6 +13,23 @@ pub const FLATPAK_BIN: &str = "flatpak";
 
 const LIST_COLUMNS: &str = "--columns=application,name,version,origin,installation";
 const UPDATE_COLUMNS: &str = "--columns=application,version";
+
+/// The argv for a scoped Flatpak update (spec §5.3, §13.3). `--noninteractive`
+/// suppresses Flatpak's own prompts; paclens gates on its own confirm first.
+/// User scope needs no sudo; system scope does (added by the executor in v0.0.6).
+/// Pure — building the command never runs anything.
+pub fn update_command(scope: FlatpakScope) -> Vec<String> {
+    let scope_flag = match scope {
+        FlatpakScope::User => "--user",
+        FlatpakScope::System => "--system",
+    };
+    vec![
+        FLATPAK_BIN.to_string(),
+        "update".to_string(),
+        scope_flag.to_string(),
+        "--noninteractive".to_string(),
+    ]
+}
 
 pub struct FlatpakProvider<'a> {
     runner: &'a dyn CommandRunner,
@@ -218,5 +235,17 @@ mod tests {
         // Anything unexpected defaults to system (conservative).
         assert_eq!(scope_source_id("default"), SourceId::flatpak_system());
         assert_eq!(scope_source_id(" user "), SourceId::flatpak_user());
+    }
+
+    #[test]
+    fn update_command_is_scoped_and_noninteractive() {
+        assert_eq!(
+            update_command(FlatpakScope::User),
+            vec!["flatpak", "update", "--user", "--noninteractive"]
+        );
+        assert_eq!(
+            update_command(FlatpakScope::System),
+            vec!["flatpak", "update", "--system", "--noninteractive"]
+        );
     }
 }

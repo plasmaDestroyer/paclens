@@ -9,6 +9,7 @@ mod format;
 mod glyphs;
 mod logging;
 mod model;
+mod planner;
 mod providers;
 mod scanner;
 mod tui;
