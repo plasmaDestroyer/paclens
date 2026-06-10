@@ -7,9 +7,11 @@
 mod package;
 mod scan;
 mod source;
+mod summary;
 mod update;
 
 pub use package::{InstallReason, Package};
 pub use scan::{CacheSizes, SCHEMA_VERSION, ScanResult};
 pub use source::{FlatpakScope, Source, SourceId, SourceKind};
+pub use summary::{SourceSummary, summarize};
 pub use update::PendingUpdate;

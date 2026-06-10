@@ -5,6 +5,7 @@ mod analyzer;
 mod cli;
 mod config;
 mod executor;
+mod format;
 mod logging;
 mod model;
 mod providers;
