@@ -1,4 +1,4 @@
-//! TUI shell: load a scan, build the dashboard `App`, and run the event loop.
+//! TUI shell: load a scan, build the `App`, and run the multi-screen event loop.
 //!
 //! The scan is synchronous — `load_or_scan` runs once before the loop (a warm
 //! cache makes this instant). The async scan-with-spinner path (spec §10.1) is
@@ -19,8 +19,8 @@ use crate::config::Config;
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
-use app::App;
-use input::{Action, map_key};
+use app::{App, Screen};
+use input::{Action, map_dashboard_key, map_update_key};
 use theme::Theme;
 
 /// Open the TUI, run the event loop, and restore the terminal on exit.
@@ -56,25 +56,35 @@ fn run_loop(
             .draw(|frame| draw::draw(frame, app))
             .context("failed to draw the terminal frame")?;
 
-        match read_action()? {
+        let action = read_action(app.screen())?;
+        // A key press dismisses any flash; `Confirm` sets a fresh one below.
+        app.clear_flash();
+
+        match action {
             Action::Quit => return Ok(()),
-            Action::Next => app.select_next(),
-            Action::Prev => app.select_prev(),
+            Action::Next => app.on_next(),
+            Action::Prev => app.on_prev(),
             Action::Refresh => {
                 // Synchronous re-scan; blocks briefly. Async spinner is v0.0.9.
                 let scan = scanner::load_or_scan(runner, config, true, config_path)?;
                 app.replace_scan(scan);
             }
+            Action::OpenUpdates => app.goto_updates(),
+            Action::Back => app.back_to_dashboard(),
+            Action::Toggle => app.toggle_selected(),
+            Action::Confirm => app.set_flash("execution arrives in v0.0.6"),
             Action::Ignore => {}
         }
     }
 }
 
-/// Block for the next key press and map it to an [`Action`]. Non-key and
-/// non-press events are ignored.
-fn read_action() -> anyhow::Result<Action> {
+/// Block for the next key press and map it with the active screen's key map.
+fn read_action(screen: Screen) -> anyhow::Result<Action> {
     match event::read().context("failed to read a terminal event")? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(map_key(key)),
+        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(match screen {
+            Screen::Dashboard => map_dashboard_key(key),
+            Screen::Updates => map_update_key(key),
+        }),
         _ => Ok(Action::Ignore),
     }
 }

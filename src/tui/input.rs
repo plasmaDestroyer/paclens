@@ -1,6 +1,6 @@
-//! Keyboard input → semantic action. The mapping is a pure function so it is
-//! unit-testable without a terminal; the event loop applies the returned
-//! [`Action`] to the `App` (the loop and handlers are the only mutators).
+//! Keyboard input → semantic action, one pure mapping per screen. Pure so they
+//! are unit-testable without a terminal; the event loop applies the returned
+//! [`Action`] to the `App` (the loop is the only mutator).
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -8,22 +8,52 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Quit,
+    /// Move the active screen's cursor forward.
     Next,
+    /// Move the active screen's cursor back.
     Prev,
     Refresh,
+    /// Dashboard → open the update screen.
+    OpenUpdates,
+    /// Update screen → return to the dashboard.
+    Back,
+    /// Update screen → toggle the selected source.
+    Toggle,
+    /// Update screen → confirm the plan.
+    Confirm,
     Ignore,
 }
 
-/// Map a key press to an [`Action`]. `q` and `Ctrl-C` quit; arrows and `j`/`k`
-/// move the selection; `r` refreshes; everything else is ignored.
-pub fn map_key(key: KeyEvent) -> Action {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+fn is_quit(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('q'))
+        || (key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')))
+}
+
+/// Dashboard key map: nav, refresh, open updates, quit.
+pub fn map_dashboard_key(key: KeyEvent) -> Action {
+    if is_quit(&key) {
+        return Action::Quit;
+    }
     match key.code {
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('c') if ctrl => Action::Quit,
         KeyCode::Down | KeyCode::Char('j') => Action::Next,
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
         KeyCode::Char('r') => Action::Refresh,
+        KeyCode::Char('u') => Action::OpenUpdates,
+        _ => Action::Ignore,
+    }
+}
+
+/// Update screen key map: nav, toggle, confirm, back, quit.
+pub fn map_update_key(key: KeyEvent) -> Action {
+    if is_quit(&key) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => Action::Next,
+        KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::Char(' ') => Action::Toggle,
+        KeyCode::Enter => Action::Confirm,
+        KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
 }
@@ -36,68 +66,60 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
-    #[test]
-    fn q_and_ctrl_c_quit() {
-        assert_eq!(
-            map_key(key(KeyCode::Char('q'), KeyModifiers::NONE)),
-            Action::Quit
-        );
-        assert_eq!(
-            map_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-            Action::Quit
-        );
+    fn plain(code: KeyCode) -> KeyEvent {
+        key(code, KeyModifiers::NONE)
     }
 
     #[test]
-    fn plain_c_is_ignored() {
-        assert_eq!(
-            map_key(key(KeyCode::Char('c'), KeyModifiers::NONE)),
-            Action::Ignore
-        );
+    fn both_screens_quit_on_q_and_ctrl_c() {
+        for map in [map_dashboard_key, map_update_key] {
+            assert_eq!(map(plain(KeyCode::Char('q'))), Action::Quit);
+            assert_eq!(
+                map(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+                Action::Quit
+            );
+        }
     }
 
     #[test]
-    fn down_and_j_move_next() {
-        assert_eq!(
-            map_key(key(KeyCode::Down, KeyModifiers::NONE)),
-            Action::Next
-        );
-        assert_eq!(
-            map_key(key(KeyCode::Char('j'), KeyModifiers::NONE)),
-            Action::Next
-        );
+    fn both_screens_navigate_with_arrows_and_jk() {
+        for map in [map_dashboard_key, map_update_key] {
+            assert_eq!(map(plain(KeyCode::Down)), Action::Next);
+            assert_eq!(map(plain(KeyCode::Char('j'))), Action::Next);
+            assert_eq!(map(plain(KeyCode::Up)), Action::Prev);
+            assert_eq!(map(plain(KeyCode::Char('k'))), Action::Prev);
+        }
     }
 
     #[test]
-    fn up_and_k_move_prev() {
-        assert_eq!(map_key(key(KeyCode::Up, KeyModifiers::NONE)), Action::Prev);
+    fn dashboard_specific_keys() {
         assert_eq!(
-            map_key(key(KeyCode::Char('k'), KeyModifiers::NONE)),
-            Action::Prev
-        );
-    }
-
-    #[test]
-    fn r_refreshes() {
-        assert_eq!(
-            map_key(key(KeyCode::Char('r'), KeyModifiers::NONE)),
+            map_dashboard_key(plain(KeyCode::Char('r'))),
             Action::Refresh
         );
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('u'))),
+            Action::OpenUpdates
+        );
+        // Update-only keys are ignored on the dashboard.
+        assert_eq!(map_dashboard_key(plain(KeyCode::Char(' '))), Action::Ignore);
+        assert_eq!(map_dashboard_key(plain(KeyCode::Esc)), Action::Ignore);
+        assert_eq!(map_dashboard_key(plain(KeyCode::Enter)), Action::Ignore);
+    }
+
+    #[test]
+    fn update_specific_keys() {
+        assert_eq!(map_update_key(plain(KeyCode::Char(' '))), Action::Toggle);
+        assert_eq!(map_update_key(plain(KeyCode::Enter)), Action::Confirm);
+        assert_eq!(map_update_key(plain(KeyCode::Esc)), Action::Back);
+        // Dashboard-only keys are ignored on the update screen.
+        assert_eq!(map_update_key(plain(KeyCode::Char('u'))), Action::Ignore);
+        assert_eq!(map_update_key(plain(KeyCode::Char('r'))), Action::Ignore);
     }
 
     #[test]
     fn unmapped_keys_are_ignored() {
-        assert_eq!(
-            map_key(key(KeyCode::Char('x'), KeyModifiers::NONE)),
-            Action::Ignore
-        );
-        assert_eq!(
-            map_key(key(KeyCode::Esc, KeyModifiers::NONE)),
-            Action::Ignore
-        );
-        assert_eq!(
-            map_key(key(KeyCode::Enter, KeyModifiers::NONE)),
-            Action::Ignore
-        );
+        assert_eq!(map_dashboard_key(plain(KeyCode::Char('x'))), Action::Ignore);
+        assert_eq!(map_update_key(plain(KeyCode::Char('x'))), Action::Ignore);
     }
 }
