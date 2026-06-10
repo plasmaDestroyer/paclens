@@ -93,3 +93,29 @@ fn status_no_color_is_plain_and_succeeds() {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn update_dry_run_prints_a_plan_and_succeeds() {
+    // Dry run executes nothing. On a non-Arch runner the plan is empty
+    // ("nothing to update"); either way it exits 0 and is escape-free.
+    let home = sandbox("update");
+    let out = run(&home, &["update", "--dry-run", "--no-color"]);
+    assert!(out.status.success(), "update --dry-run should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("paclens"), "stdout was: {stdout}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "no-color output must not contain ANSI escapes: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn update_rejects_unknown_source() {
+    let home = sandbox("update-bad-source");
+    let out = run(&home, &["update", "--dry-run", "--source", "bogus"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown source"), "stderr was: {stderr}");
+    let _ = std::fs::remove_dir_all(&home);
+}

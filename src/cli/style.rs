@@ -43,6 +43,11 @@ impl Styles {
         self.glyphs.bullet
     }
 
+    /// The active version-transition arrow ("→" Unicode, "->" ASCII).
+    pub fn arrow(&self) -> &'static str {
+        self.glyphs.arrow
+    }
+
     /// Apply `style` only when color is enabled; otherwise return the text plain.
     fn paint(&self, text: &str, style: impl FnOnce(String) -> StyledContent<String>) -> String {
         if self.color {

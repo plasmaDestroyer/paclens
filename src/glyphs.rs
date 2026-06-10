@@ -13,6 +13,10 @@ pub struct Glyphs {
     pub down: &'static str,
     /// Leading marker for a selected/active row.
     pub pointer: &'static str,
+    /// Version-transition arrow (`current → new`).
+    pub arrow: &'static str,
+    /// Mark inside a `[✓]` / `[ ]` toggle when enabled.
+    pub check: &'static str,
 }
 
 pub const UNICODE: Glyphs = Glyphs {
@@ -22,6 +26,8 @@ pub const UNICODE: Glyphs = Glyphs {
     up: "↑",
     down: "↓",
     pointer: "▶ ",
+    arrow: "→",
+    check: "✓",
 };
 
 pub const ASCII: Glyphs = Glyphs {
@@ -31,6 +37,8 @@ pub const ASCII: Glyphs = Glyphs {
     up: "^",
     down: "v",
     pointer: "> ",
+    arrow: "->",
+    check: "x",
 };
 
 #[cfg(test)]
