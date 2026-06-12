@@ -48,6 +48,16 @@ impl Styles {
         self.glyphs.arrow
     }
 
+    /// The active success mark ("✓" Unicode, "x" ASCII).
+    pub fn check(&self) -> &'static str {
+        self.glyphs.check
+    }
+
+    /// The active failure mark ("✗" Unicode, "!" ASCII).
+    pub fn cross(&self) -> &'static str {
+        self.glyphs.cross
+    }
+
     /// Apply `style` only when color is enabled; otherwise return the text plain.
     fn paint(&self, text: &str, style: impl FnOnce(String) -> StyledContent<String>) -> String {
         if self.color {
@@ -99,6 +109,12 @@ impl Styles {
         self.dim(&text)
     }
 
+    /// A succeeded step / positive mark, in green (not bold — `summary_ok` is
+    /// the headline weight).
+    pub fn success(&self, s: &str) -> String {
+        self.paint(s, |t| t.green())
+    }
+
     /// An "error:" prefix for stderr messages.
     pub fn error(&self, s: &str) -> String {
         self.paint(s, |t| t.red().bold())
@@ -136,6 +152,9 @@ mod tests {
         assert_eq!(s.updates_count("  3", 3), "  3");
         assert_eq!(s.available(), "* available");
         assert_eq!(s.unavailable(), "- not available");
+        assert_eq!(s.success("done"), "done");
+        assert_eq!(s.check(), "x");
+        assert_eq!(s.cross(), "!");
     }
 
     #[test]
@@ -147,6 +166,9 @@ mod tests {
         let avail = s.available();
         assert!(avail.contains(ESC));
         assert!(avail.contains('●')); // unicode glyph in color mode
+        assert!(s.success("done").contains(ESC));
+        assert_eq!(s.check(), "✓");
+        assert_eq!(s.cross(), "✗");
     }
 
     #[test]

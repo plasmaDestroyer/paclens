@@ -111,6 +111,24 @@ fn update_dry_run_prints_a_plan_and_succeeds() {
 }
 
 #[test]
+fn bare_update_refuses_to_execute_without_a_terminal() {
+    // A bare `update` executes after a y/N prompt, which needs a real stdin.
+    // With stdin captured (no TTY) it must refuse up front — before scanning,
+    // before prompting, and long before running anything.
+    let home = sandbox("update-no-tty");
+    let out = run(&home, &["update", "--no-color"]);
+    assert!(!out.status.success(), "must not exit 0 without a terminal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("needs a terminal"), "stderr was: {stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("[y/N]"),
+        "must never reach the prompt: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn update_rejects_unknown_source() {
     let home = sandbox("update-bad-source");
     let out = run(&home, &["update", "--dry-run", "--source", "bogus"]);

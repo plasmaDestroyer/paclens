@@ -15,8 +15,10 @@ pub struct Glyphs {
     pub pointer: &'static str,
     /// Version-transition arrow (`current → new`).
     pub arrow: &'static str,
-    /// Mark inside a `[✓]` / `[ ]` toggle when enabled.
+    /// Mark inside a `[✓]` / `[ ]` toggle when enabled; also a succeeded step.
     pub check: &'static str,
+    /// A failed step. ASCII falls back to `!` since `x` already means checked.
+    pub cross: &'static str,
 }
 
 pub const UNICODE: Glyphs = Glyphs {
@@ -28,6 +30,7 @@ pub const UNICODE: Glyphs = Glyphs {
     pointer: "▶ ",
     arrow: "→",
     check: "✓",
+    cross: "✗",
 };
 
 pub const ASCII: Glyphs = Glyphs {
@@ -39,6 +42,7 @@ pub const ASCII: Glyphs = Glyphs {
     pointer: "> ",
     arrow: "->",
     check: "x",
+    cross: "!",
 };
 
 #[cfg(test)]
@@ -50,6 +54,13 @@ mod tests {
         assert_ne!(UNICODE.available, ASCII.available);
         assert_ne!(UNICODE.unavailable, ASCII.unavailable);
         assert_ne!(UNICODE.pointer, ASCII.pointer);
+        assert_ne!(UNICODE.cross, ASCII.cross);
+    }
+
+    #[test]
+    fn ascii_cross_is_distinct_from_ascii_check() {
+        // `[x]` means an enabled toggle, so a failed step must not also be `x`.
+        assert_ne!(ASCII.cross, ASCII.check);
     }
 
     #[test]

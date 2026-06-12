@@ -1,14 +1,18 @@
 //! `paclens update [--dry-run] [--source <id>]` — show the update plan (spec
-//! §11.3). v0.0.5 is dry-run only: it prints exactly what would update and
-//! executes nothing (execution arrives in v0.0.6).
+//! §11.3) and, since v0.0.6, execute it after a y/N confirmation. v0.0.6 runs
+//! Flatpak user-scope only; everything needing sudo is reported as skipped.
 //!
-//! The plan is built by the shared `crate::planner` and rendered through the
-//! shared `Styles`, so the CLI and the TUI update screen never disagree (P5).
+//! The plan is built by the shared `crate::planner` and executed by the shared
+//! `crate::executor`, so the CLI and the TUI can never disagree (P5). The
+//! pipeline is intact (P4): the full plan prints before the prompt, nothing
+//! runs without an explicit `y`, and the per-source report hides nothing.
 
+use std::io::Write;
 use std::path::Path;
 
 use crate::cli::style::Styles;
 use crate::config::Config;
+use crate::executor::{self, ExecutionReport, InteractiveRunner, StepStatus, UpdateLog};
 use crate::model::{ActionPlan, ScanResult};
 use crate::providers::SystemCommandRunner;
 use crate::{planner, scanner};
@@ -19,8 +23,15 @@ pub fn run(
     config_path: Option<&Path>,
     dry_run: bool,
     source: Option<&str>,
+    stdin_is_tty: bool,
     styles: &Styles,
 ) -> anyhow::Result<()> {
+    // Executing needs an interactive confirmation, so fail fast (before the
+    // scan) when there is no terminal to ask on. Scripts get --dry-run.
+    if !dry_run && !stdin_is_tty {
+        anyhow::bail!("update needs a terminal to confirm on — use --dry-run to preview the plan");
+    }
+
     let runner = SystemCommandRunner;
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
 
@@ -41,13 +52,69 @@ pub fn run(
 
     print!("{}", render_plan(&plan, &scan, styles));
 
-    if !dry_run {
-        println!(
-            "{}",
-            styles.dim("(execution arrives in v0.0.6 — re-run with --dry-run to preview)")
+    if dry_run || plan.is_empty() {
+        return Ok(());
+    }
+    execute_flow(&plan, styles)
+}
+
+/// The confirm + execute half of a bare `paclens update`: announce what will
+/// be skipped, ask `[y/N]`, run the plan, and report every outcome.
+fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
+    for step in &plan.steps {
+        if let Some(reason) = executor::skip_reason(step) {
+            println!(
+                "  {}",
+                styles.dim(&format!(
+                    "{} will be skipped — {reason}",
+                    step.source_id.as_str()
+                ))
+            );
+        }
+    }
+
+    let apps = executor::executable_targets(plan);
+    if apps == 0 {
+        println!("\n{}", styles.dim("nothing to execute"));
+        return Ok(());
+    }
+
+    print!(
+        "\n{} {} ",
+        styles.summary_updates(&format!(
+            "Update {apps} Flatpak app{}?",
+            if apps == 1 { "" } else { "s" }
+        )),
+        styles.dim("[y/N]")
+    );
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !accepts(&answer) {
+        println!("{}", styles.dim("cancelled — nothing executed"));
+        return Ok(());
+    }
+
+    println!();
+    let mut log = UpdateLog::open_default()?;
+    let report = executor::execute(plan, &InteractiveRunner, &mut log);
+
+    println!();
+    print!("{}", render_report(&report, styles));
+
+    if report.failed() > 0 {
+        anyhow::bail!(
+            "{} of {} sources failed — see the log above",
+            report.failed(),
+            report.executed()
         );
     }
     Ok(())
+}
+
+/// Does this answer to `[y/N]` mean yes? Default (empty / anything else) is no.
+fn accepts(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Render the whole plan block. Pure (no IO) so the no-color output is
@@ -101,6 +168,73 @@ fn render_plan(plan: &ActionPlan, scan: &ScanResult, s: &Styles) -> String {
     if plan.requires_sudo {
         out.push_str(&format!("\n  {}\n", s.dim("requires sudo")));
     }
+    out
+}
+
+/// Render the post-execution report: a headline, one line per step
+/// (✓ succeeded / ✗ failed / · skipped), and the log path. Pure for the same
+/// reason as `render_plan`.
+fn render_report(report: &ExecutionReport, s: &Styles) -> String {
+    let executed = report.executed();
+    let src_word = if executed == 1 { "source" } else { "sources" };
+    let counts = format!(
+        "{executed} {src_word} ran {b} {} succeeded",
+        report.succeeded(),
+        b = s.bullet()
+    );
+    let headline = if report.failed() == 0 {
+        s.summary_ok(&counts)
+    } else {
+        s.error(&format!(
+            "{counts} {b} {} failed",
+            report.failed(),
+            b = s.bullet()
+        ))
+    };
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{} {} {}\n\n",
+        s.title("paclens"),
+        s.dim(s.bullet()),
+        headline
+    ));
+
+    let name_w = report
+        .steps
+        .iter()
+        .map(|st| st.source_id.as_str().len())
+        .max()
+        .unwrap_or(0);
+    for st in &report.steps {
+        let name = format!("{:name_w$}", st.source_id.as_str());
+        let line = match &st.status {
+            StepStatus::Succeeded => format!(
+                "  {} {}  {} updated",
+                s.success(s.check()),
+                s.title(&name),
+                executor::target_noun(&st.source_id, st.targets),
+            ),
+            StepStatus::Failed { detail } => format!(
+                "  {} {}  {}",
+                s.error(s.cross()),
+                s.title(&name),
+                s.error(&format!("failed ({detail})")),
+            ),
+            StepStatus::Skipped { reason } => format!(
+                "  {} {}",
+                s.bullet(),
+                s.dim(&format!("{name}  skipped — {reason}"))
+            ),
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    out.push_str(&format!(
+        "\n  {}\n",
+        s.dim(&format!("log: {}", report.log_path.display()))
+    ));
     out
 }
 
@@ -206,5 +340,114 @@ mod tests {
         let text = render_plan(&plan, &s, &plain());
         assert!(text.contains("nothing to update"));
         assert!(!text.contains("requires sudo"));
+    }
+
+    // --- the y/N answer ---
+    #[test]
+    fn only_y_and_yes_accept_case_insensitively() {
+        for yes in ["y", "Y", "yes", "YES", " y \n"] {
+            assert!(accepts(yes), "{yes:?} should accept");
+        }
+        for no in ["", "\n", "n", "N", "no", "q", "yep", "sure"] {
+            assert!(!accepts(no), "{no:?} should refuse");
+        }
+    }
+
+    // --- the post-execution report ---
+    use crate::executor::StepReport;
+    use std::path::PathBuf;
+
+    fn report(steps: Vec<StepReport>) -> ExecutionReport {
+        ExecutionReport {
+            steps,
+            log_path: PathBuf::from("/tmp/paclens/2026-06-12.log"),
+        }
+    }
+
+    fn step(source: SourceId, targets: usize, status: StepStatus) -> StepReport {
+        StepReport {
+            source_id: source,
+            targets,
+            status,
+        }
+    }
+
+    #[test]
+    fn report_lists_success_failure_and_skip_with_the_log_path() {
+        let r = report(vec![
+            step(
+                SourceId::pacman(),
+                3,
+                StepStatus::Skipped {
+                    reason: "execution arrives in v0.1".to_string(),
+                },
+            ),
+            step(SourceId::flatpak_user(), 2, StepStatus::Succeeded),
+            step(
+                SourceId::flatpak_system(),
+                1,
+                StepStatus::Failed {
+                    detail: "exit 1".to_string(),
+                },
+            ),
+        ]);
+        let text = render_report(&r, &plain());
+
+        assert!(
+            text.contains("2 sources ran · 1 succeeded · 1 failed"),
+            "headline missing:\n{text}"
+        );
+        assert!(
+            text.contains("✓ flatpak-user    2 apps updated"),
+            "success line missing:\n{text}"
+        );
+        assert!(
+            text.contains("✗ flatpak-system  failed (exit 1)"),
+            "failure line missing:\n{text}"
+        );
+        assert!(
+            text.contains("pacman          skipped — execution arrives in v0.1"),
+            "skip line missing:\n{text}"
+        );
+        assert!(
+            text.contains("log: /tmp/paclens/2026-06-12.log"),
+            "log path missing:\n{text}"
+        );
+        assert!(!text.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn all_green_report_has_no_failed_segment() {
+        let r = report(vec![step(
+            SourceId::flatpak_user(),
+            1,
+            StepStatus::Succeeded,
+        )]);
+        let text = render_report(&r, &plain());
+        assert!(
+            text.contains("1 source ran · 1 succeeded"),
+            "headline missing:\n{text}"
+        );
+        assert!(!text.contains("failed"), "{text}");
+        assert!(text.contains("1 app updated"), "{text}");
+    }
+
+    #[test]
+    fn ascii_report_uses_the_ascii_marks() {
+        let r = report(vec![
+            step(SourceId::flatpak_user(), 2, StepStatus::Succeeded),
+            step(
+                SourceId::flatpak_system(),
+                1,
+                StepStatus::Failed {
+                    detail: "exit 1".to_string(),
+                },
+            ),
+        ]);
+        let text = render_report(&r, &ascii());
+        assert!(text.contains("x flatpak-user"), "{text}");
+        assert!(text.contains("! flatpak-system"), "{text}");
+        assert!(!text.contains('✓'));
+        assert!(!text.contains('✗'));
     }
 }

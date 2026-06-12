@@ -155,6 +155,7 @@ pub fn run() -> ExitCode {
                     config_path.as_deref(),
                     dry_run,
                     source.as_deref(),
+                    std::io::stdin().is_terminal(),
                     &out_styles,
                 ),
                 &err_styles,
