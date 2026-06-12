@@ -98,6 +98,9 @@ fn summary_line(app: &App) -> Line<'static> {
 
 fn scanned_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
+    if app.is_scanning() {
+        return Line::from(Span::styled("scanning sources…", theme.accent));
+    }
     Line::from(Span::styled(
         format!("scanned {}", relative_time(app.scan().scanned_at)),
         theme.dim,
@@ -662,6 +665,21 @@ mod tests {
         assert!(text.contains("paclens"));
         assert!(text.contains("SOURCE"));
         assert!(text.contains("u update"), "footer hint missing:\n{text}");
+    }
+
+    #[test]
+    fn dashboard_shows_a_scanning_indicator_instead_of_the_scan_age() {
+        let mut app = App::new(
+            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
+            Theme::none(),
+        );
+        app.set_scanning(true);
+        let text = render(&app, 70, 14);
+        assert!(
+            text.contains("scanning sources"),
+            "indicator missing:\n{text}"
+        );
+        assert!(!text.contains("scanned "), "stale age shown:\n{text}");
     }
 
     #[test]

@@ -70,9 +70,15 @@ fn run_loop(
             Action::Next => app.on_next(),
             Action::Prev => app.on_prev(),
             Action::Refresh => {
-                // Synchronous re-scan; blocks briefly. Async spinner is v0.0.9.
+                // Synchronous re-scan; blocks briefly (a true async scan with a
+                // spinner is the v0.0.9 usability pass). Paint one frame with
+                // the indicator first so the blocked UI says why.
+                app.set_scanning(true);
+                terminal
+                    .draw(|frame| draw::draw(frame, app))
+                    .context("failed to draw the scanning frame")?;
                 let scan = scanner::load_or_scan(runner, config, true, config_path)?;
-                app.replace_scan(scan);
+                app.replace_scan(scan); // also clears the scanning flag
             }
             Action::OpenUpdates => app.goto_updates(),
             Action::Back => app.back_to_dashboard(),

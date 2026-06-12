@@ -52,6 +52,9 @@ pub struct App {
     report: Option<ExecutionReport>,
     /// Transient status line, cleared on the next key.
     flash: Option<String>,
+    /// A blocking re-scan is about to run; the dashboard shows it instead of
+    /// the scan age. (True async scanning is the v0.0.9 usability pass.)
+    scanning: bool,
 }
 
 impl App {
@@ -72,6 +75,7 @@ impl App {
             confirming: false,
             report: None,
             flash: None,
+            scanning: false,
         }
     }
 
@@ -90,6 +94,7 @@ impl App {
         // an existing report stays — the loop sets it *after* the refresh.
         self.confirming = false;
         self.flash = None;
+        self.scanning = false;
     }
 
     // --- shared ---
@@ -119,6 +124,13 @@ impl App {
     }
     pub fn clear_flash(&mut self) {
         self.flash = None;
+    }
+
+    pub fn is_scanning(&self) -> bool {
+        self.scanning
+    }
+    pub fn set_scanning(&mut self, scanning: bool) {
+        self.scanning = scanning;
     }
 
     // --- screen navigation ---
@@ -438,6 +450,16 @@ mod tests {
         let app = app();
         assert_eq!(app.updates_for(&SourceId::pacman()).len(), 1);
         assert_eq!(app.updates_for(&SourceId::flatpak_user()).len(), 0);
+    }
+
+    #[test]
+    fn scanning_flag_sets_and_is_cleared_by_a_fresh_scan() {
+        let mut app = app();
+        assert!(!app.is_scanning());
+        app.set_scanning(true);
+        assert!(app.is_scanning());
+        app.replace_scan(scan_with_sources(three_sources()));
+        assert!(!app.is_scanning());
     }
 
     #[test]
