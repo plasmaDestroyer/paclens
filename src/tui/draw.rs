@@ -10,8 +10,9 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState};
 
+use crate::executor::{self, ExecutionReport, StepStatus};
 use crate::format::relative_time;
 use crate::model::{ActionPlan, Source};
 use crate::tui::app::{App, Screen};
@@ -28,7 +29,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     match app.screen() {
         Screen::Dashboard => draw_dashboard(frame, area, app),
-        Screen::Updates => draw_update(frame, area, app),
+        Screen::Updates => match app.report() {
+            Some(report) => draw_result(frame, area, app, report),
+            None => draw_update(frame, area, app),
+        },
     }
 }
 
@@ -179,12 +183,15 @@ fn draw_update(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     if app.total_updates() == 0 {
+        // Vertically centered message, but keep the key hints visible — an
+        // empty screen must never look like a dead end.
         frame.render_widget(
             Paragraph::new("Nothing to update — you're up to date")
-                .style(theme.dim)
+                .style(theme.success)
                 .alignment(Alignment::Center),
-            inner,
+            centered(inner, inner.width, 1),
         );
+        render_update_footer(frame, bottom_line(inner), theme, false);
         return;
     }
 
@@ -207,18 +214,41 @@ fn draw_update(frame: &mut Frame, area: Rect, app: &App) {
     render_package_pane(frame, panes[1], app, &sources);
 
     render_confirm(frame, chunks[3], app, &plan);
+    render_update_footer(frame, chunks[4], theme, true);
 
+    if app.is_confirming() {
+        render_confirm_modal(frame, inner, app, &plan);
+    }
+}
+
+/// The update screen's key hints. `esc back` is always present; the plan-only
+/// keys are dropped in the empty state where there is nothing to toggle.
+fn render_update_footer(frame: &mut Frame, area: Rect, theme: &Theme, has_plan: bool) {
     let g = theme.glyphs;
-    let footer = format!(
-        "space toggle {b} {up}/{down} source {b} q quit",
-        b = g.bullet,
-        up = g.up,
-        down = g.down,
-    );
+    let footer = if has_plan {
+        format!(
+            "space toggle {b} {up}/{down} source {b} esc back {b} q quit",
+            b = g.bullet,
+            up = g.up,
+            down = g.down,
+        )
+    } else {
+        format!("esc back {b} q quit", b = g.bullet)
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(footer, theme.dim))),
-        chunks[4],
+        area,
     );
+}
+
+/// The last row of `area` (for a footer outside a Layout split).
+fn bottom_line(area: Rect) -> Rect {
+    Rect {
+        x: area.x,
+        y: area.bottom().saturating_sub(1),
+        width: area.width,
+        height: 1,
+    }
 }
 
 fn update_summary_line(plan: &ActionPlan, theme: &Theme) -> Line<'static> {
@@ -329,6 +359,185 @@ fn render_confirm(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
 }
 
 // ---------------------------------------------------------------------------
+// Confirm modal
+// ---------------------------------------------------------------------------
+
+/// The centered confirmation overlay (chosen with the user): the question, the
+/// exact command(s) that will run (P1), what will be skipped and why, and the
+/// y/n key hints. Rendered on top of the update screen.
+fn render_confirm_modal(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
+    let theme = &app.theme;
+    let apps = executor::executable_targets(plan);
+
+    let mut body: Vec<Line> = vec![Line::from(Span::styled(
+        format!(
+            "Update {apps} Flatpak app{}?",
+            if apps == 1 { "" } else { "s" }
+        ),
+        theme.accent,
+    ))];
+    body.push(Line::default());
+    for step in &plan.steps {
+        if executor::skip_reason(step).is_none() {
+            body.push(Line::from(Span::styled(
+                step.command.join(" "),
+                theme.primary,
+            )));
+        }
+    }
+    let skipped: Vec<Line> = plan
+        .steps
+        .iter()
+        .filter_map(|step| {
+            executor::skip_reason(step).map(|reason| {
+                Line::from(Span::styled(
+                    format!("{} will be skipped — {reason}", step.source_id),
+                    theme.dim,
+                ))
+            })
+        })
+        .collect();
+    if !skipped.is_empty() {
+        body.push(Line::default());
+        body.extend(skipped);
+    }
+    body.push(Line::default());
+    body.push(Line::from(vec![
+        Span::styled("[y]", theme.success),
+        Span::styled(" update", theme.primary),
+        Span::raw("      "),
+        Span::styled("[n]", theme.error),
+        Span::styled(" cancel", theme.dim),
+    ]));
+
+    let width = body.iter().map(Line::width).max().unwrap_or(0) as u16 + 6;
+    let height = body.len() as u16 + 2;
+    let rect = centered(area, width, height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(" confirm ", theme.title))
+        .padding(Padding::horizontal(2));
+    frame.render_widget(Clear, rect);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(body), inner);
+}
+
+/// Center a `width` × `height` box inside `area`, clamped to fit.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Result view
+// ---------------------------------------------------------------------------
+
+/// Post-execution result (chosen with the user): one line per step with
+/// ✓ / ✗ / · marks, the log path, and a "press any key" footer. The roadmap
+/// rule in force: show what succeeded, what failed, never hide it.
+fn draw_result(frame: &mut Frame, area: Rect, app: &App, report: &ExecutionReport) {
+    let theme = &app.theme;
+    let block = panel(theme, " paclens · update result ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // headline
+        Constraint::Length(1), // spacer
+        Constraint::Min(3),    // per-step lines
+        Constraint::Length(1), // log path
+        Constraint::Length(1), // footer
+    ])
+    .split(inner);
+
+    frame.render_widget(Paragraph::new(result_headline(report, theme)), chunks[0]);
+
+    let name_w = report
+        .steps
+        .iter()
+        .map(|s| s.source_id.as_str().len())
+        .max()
+        .unwrap_or(0);
+    let lines: Vec<Line> = report
+        .steps
+        .iter()
+        .map(|s| result_line(s, name_w, theme))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), chunks[2]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("log: {}", report.log_path.display()),
+            theme.dim,
+        ))),
+        chunks[3],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "press any key to continue",
+            theme.dim,
+        ))),
+        chunks[4],
+    );
+}
+
+fn result_headline(report: &ExecutionReport, theme: &Theme) -> Line<'static> {
+    let executed = report.executed();
+    let src_word = if executed == 1 { "source" } else { "sources" };
+    let sep = format!(" {} ", theme.glyphs.bullet);
+    let mut spans = vec![
+        Span::styled(executed.to_string(), theme.accent),
+        Span::styled(format!(" {src_word} ran"), theme.primary),
+        Span::styled(sep.clone(), theme.dim),
+        Span::styled(report.succeeded().to_string(), theme.success),
+        Span::styled(" succeeded", theme.primary),
+    ];
+    if report.failed() > 0 {
+        spans.push(Span::styled(sep, theme.dim));
+        spans.push(Span::styled(report.failed().to_string(), theme.error));
+        spans.push(Span::styled(" failed", theme.primary));
+    }
+    Line::from(spans)
+}
+
+fn result_line(step: &executor::StepReport, name_w: usize, theme: &Theme) -> Line<'static> {
+    let g = theme.glyphs;
+    let name = format!("{:name_w$}", step.source_id.as_str());
+    match &step.status {
+        StepStatus::Succeeded => Line::from(vec![
+            Span::styled(format!(" {} ", g.check), theme.success),
+            Span::styled(name, theme.title),
+            Span::styled(
+                format!(
+                    "  {} updated",
+                    executor::target_noun(&step.source_id, step.targets)
+                ),
+                theme.primary,
+            ),
+        ]),
+        StepStatus::Failed { detail } => Line::from(vec![
+            Span::styled(format!(" {} ", g.cross), theme.error),
+            Span::styled(name, theme.title),
+            Span::styled(format!("  failed ({detail})"), theme.error),
+        ]),
+        StepStatus::Skipped { reason } => Line::from(Span::styled(
+            format!(" {} {name}  skipped — {reason}", g.bullet),
+            theme.dim,
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
 
@@ -396,6 +605,14 @@ mod tests {
                 Source {
                     id: SourceId::pacman(),
                     kind: SourceKind::Pacman,
+                    available: true,
+                    last_scanned: None,
+                },
+                Source {
+                    id: SourceId::flatpak_user(),
+                    kind: SourceKind::Flatpak {
+                        scope: FlatpakScope::User,
+                    },
                     available: true,
                     last_scanned: None,
                 },
@@ -470,6 +687,7 @@ mod tests {
         );
         assert!(text.contains("[Enter]"), "confirm missing:\n{text}");
         assert!(text.contains("space toggle"), "footer missing:\n{text}");
+        assert!(text.contains("esc back"), "back hint missing:\n{text}");
     }
 
     #[test]
@@ -489,22 +707,154 @@ mod tests {
     }
 
     #[test]
-    fn update_screen_empty_state_when_no_updates() {
+    fn update_screen_empty_state_still_shows_the_way_back() {
         let mut app = App::new(scan_with(Vec::new()), Theme::none());
         app.goto_updates();
         let text = render(&app, 72, 16);
         assert!(text.contains("Nothing to update"), "{text}");
+        assert!(text.contains("esc back"), "back hint missing:\n{text}");
+        assert!(text.contains("q quit"), "quit hint missing:\n{text}");
+        // The plan-only keys make no sense with nothing to toggle.
+        assert!(!text.contains("space toggle"), "{text}");
     }
 
     #[test]
-    fn confirm_shows_flash_after_enter() {
+    fn confirm_line_shows_a_flash() {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
         );
         app.goto_updates();
-        app.set_flash("execution arrives in v0.0.6");
+        app.set_flash("nothing selected to update");
         let text = render(&app, 72, 16);
-        assert!(text.contains("execution arrives in v0.0.6"), "{text}");
+        assert!(text.contains("nothing selected to update"), "{text}");
+    }
+
+    // --- confirm modal ---
+    #[test]
+    fn confirm_modal_shows_question_command_skip_note_and_keys() {
+        let mut app = App::new(
+            scan_with(vec![
+                upd("linux", "1", "2", SourceId::pacman()),
+                upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
+            ]),
+            Theme::none(),
+        );
+        app.goto_updates();
+        app.open_confirm();
+        let text = render(&app, 76, 20);
+        assert!(text.contains("confirm"), "modal title missing:\n{text}");
+        assert!(
+            text.contains("Update 1 Flatpak app?"),
+            "question missing:\n{text}"
+        );
+        assert!(
+            text.contains("flatpak update --user --noninteractive"),
+            "exact command missing:\n{text}"
+        );
+        assert!(
+            text.contains("pacman will be skipped"),
+            "skip note missing:\n{text}"
+        );
+        assert!(text.contains("[y] update"), "y hint missing:\n{text}");
+        assert!(text.contains("[n] cancel"), "n hint missing:\n{text}");
+    }
+
+    #[test]
+    fn confirm_modal_pluralizes_and_omits_skip_note_when_nothing_skipped() {
+        let mut app = App::new(
+            scan_with(vec![
+                upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
+                upd("org.x.Editor", "1.0", "1.1", SourceId::flatpak_user()),
+            ]),
+            Theme::none(),
+        );
+        app.goto_updates();
+        app.open_confirm();
+        let text = render(&app, 76, 20);
+        assert!(text.contains("Update 2 Flatpak apps?"), "{text}");
+        assert!(!text.contains("will be skipped"), "{text}");
+    }
+
+    // --- result view ---
+    use crate::executor::{ExecutionReport, StepReport, StepStatus};
+    use std::path::PathBuf;
+
+    fn report() -> ExecutionReport {
+        ExecutionReport {
+            steps: vec![
+                StepReport {
+                    source_id: SourceId::flatpak_user(),
+                    targets: 2,
+                    status: StepStatus::Succeeded,
+                },
+                StepReport {
+                    source_id: SourceId::flatpak_system(),
+                    targets: 1,
+                    status: StepStatus::Failed {
+                        detail: "exit 1".to_string(),
+                    },
+                },
+                StepReport {
+                    source_id: SourceId::pacman(),
+                    targets: 3,
+                    status: StepStatus::Skipped {
+                        reason: "execution arrives in v0.1".to_string(),
+                    },
+                },
+            ],
+            log_path: PathBuf::from("/tmp/paclens/2026-06-12.log"),
+        }
+    }
+
+    #[test]
+    fn result_view_shows_every_outcome_and_the_log_path() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none());
+        app.goto_updates();
+        app.set_report(report());
+        let text = render(&app, 76, 18);
+        assert!(text.contains("update result"), "title missing:\n{text}");
+        assert!(text.contains("2 sources ran"), "headline missing:\n{text}");
+        assert!(text.contains("1 succeeded"), "{text}");
+        assert!(text.contains("1 failed"), "{text}");
+        assert!(
+            text.contains("x flatpak-user"), // ascii check in the none theme
+            "success mark missing:\n{text}"
+        );
+        assert!(text.contains("2 apps updated"), "{text}");
+        assert!(
+            text.contains("! flatpak-system"), // ascii cross
+            "failure mark missing:\n{text}"
+        );
+        assert!(text.contains("failed (exit 1)"), "{text}");
+        assert!(
+            text.contains("pacman          skipped - execution arrives in v0.1")
+                || text.contains("skipped"),
+            "skip line missing:\n{text}"
+        );
+        assert!(
+            text.contains("log: /tmp/paclens/2026-06-12.log"),
+            "log path missing:\n{text}"
+        );
+        assert!(text.contains("press any key to continue"), "{text}");
+    }
+
+    #[test]
+    fn all_green_result_has_no_failed_segment() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none());
+        app.goto_updates();
+        app.set_report(ExecutionReport {
+            steps: vec![StepReport {
+                source_id: SourceId::flatpak_user(),
+                targets: 1,
+                status: StepStatus::Succeeded,
+            }],
+            log_path: PathBuf::from("/tmp/x.log"),
+        });
+        let text = render(&app, 76, 16);
+        assert!(text.contains("1 source ran"), "{text}");
+        assert!(text.contains("1 succeeded"), "{text}");
+        assert!(!text.contains("failed"), "{text}");
+        assert!(text.contains("1 app updated"), "{text}");
     }
 }

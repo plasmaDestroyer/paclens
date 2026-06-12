@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use crate::executor::ExecutionReport;
 use crate::model::{ActionPlan, PendingUpdate, ScanResult, Source, SourceId, summarize};
 use crate::planner;
 use crate::tui::theme::Theme;
@@ -15,6 +16,16 @@ use crate::tui::theme::Theme;
 pub enum Screen {
     Dashboard,
     Updates,
+}
+
+/// Which key map is active. The update screen has three: the plan view, the
+/// confirm modal on top of it, and the post-execution result view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Dashboard,
+    Updates,
+    Confirm,
+    Result,
 }
 
 /// One source's row in the dashboard table — a view-model derived from the scan.
@@ -35,6 +46,10 @@ pub struct App {
     enabled: HashMap<SourceId, bool>,
     /// Update screen: cursor over `available_sources()`.
     update_cursor: usize,
+    /// Update screen: the confirm modal is open.
+    confirming: bool,
+    /// Update screen: the last execution's outcome, shown until dismissed.
+    report: Option<ExecutionReport>,
     /// Transient status line, cleared on the next key.
     flash: Option<String>,
 }
@@ -54,6 +69,8 @@ impl App {
             dash_selected,
             enabled,
             update_cursor: 0,
+            confirming: false,
+            report: None,
             flash: None,
         }
     }
@@ -69,6 +86,9 @@ impl App {
         };
         self.enabled = default_toggles(&self.scan);
         self.clamp_update_cursor();
+        // A fresh scan invalidates an open confirm (the plan may have changed);
+        // an existing report stays — the loop sets it *after* the refresh.
+        self.confirming = false;
         self.flash = None;
     }
 
@@ -78,6 +98,15 @@ impl App {
     }
     pub fn screen(&self) -> Screen {
         self.screen
+    }
+    /// The active key map, derived from screen + modal/result state.
+    pub fn input_mode(&self) -> InputMode {
+        match self.screen {
+            Screen::Dashboard => InputMode::Dashboard,
+            Screen::Updates if self.report.is_some() => InputMode::Result,
+            Screen::Updates if self.confirming => InputMode::Confirm,
+            Screen::Updates => InputMode::Updates,
+        }
     }
     pub fn total_updates(&self) -> usize {
         self.scan.updates.len()
@@ -195,6 +224,28 @@ impl App {
         };
         let now = !self.is_enabled(&id);
         self.enabled.insert(id, now);
+    }
+
+    // --- confirm modal + execution result ---
+    pub fn is_confirming(&self) -> bool {
+        self.confirming
+    }
+    pub fn open_confirm(&mut self) {
+        self.confirming = true;
+    }
+    pub fn close_confirm(&mut self) {
+        self.confirming = false;
+    }
+
+    pub fn report(&self) -> Option<&ExecutionReport> {
+        self.report.as_ref()
+    }
+    pub fn set_report(&mut self, report: ExecutionReport) {
+        self.confirming = false;
+        self.report = Some(report);
+    }
+    pub fn dismiss_report(&mut self) {
+        self.report = None;
     }
 
     fn update_next(&mut self) {
@@ -397,6 +448,68 @@ mod tests {
         assert_eq!(app.flash(), Some("hello"));
         app.clear_flash();
         assert!(app.flash().is_none());
+    }
+
+    // --- confirm modal + result ---
+    fn sample_report() -> ExecutionReport {
+        use crate::executor::{StepReport, StepStatus};
+        ExecutionReport {
+            steps: vec![StepReport {
+                source_id: SourceId::flatpak_user(),
+                targets: 1,
+                status: StepStatus::Succeeded,
+            }],
+            log_path: std::path::PathBuf::from("/tmp/x.log"),
+        }
+    }
+
+    #[test]
+    fn input_mode_tracks_screen_modal_and_result() {
+        let mut app = app();
+        assert_eq!(app.input_mode(), InputMode::Dashboard);
+        app.goto_updates();
+        assert_eq!(app.input_mode(), InputMode::Updates);
+        app.open_confirm();
+        assert_eq!(app.input_mode(), InputMode::Confirm);
+        app.set_report(sample_report());
+        // A report outranks the (now closed) modal.
+        assert_eq!(app.input_mode(), InputMode::Result);
+        app.dismiss_report();
+        assert_eq!(app.input_mode(), InputMode::Updates);
+    }
+
+    #[test]
+    fn set_report_closes_the_confirm_modal() {
+        let mut app = app();
+        app.goto_updates();
+        app.open_confirm();
+        assert!(app.is_confirming());
+        app.set_report(sample_report());
+        assert!(!app.is_confirming());
+        assert!(app.report().is_some());
+    }
+
+    #[test]
+    fn close_confirm_returns_to_the_plan_view() {
+        let mut app = app();
+        app.goto_updates();
+        app.open_confirm();
+        app.close_confirm();
+        assert_eq!(app.input_mode(), InputMode::Updates);
+        assert!(app.report().is_none());
+    }
+
+    #[test]
+    fn replace_scan_closes_an_open_confirm_but_keeps_the_report() {
+        let mut app = app();
+        app.goto_updates();
+        app.open_confirm();
+        app.replace_scan(scan_with_sources(three_sources()));
+        assert!(!app.is_confirming());
+
+        app.set_report(sample_report());
+        app.replace_scan(scan_with_sources(three_sources()));
+        assert!(app.report().is_some()); // the loop refreshes, then shows it
     }
 
     #[test]

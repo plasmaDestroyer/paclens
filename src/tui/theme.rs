@@ -43,6 +43,8 @@ pub struct Theme {
     pub success: Style,
     /// A source is unavailable (muted, not alarming).
     pub unavailable: Style,
+    /// A failed step / error (alarming, sparingly used).
+    pub error: Style,
     /// Border lines.
     pub border: Style,
     /// The selected table row.
@@ -86,6 +88,7 @@ impl Theme {
             accent: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             success: Style::new().fg(Color::Green),
             unavailable: Style::new().add_modifier(Modifier::DIM),
+            error: Style::new().fg(Color::Red),
             border: Style::new().add_modifier(Modifier::DIM),
             // Focused row: a distinct hue from accent (updates) and success
             // (available) so the three never blur, plus the `▶` pointer. No
@@ -107,6 +110,7 @@ impl Theme {
             accent: Style::new().add_modifier(Modifier::BOLD),
             success: Style::new(),
             unavailable: Style::new(),
+            error: Style::new().add_modifier(Modifier::BOLD),
             border: Style::new(),
             selected: Style::new().add_modifier(Modifier::REVERSED),
             header: Style::new().add_modifier(Modifier::BOLD),
@@ -164,9 +168,12 @@ mod tests {
         assert_eq!(t.accent.fg, Some(Color::Yellow)); // pending updates
         assert_eq!(t.success.fg, Some(Color::Green)); // available
         assert_eq!(t.selected.fg, Some(Color::Cyan)); // focused row
+        assert_eq!(t.error.fg, Some(Color::Red)); // failed step
         assert_ne!(t.accent.fg, t.success.fg);
         assert_ne!(t.accent.fg, t.selected.fg);
         assert_ne!(t.success.fg, t.selected.fg);
+        assert_ne!(t.error.fg, t.accent.fg);
+        assert_ne!(t.error.fg, t.success.fg);
     }
 
     #[test]
@@ -175,5 +182,6 @@ mod tests {
         assert_eq!(t.accent.fg, None);
         assert_eq!(t.success.fg, None);
         assert_eq!(t.selected.fg, None);
+        assert_eq!(t.error.fg, None);
     }
 }

@@ -19,8 +19,14 @@ pub enum Action {
     Back,
     /// Update screen → toggle the selected source.
     Toggle,
-    /// Update screen → confirm the plan.
+    /// Update screen → confirm the plan (opens the confirm modal).
     Confirm,
+    /// Confirm modal → run the plan.
+    Execute,
+    /// Confirm modal → close it without running anything.
+    CloseConfirm,
+    /// Result view → back to the (refreshed) plan view.
+    DismissResult,
     Ignore,
 }
 
@@ -56,6 +62,32 @@ pub fn map_update_key(key: KeyEvent) -> Action {
         KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
+}
+
+/// Confirm modal key map: only an explicit `y` runs the plan; everything that
+/// reads as "no" (`n`, `Esc`, even `q`) just closes the modal — a quit-key
+/// slip while a sudo-free update is one keypress away should never exit the
+/// app. Ctrl-C still quits.
+pub fn map_confirm_key(key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => Action::Execute,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+            Action::CloseConfirm
+        }
+        _ => Action::Ignore,
+    }
+}
+
+/// Result view key map: any key dismisses ("press any key to continue");
+/// Ctrl-C still quits.
+pub fn map_result_key(key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Action::Quit;
+    }
+    Action::DismissResult
 }
 
 #[cfg(test)]
@@ -121,5 +153,43 @@ mod tests {
     fn unmapped_keys_are_ignored() {
         assert_eq!(map_dashboard_key(plain(KeyCode::Char('x'))), Action::Ignore);
         assert_eq!(map_update_key(plain(KeyCode::Char('x'))), Action::Ignore);
+    }
+
+    #[test]
+    fn confirm_modal_runs_only_on_an_explicit_y() {
+        assert_eq!(map_confirm_key(plain(KeyCode::Char('y'))), Action::Execute);
+        assert_eq!(map_confirm_key(plain(KeyCode::Char('Y'))), Action::Execute);
+        // Enter must NOT execute — it is what opened the modal.
+        assert_eq!(map_confirm_key(plain(KeyCode::Enter)), Action::Ignore);
+        assert_eq!(map_confirm_key(plain(KeyCode::Char('x'))), Action::Ignore);
+    }
+
+    #[test]
+    fn confirm_modal_closes_on_anything_that_reads_as_no() {
+        for no in [
+            KeyCode::Char('n'),
+            KeyCode::Char('N'),
+            KeyCode::Esc,
+            KeyCode::Char('q'),
+        ] {
+            assert_eq!(map_confirm_key(plain(no)), Action::CloseConfirm);
+        }
+    }
+
+    #[test]
+    fn result_view_dismisses_on_any_key() {
+        for any in [KeyCode::Enter, KeyCode::Esc, KeyCode::Char('q')] {
+            assert_eq!(map_result_key(plain(any)), Action::DismissResult);
+        }
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_modal_and_result_too() {
+        for map in [map_confirm_key, map_result_key] {
+            assert_eq!(
+                map(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+                Action::Quit
+            );
+        }
     }
 }
