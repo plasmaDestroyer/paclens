@@ -155,12 +155,19 @@ fn render_plan(plan: &ActionPlan, scan: &ScanResult, s: &Styles) -> String {
             s.dim(&format!("({})", ups.len()))
         ));
         for u in ups {
+            // flatpak omits the new version when the remote's appstream data
+            // is stale; an honest "?" beats a dangling arrow.
+            let new_version = if u.available_version.is_empty() {
+                s.dim("?")
+            } else {
+                s.summary_updates(&u.available_version)
+            };
             out.push_str(&format!(
                 "     {:name_w$}  {} {} {}\n",
                 u.package_name,
                 s.dim(&u.current_version),
                 s.dim(s.arrow()),
-                s.summary_updates(&u.available_version),
+                new_version,
             ));
         }
     }
@@ -331,6 +338,21 @@ mod tests {
         assert!(text.starts_with("paclens · 1 package will update across 1 source"));
         // flatpak-user only → no sudo note.
         assert!(!text.contains("requires sudo"));
+    }
+
+    #[test]
+    fn unknown_new_version_renders_as_a_question_mark() {
+        // Seen live: flatpak remote-ls omits the version column entirely when
+        // the remote's appstream data has not been synced yet.
+        let s = scan(vec![upd(
+            "org.gnome.Calculator",
+            "49.2",
+            "",
+            SourceId::flatpak_user(),
+        )]);
+        let plan = planner::plan_updates(&s, |_| true);
+        let text = render_plan(&plan, &s, &plain());
+        assert!(text.contains("49.2 → ?"), "dangling arrow:\n{text}");
     }
 
     #[test]

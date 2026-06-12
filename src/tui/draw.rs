@@ -331,12 +331,19 @@ fn render_package_pane(frame: &mut Frame, area: Rect, app: &App, sources: &[&Sou
     let lines: Vec<Line> = ups
         .iter()
         .map(|u| {
+            // Same rule as the CLI plan: an unknown new version (stale flatpak
+            // appstream data) renders as a dim "?", never a dangling arrow.
+            let new_version = if u.available_version.is_empty() {
+                Span::styled("?", theme.dim)
+            } else {
+                Span::styled(u.available_version.clone(), theme.accent)
+            };
             Line::from(vec![
                 Span::styled(format!("{:name_w$}", u.package_name), theme.primary),
                 Span::raw("  "),
                 Span::styled(u.current_version.clone(), theme.dim),
                 Span::styled(format!(" {} ", theme.glyphs.arrow), theme.dim),
-                Span::styled(u.available_version.clone(), theme.accent),
+                new_version,
             ])
         })
         .collect();
@@ -705,6 +712,22 @@ mod tests {
         assert!(text.contains("[Enter]"), "confirm missing:\n{text}");
         assert!(text.contains("space toggle"), "footer missing:\n{text}");
         assert!(text.contains("esc back"), "back hint missing:\n{text}");
+    }
+
+    #[test]
+    fn unknown_new_version_renders_as_a_question_mark() {
+        let mut app = App::new(
+            scan_with(vec![upd(
+                "org.gnome.Calculator",
+                "49.2",
+                "",
+                SourceId::pacman(),
+            )]),
+            Theme::none(),
+        );
+        app.goto_updates();
+        let text = render(&app, 72, 16);
+        assert!(text.contains("49.2 -> ?"), "dangling arrow:\n{text}");
     }
 
     #[test]
