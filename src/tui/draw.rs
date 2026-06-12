@@ -132,14 +132,13 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     let body: Vec<Row> = rows
         .iter()
         .map(|r| {
+            // "ok / not found", not "available": next to the UPDATES column
+            // that read like "updates available" (wording chosen with the user).
             let status = if r.available {
-                Span::styled(
-                    format!("{} available", theme.glyphs.available),
-                    theme.success,
-                )
+                Span::styled(format!("{} ok", theme.glyphs.available), theme.success)
             } else {
                 Span::styled(
-                    format!("{} not available", theme.glyphs.unavailable),
+                    format!("{} not found", theme.glyphs.unavailable),
                     theme.unavailable,
                 )
             };

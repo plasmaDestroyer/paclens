@@ -189,7 +189,7 @@ mod tests {
         let row = render_row("pacman", &summary, &s);
         assert!(row.starts_with("  pacman"), "row was: {row:?}");
         assert!(row.contains("1568"));
-        assert!(row.ends_with("● available"));
+        assert!(row.ends_with("● ok"));
     }
 
     #[test]
@@ -200,7 +200,7 @@ mod tests {
             installed: 1568,
             updates: 0,
         };
-        assert!(render_row("pacman", &summary, &s).ends_with("* available"));
+        assert!(render_row("pacman", &summary, &s).ends_with("* ok"));
     }
 
     #[test]
@@ -227,8 +227,8 @@ mod tests {
         // Despite different number widths, the STATUS column starts at the same
         // offset in both rows.
         assert_eq!(
-            wide.find("● available"),
-            narrow.find("● available"),
+            wide.find("● ok"),
+            narrow.find("● ok"),
             "status column misaligned:\n{wide}\n{narrow}"
         );
     }
@@ -242,7 +242,7 @@ mod tests {
             updates: 0,
         };
         let row = render_row("flatpak", &summary, &s);
-        assert!(row.ends_with("○ not available"), "row was: {row:?}");
+        assert!(row.ends_with("○ not found"), "row was: {row:?}");
     }
 
     #[test]

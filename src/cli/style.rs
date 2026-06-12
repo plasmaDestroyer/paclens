@@ -97,15 +97,17 @@ impl Styles {
         }
     }
 
-    /// "<glyph> available", in green.
+    /// "<glyph> ok" — the source's binary was found at scan time, in green.
+    /// (Wording chosen with the user: "available" next to the updates column
+    /// read like "updates available".)
     pub fn available(&self) -> String {
-        let text = format!("{} available", self.glyphs.available);
+        let text = format!("{} ok", self.glyphs.available);
         self.paint(&text, |t| t.green())
     }
 
-    /// "<glyph> not available", dim.
+    /// "<glyph> not found" — the source's binary is not on PATH, dim.
     pub fn unavailable(&self) -> String {
-        let text = format!("{} not available", self.glyphs.unavailable);
+        let text = format!("{} not found", self.glyphs.unavailable);
         self.dim(&text)
     }
 
@@ -150,8 +152,8 @@ mod tests {
         assert_eq!(s.summary_ok("up to date"), "up to date");
         assert_eq!(s.updates_count("  0", 0), "  0");
         assert_eq!(s.updates_count("  3", 3), "  3");
-        assert_eq!(s.available(), "* available");
-        assert_eq!(s.unavailable(), "- not available");
+        assert_eq!(s.available(), "* ok");
+        assert_eq!(s.unavailable(), "- not found");
         assert_eq!(s.success("done"), "done");
         assert_eq!(s.check(), "x");
         assert_eq!(s.cross(), "!");
@@ -184,7 +186,7 @@ mod tests {
         let s = Styles::resolve(false, ColorTheme::Dark, false);
         assert_eq!(s.error("error:"), "error:");
         assert!(!s.available().contains(ESC));
-        assert_eq!(s.available(), "● available");
+        assert_eq!(s.available(), "● ok");
         assert_eq!(s.bullet(), "·");
     }
 
@@ -195,7 +197,7 @@ mod tests {
             Styles::resolve(true, ColorTheme::Dark, true),
             Styles::resolve(false, ColorTheme::None, true),
         ] {
-            assert_eq!(s.available(), "* available");
+            assert_eq!(s.available(), "* ok");
             assert_eq!(s.bullet(), "-");
             assert!(!s.error("error:").contains(ESC));
         }
