@@ -27,6 +27,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
         render_too_small(frame, area, &app.theme);
         return;
     }
+    // Cold start: nothing to show yet — the splash carries the spinner until
+    // the first background scan lands.
+    if app.is_scanning() && app.scan().sources.is_empty() {
+        draw_splash(frame, &app.theme, Some(app.spinner()));
+        return;
+    }
     match app.screen() {
         Screen::Dashboard => draw_dashboard(frame, area, app),
         Screen::Updates => match app.report() {
@@ -100,7 +106,10 @@ fn summary_line(app: &App) -> Line<'static> {
 fn scanned_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     if app.is_scanning() {
-        return Line::from(Span::styled("scanning sources…", theme.accent));
+        return Line::from(Span::styled(
+            format!("{} scanning sources…", app.spinner()),
+            theme.accent,
+        ));
     }
     Line::from(Span::styled(
         format!("scanned {}", relative_time(app.scan().scanned_at)),
@@ -799,16 +808,20 @@ fn result_line(step: &executor::StepReport, name_w: usize, theme: &Theme) -> Lin
 // Startup splash
 // ---------------------------------------------------------------------------
 
-/// The first frame, painted before the initial (blocking) scan so a cold start
-/// is never a blank terminal. No `App` exists yet — only the theme.
-pub fn draw_splash(frame: &mut Frame, theme: &Theme) {
+/// The cold-start frame: painted immediately on open and animated while the
+/// first background scan runs, so the terminal never looks hung.
+pub fn draw_splash(frame: &mut Frame, theme: &Theme, spinner: Option<&str>) {
     let area = frame.area();
     let block = panel(theme, " paclens ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let headline = match spinner {
+        Some(glyph) => format!("{glyph} scanning sources…"),
+        None => "scanning sources…".to_string(),
+    };
     let lines = vec![
-        Line::from(Span::styled("scanning sources…", theme.accent)).centered(),
+        Line::from(Span::styled(headline, theme.accent)).centered(),
         Line::from(Span::styled(
             "first scan reads pacman + flatpak and can take a few seconds",
             theme.dim,
@@ -1278,16 +1291,45 @@ mod tests {
         let backend = TestBackend::new(70, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let theme = Theme::none();
-        terminal.draw(|frame| draw_splash(frame, &theme)).unwrap();
+        terminal
+            .draw(|frame| draw_splash(frame, &theme, Some("|")))
+            .unwrap();
         let text = flatten(terminal.backend().buffer());
         assert!(text.contains("paclens"), "title missing:\n{text}");
         assert!(
-            text.contains("scanning sources"),
-            "indicator missing:\n{text}"
+            text.contains("| scanning sources"),
+            "spinner + indicator missing:\n{text}"
         );
         assert!(
             text.contains("can take a few seconds"),
             "hint missing:\n{text}"
         );
+    }
+
+    #[test]
+    fn cold_start_scanning_draws_the_splash_with_a_spinner() {
+        // Scanning + no sources yet = the splash owns the whole frame.
+        let mut s = scan_with(Vec::new());
+        s.sources.clear();
+        s.packages.clear();
+        let mut app = App::new(s, Theme::none(), 20);
+        app.set_scanning(true);
+        app.tick();
+        let text = render(&app, 70, 12);
+        assert!(text.contains("scanning sources"), "{text}");
+        assert!(!text.contains("SOURCE"), "dashboard leaked in:\n{text}");
+    }
+
+    #[test]
+    fn dashboard_scanning_line_carries_the_spinner_glyph() {
+        let mut app = App::new(
+            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
+            Theme::none(),
+            20,
+        );
+        app.set_scanning(true);
+        let text = render(&app, 70, 14);
+        // ASCII spinner frame 0 is "|".
+        assert!(text.contains("| scanning sources"), "{text}");
     }
 }

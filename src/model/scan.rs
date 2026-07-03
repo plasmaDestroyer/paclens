@@ -24,6 +24,21 @@ pub struct ScanResult {
     pub cache_sizes: CacheSizes,
 }
 
+impl ScanResult {
+    /// A placeholder for the moment between opening the TUI cold and the first
+    /// background scan landing. Never cached.
+    pub fn empty() -> Self {
+        ScanResult {
+            schema_version: SCHEMA_VERSION,
+            scanned_at: Utc::now(),
+            sources: Vec::new(),
+            packages: Vec::new(),
+            updates: Vec::new(),
+            cache_sizes: CacheSizes::default(),
+        }
+    }
+}
+
 /// Cache/disk-usage figures gathered during a scan. Populated in v0.0.3;
 /// all `None` until then.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,4 +46,19 @@ pub struct CacheSizes {
     pub pacman_cache_bytes: Option<u64>,
     pub flatpak_unused_runtime_count: Option<u32>,
     pub flatpak_unused_runtime_bytes: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_scan_is_truly_empty_and_current_schema() {
+        let s = ScanResult::empty();
+        assert_eq!(s.schema_version, SCHEMA_VERSION);
+        assert!(s.sources.is_empty());
+        assert!(s.packages.is_empty());
+        assert!(s.updates.is_empty());
+        assert_eq!(s.cache_sizes, CacheSizes::default());
+    }
 }

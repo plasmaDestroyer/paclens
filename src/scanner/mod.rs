@@ -35,19 +35,38 @@ pub fn load_or_scan(
     refresh: bool,
     config_path: Option<&Path>,
 ) -> anyhow::Result<ScanResult> {
-    let cache = cache::Cache::locate()?;
     if refresh {
         tracing::info!("--refresh: ignoring cache");
-    } else if let Some(scan) = cache.read()? {
+    } else if let Some(scan) = load_cached(config, config_path)? {
+        return Ok(scan);
+    }
+    scan_and_store(runner, config)
+}
+
+/// The instant half: a fresh cache hit or `None`. Never runs a subprocess, so
+/// the TUI can open on it immediately and scan in the background.
+pub fn load_cached(
+    config: &Config,
+    config_path: Option<&Path>,
+) -> anyhow::Result<Option<ScanResult>> {
+    let cache = cache::Cache::locate()?;
+    if let Some(scan) = cache.read()? {
         match cache::staleness(&scan, cache.path(), config, config_path) {
             None => {
                 tracing::info!("using cached scan");
-                return Ok(scan);
+                return Ok(Some(scan));
             }
             Some(reason) => tracing::info!(reason, "cache stale; re-scanning"),
         }
     }
+    Ok(None)
+}
 
+/// The slow half: run the providers and write the cache. A failed cache write
+/// is logged but non-fatal — the in-memory result is still returned
+/// (spec §15 recovery table).
+pub fn scan_and_store(runner: &dyn CommandRunner, config: &Config) -> anyhow::Result<ScanResult> {
+    let cache = cache::Cache::locate()?;
     let scan = scan(runner, config);
     if let Err(err) = cache.write(&scan) {
         tracing::error!(error = %err, "failed to write scan cache; continuing in-memory");

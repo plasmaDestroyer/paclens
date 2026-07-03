@@ -1,8 +1,10 @@
-//! TUI shell: load a scan, build the `App`, and run the multi-screen event loop.
+//! TUI shell: open on the cached scan instantly, scan in the background, and
+//! run the multi-screen event loop.
 //!
-//! The scan is synchronous — `load_or_scan` runs once before the loop (a warm
-//! cache makes this instant). The async scan-with-spinner path (spec §10.1) is
-//! deferred to the v0.0.9 usability pass.
+//! Scans run on a worker thread and land through an mpsc channel; the loop
+//! polls for key events with a short timeout so the spinner animates and the
+//! UI never blocks on a scan (spec §10.1, roadmap v0.0.9). Scan failures flash
+//! inline — they never take the TUI down.
 
 mod app;
 mod draw;
@@ -10,6 +12,8 @@ mod input;
 mod theme;
 
 use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::Context;
 use ratatui::DefaultTerminal;
@@ -20,7 +24,7 @@ use ratatui::crossterm::terminal::{
 
 use crate::config::Config;
 use crate::executor::{self, InteractiveRunner, UpdateLog};
-use crate::model::ActionPlan;
+use crate::model::{ActionPlan, ScanResult};
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
@@ -30,6 +34,21 @@ use input::{
     map_update_key,
 };
 use theme::Theme;
+
+/// How long the loop waits for a key before ticking the spinner and checking
+/// the scan channel. Also the spinner's frame rate.
+const TICK: Duration = Duration::from_millis(120);
+
+/// A scan running on a worker thread; the result arrives on the channel.
+struct ScanJob(mpsc::Receiver<anyhow::Result<ScanResult>>);
+
+fn spawn_scan(config: Config) -> ScanJob {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(scanner::scan_and_store(&SystemCommandRunner, &config));
+    });
+    ScanJob(rx)
+}
 
 /// Open the TUI, run the event loop, and restore the terminal on exit.
 ///
@@ -42,19 +61,28 @@ pub fn run(
     no_color: bool,
 ) -> anyhow::Result<()> {
     let theme = Theme::resolve(config.general.color_theme(), no_color);
-    let runner = SystemCommandRunner;
 
-    // Enter the TUI *before* the initial scan and paint a splash frame, so a
-    // cold first start never sits in the shell looking hung. The scan itself
-    // is still synchronous (async + spinner is the v0.0.9 usability pass).
     let mut terminal = ratatui::init();
     let result = (|| {
-        terminal
-            .draw(|frame| draw::draw_splash(frame, &theme))
-            .context("failed to draw the startup frame")?;
-        let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
-        let mut app = App::new(scan, theme, config.why.max_depth);
-        run_loop(&mut terminal, &mut app, &runner, config, config_path)
+        // Warm cache → open on it instantly. Cold or --refresh → open on a
+        // splash and let the background scan fill it in.
+        let cached = if refresh {
+            None
+        } else {
+            scanner::load_cached(config, config_path)?
+        };
+        let start_scanning = cached.is_none();
+        let mut app = App::new(
+            cached.unwrap_or_else(ScanResult::empty),
+            theme,
+            config.why.max_depth,
+        );
+        let mut job = None;
+        if start_scanning {
+            app.set_scanning(true);
+            job = Some(spawn_scan(config.clone()));
+        }
+        run_loop(&mut terminal, &mut app, job, config, config_path)
     })();
     ratatui::restore();
     result
@@ -63,7 +91,7 @@ pub fn run(
 fn run_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    runner: &SystemCommandRunner,
+    mut job: Option<ScanJob>,
     config: &Config,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
@@ -72,6 +100,32 @@ fn run_loop(
             .draw(|frame| draw::draw(frame, app))
             .context("failed to draw the terminal frame")?;
 
+        // Land a finished background scan, if any.
+        if let Some(active) = &job {
+            match active.0.try_recv() {
+                Ok(Ok(scan)) => {
+                    app.replace_scan(scan); // also clears the scanning flag
+                    job = None;
+                }
+                Ok(Err(err)) => {
+                    app.set_scanning(false);
+                    app.set_flash(format!("scan failed: {err:#}"));
+                    job = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    app.set_scanning(false);
+                    app.set_flash("scan worker vanished — press r to retry");
+                    job = None;
+                }
+            }
+        }
+
+        // Wait for a key with a timeout so the spinner keeps animating.
+        if !event::poll(TICK).context("failed to poll for terminal events")? {
+            app.tick();
+            continue;
+        }
         let action = read_action(app.input_mode())?;
         // A key press dismisses any flash; `Confirm` sets a fresh one below.
         app.clear_flash();
@@ -81,15 +135,12 @@ fn run_loop(
             Action::Next => app.on_next(),
             Action::Prev => app.on_prev(),
             Action::Refresh => {
-                // Synchronous re-scan; blocks briefly (a true async scan with a
-                // spinner is the v0.0.9 usability pass). Paint one frame with
-                // the indicator first so the blocked UI says why.
-                app.set_scanning(true);
-                terminal
-                    .draw(|frame| draw::draw(frame, app))
-                    .context("failed to draw the scanning frame")?;
-                let scan = scanner::load_or_scan(runner, config, true, config_path)?;
-                app.replace_scan(scan); // also clears the scanning flag
+                // Background re-scan; the dashboard shows the spinner while
+                // the current data stays interactive.
+                if job.is_none() {
+                    app.set_scanning(true);
+                    job = Some(spawn_scan(config.clone()));
+                }
             }
             Action::OpenUpdates => app.goto_updates(),
             Action::OpenPackages => app.open_packages(),
@@ -124,9 +175,11 @@ fn run_loop(
                 let plan = app.update_plan();
                 match run_plan_suspended(terminal, &plan) {
                     Ok(report) => {
-                        // Refresh first so the plan view behind the result is
-                        // already current when the report is dismissed.
-                        let scan = scanner::load_or_scan(runner, config, true, config_path)?;
+                        // Refresh synchronously here: the user just watched the
+                        // update run, and the result view must sit on current
+                        // data the moment it appears.
+                        let runner = SystemCommandRunner;
+                        let scan = scanner::load_or_scan(&runner, config, true, config_path)?;
                         app.replace_scan(scan);
                         app.set_report(report);
                     }
@@ -164,7 +217,7 @@ fn run_plan_suspended(
     result
 }
 
-/// Block for the next key press and map it with the active mode's key map.
+/// Read the pending key press and map it with the active mode's key map.
 fn read_action(mode: InputMode) -> anyhow::Result<Action> {
     match event::read().context("failed to read a terminal event")? {
         Event::Key(key) if key.kind == KeyEventKind::Press => Ok(match mode {

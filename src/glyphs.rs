@@ -19,6 +19,8 @@ pub struct Glyphs {
     pub check: &'static str,
     /// A failed step. ASCII falls back to `!` since `x` already means checked.
     pub cross: &'static str,
+    /// Animation frames for the background-scan spinner.
+    pub spinner: &'static [&'static str],
 }
 
 pub const UNICODE: Glyphs = Glyphs {
@@ -31,6 +33,7 @@ pub const UNICODE: Glyphs = Glyphs {
     arrow: "→",
     check: "✓",
     cross: "✗",
+    spinner: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
 };
 
 pub const ASCII: Glyphs = Glyphs {
@@ -43,6 +46,7 @@ pub const ASCII: Glyphs = Glyphs {
     arrow: "->",
     check: "x",
     cross: "!",
+    spinner: &["|", "/", "-", "\\"],
 };
 
 #[cfg(test)]
@@ -55,6 +59,13 @@ mod tests {
         assert_ne!(UNICODE.unavailable, ASCII.unavailable);
         assert_ne!(UNICODE.pointer, ASCII.pointer);
         assert_ne!(UNICODE.cross, ASCII.cross);
+    }
+
+    #[test]
+    fn spinner_sets_are_non_empty_and_ascii_safe() {
+        assert!(!UNICODE.spinner.is_empty());
+        assert!(!ASCII.spinner.is_empty());
+        assert!(ASCII.spinner.iter().all(|f| f.is_ascii()));
     }
 
     #[test]

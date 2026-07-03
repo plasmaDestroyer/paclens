@@ -76,6 +76,8 @@ pub struct App {
     filter_active: bool,
     /// Package list: the why side pane is open.
     why_open: bool,
+    /// Spinner animation frame, advanced by the loop's poll tick.
+    spinner_frame: usize,
 }
 
 impl App {
@@ -105,6 +107,7 @@ impl App {
             pkg_filter: String::new(),
             filter_active: false,
             why_open: false,
+            spinner_frame: 0,
         }
     }
 
@@ -164,6 +167,16 @@ impl App {
     }
     pub fn set_scanning(&mut self, scanning: bool) {
         self.scanning = scanning;
+    }
+
+    /// Advance the spinner one frame (called on every loop tick).
+    pub fn tick(&mut self) {
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    }
+    /// The current spinner glyph from the active theme's frame set.
+    pub fn spinner(&self) -> &'static str {
+        let frames = self.theme.glyphs.spinner;
+        frames[self.spinner_frame % frames.len()]
     }
 
     // --- screen navigation ---
@@ -622,6 +635,19 @@ mod tests {
         let app = app();
         assert_eq!(app.updates_for(&SourceId::pacman()).len(), 1);
         assert_eq!(app.updates_for(&SourceId::flatpak_user()).len(), 0);
+    }
+
+    #[test]
+    fn tick_advances_and_wraps_the_spinner() {
+        let mut app = app();
+        let first = app.spinner();
+        app.tick();
+        assert_ne!(app.spinner(), first, "frame did not advance");
+        let frames = app.theme.glyphs.spinner.len();
+        for _ in 1..frames {
+            app.tick();
+        }
+        assert_eq!(app.spinner(), first, "did not wrap around");
     }
 
     #[test]
