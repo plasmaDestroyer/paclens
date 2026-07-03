@@ -6,5 +6,7 @@
 //! Built in v0.0.7 (dep graph + why); overlap detection lands in v0.0.8.
 
 mod graph;
+mod why;
 
 pub use graph::DepGraph;
+pub use why::{PacmanWhy, Verdict, WhyReport, why};
