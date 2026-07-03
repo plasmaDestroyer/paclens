@@ -17,7 +17,9 @@ pub struct DependencyEdge {
 pub enum EdgeKind {
     /// From pacman dep data. Ground truth.
     Real,
-    /// Heuristic. Cross-source or appstream-derived.
+    /// Heuristic. Cross-source or appstream-derived. First constructed by the
+    /// v0.0.8 overlap detector — spec §4.5 defines the full enum now.
+    #[expect(dead_code)]
     Inferred,
 }
 
@@ -25,7 +27,9 @@ pub enum EdgeKind {
 pub enum Confidence {
     /// Derived from authoritative source data with no inference.
     Confirmed,
-    /// Heuristic derivation, likely correct, basis is stated.
+    /// Heuristic derivation, likely correct, basis is stated. First
+    /// constructed by the v0.0.8 overlap matcher; spec §8 defines it now.
+    #[cfg_attr(not(test), expect(dead_code))]
     Inferred,
     /// Tool cannot determine from available data.
     Unknown,

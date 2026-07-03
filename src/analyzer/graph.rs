@@ -76,6 +76,9 @@ impl DepGraph {
         }
     }
 
+    /// Only tests assert membership directly today; the TUI/CLI go through
+    /// `why()`. Kept because the overlap detector (v0.0.8) needs it.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn contains(&self, name: &str) -> bool {
         self.index.contains_key(name)
     }
@@ -164,6 +167,8 @@ impl DepGraph {
 
     /// Orphan candidates (spec §7.2): installed as a dependency, nothing
     /// requires them. Replaces `pacman -Qtd`.
+    /// Spec §7.2 deliverable; the cleanup screen (v0.0.9+) is its consumer.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn orphans(&self, scan: &ScanResult) -> Vec<String> {
         let mut out: Vec<String> = scan
             .packages

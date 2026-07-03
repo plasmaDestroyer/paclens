@@ -3,6 +3,7 @@
 mod status;
 mod style;
 mod update;
+mod why;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -161,7 +162,23 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
-        Command::Why { .. } => not_implemented("why", &err_styles),
+        Command::Why { package } => {
+            let out_styles = Styles::resolve(
+                cli.no_color,
+                config.general.color_theme(),
+                std::io::stdout().is_terminal(),
+            );
+            report(
+                why::run(
+                    &config,
+                    cli.refresh,
+                    config_path.as_deref(),
+                    &package,
+                    &out_styles,
+                ),
+                &err_styles,
+            )
+        }
         Command::Overlaps => not_implemented("overlaps", &err_styles),
         Command::Cleanup => not_implemented("cleanup", &err_styles),
     }

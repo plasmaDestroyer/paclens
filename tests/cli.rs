@@ -61,11 +61,27 @@ fn help_flag_prints_usage_and_succeeds() {
 
 #[test]
 fn unimplemented_subcommand_fails_with_a_clear_message() {
-    let home = sandbox("why");
-    let out = run(&home, &["why", "firefox"]);
+    let home = sandbox("overlaps");
+    let out = run(&home, &["overlaps"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not implemented"), "stderr was: {stderr}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn why_unknown_package_errors_cleanly() {
+    let home = sandbox("why-missing");
+    let out = run(
+        &home,
+        &["why", "definitely-not-a-real-package-xyz", "--no-color"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no installed package named"),
+        "stderr was: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
