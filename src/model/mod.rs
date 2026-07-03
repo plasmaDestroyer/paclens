@@ -5,6 +5,7 @@
 //! action types arrive with the milestones that consume them (v0.0.6–v0.0.8).
 
 mod action;
+mod dependency;
 mod package;
 mod scan;
 mod source;
@@ -12,6 +13,7 @@ mod summary;
 mod update;
 
 pub use action::{ActionKind, ActionPlan, ActionStep};
+pub use dependency::{Confidence, DependencyEdge, EdgeKind};
 pub use package::{InstallReason, Package};
 pub use scan::{CacheSizes, SCHEMA_VERSION, ScanResult};
 pub use source::{FlatpakScope, Source, SourceId, SourceKind};
