@@ -830,6 +830,10 @@ pub fn draw_splash(frame: &mut Frame, theme: &Theme, spinner: Option<&str>) {
     ];
     let rect = centered(inner, inner.width, 2);
     frame.render_widget(Paragraph::new(lines), rect);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled("q quit", theme.dim))),
+        bottom_line(inner),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1304,6 +1308,7 @@ mod tests {
             text.contains("can take a few seconds"),
             "hint missing:\n{text}"
         );
+        assert!(text.contains("q quit"), "splash key hint missing:\n{text}");
     }
 
     #[test]
