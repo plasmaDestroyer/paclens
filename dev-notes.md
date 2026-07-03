@@ -383,6 +383,15 @@ YYYY-MM-DD | TUI suspend for sudo, not output piping
 YYYY-MM-DD | no --noconfirm for pacman
            | suppresses conflict resolution prompts, too dangerous.
            | let user interact with pacman directly in raw terminal.
+
+2026-06-13 | why verdict: zero reverse deps ⇒ likely safe, any install reason
+           | spec §7.3 (dependency-only) conflicts with §11.4's canonical
+           | example (explicit leaf = likely safe). §11.4 wins; unknown
+           | install reason stays `unclear [unknown]`, never guessed.
+
+2026-06-13 | dashboard enrichment deferred (user request 2026-06-12)
+           | homescreen should eventually carry much more: storage breakdown,
+           | orphan/overlap counts (spec §10.3). Design pass before v0.1.0.
 ```
 
 ---
