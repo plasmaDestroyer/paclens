@@ -796,6 +796,30 @@ fn result_line(step: &executor::StepReport, name_w: usize, theme: &Theme) -> Lin
 }
 
 // ---------------------------------------------------------------------------
+// Startup splash
+// ---------------------------------------------------------------------------
+
+/// The first frame, painted before the initial (blocking) scan so a cold start
+/// is never a blank terminal. No `App` exists yet — only the theme.
+pub fn draw_splash(frame: &mut Frame, theme: &Theme) {
+    let area = frame.area();
+    let block = panel(theme, " paclens ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(Span::styled("scanning sources…", theme.accent)).centered(),
+        Line::from(Span::styled(
+            "first scan reads pacman + flatpak and can take a few seconds",
+            theme.dim,
+        ))
+        .centered(),
+    ];
+    let rect = centered(inner, inner.width, 2);
+    frame.render_widget(Paragraph::new(lines), rect);
+}
+
+// ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
 
@@ -1246,5 +1270,24 @@ mod tests {
         let text = render(&app, 78, 18);
         assert!(text.contains("no matches"), "{text}");
         assert!(text.contains("0 of 3"), "{text}");
+    }
+
+    // --- startup splash ---
+    #[test]
+    fn splash_shows_scanning_before_any_app_exists() {
+        let backend = TestBackend::new(70, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::none();
+        terminal.draw(|frame| draw_splash(frame, &theme)).unwrap();
+        let text = flatten(terminal.backend().buffer());
+        assert!(text.contains("paclens"), "title missing:\n{text}");
+        assert!(
+            text.contains("scanning sources"),
+            "indicator missing:\n{text}"
+        );
+        assert!(
+            text.contains("can take a few seconds"),
+            "hint missing:\n{text}"
+        );
     }
 }

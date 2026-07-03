@@ -43,11 +43,19 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let theme = Theme::resolve(config.general.color_theme(), no_color);
     let runner = SystemCommandRunner;
-    let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
-    let mut app = App::new(scan, theme, config.why.max_depth);
 
+    // Enter the TUI *before* the initial scan and paint a splash frame, so a
+    // cold first start never sits in the shell looking hung. The scan itself
+    // is still synchronous (async + spinner is the v0.0.9 usability pass).
     let mut terminal = ratatui::init();
-    let result = run_loop(&mut terminal, &mut app, &runner, config, config_path);
+    let result = (|| {
+        terminal
+            .draw(|frame| draw::draw_splash(frame, &theme))
+            .context("failed to draw the startup frame")?;
+        let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
+        let mut app = App::new(scan, theme, config.why.max_depth);
+        run_loop(&mut terminal, &mut app, &runner, config, config_path)
+    })();
     ratatui::restore();
     result
 }
