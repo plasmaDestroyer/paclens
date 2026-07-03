@@ -7,8 +7,10 @@
 
 use std::collections::HashMap;
 
+use crate::analyzer::{self, DepGraph, WhyReport};
 use crate::executor::ExecutionReport;
-use crate::model::{ActionPlan, PendingUpdate, ScanResult, Source, SourceId, summarize};
+use crate::fuzzy;
+use crate::model::{ActionPlan, Package, PendingUpdate, ScanResult, Source, SourceId, summarize};
 use crate::planner;
 use crate::tui::theme::Theme;
 
@@ -16,16 +18,21 @@ use crate::tui::theme::Theme;
 pub enum Screen {
     Dashboard,
     Updates,
+    /// Per-source package list (spec §10.3), entered with Enter on a dashboard row.
+    Packages,
 }
 
 /// Which key map is active. The update screen has three: the plan view, the
-/// confirm modal on top of it, and the post-execution result view.
+/// confirm modal on top of it, and the post-execution result view. The package
+/// list has two: the list itself and the fuzzy-filter input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Dashboard,
     Updates,
     Confirm,
     Result,
+    Packages,
+    PackageFilter,
 }
 
 /// One source's row in the dashboard table — a view-model derived from the scan.
@@ -39,6 +46,10 @@ pub struct SourceRow {
 
 pub struct App {
     scan: ScanResult,
+    /// Rebuilt with every scan (never serialized) — powers the why pane.
+    graph: DepGraph,
+    /// `config.why.max_depth`, captured at startup.
+    why_depth: u32,
     pub theme: Theme,
     screen: Screen,
     dash_selected: Option<usize>,
@@ -55,18 +66,31 @@ pub struct App {
     /// A blocking re-scan is about to run; the dashboard shows it instead of
     /// the scan age. (True async scanning is the v0.0.9 usability pass.)
     scanning: bool,
+    /// Package list: which source's packages are shown.
+    pkg_source: Option<SourceId>,
+    /// Package list: cursor over `visible_packages()`.
+    pkg_cursor: usize,
+    /// Package list: the fuzzy filter query.
+    pkg_filter: String,
+    /// Package list: the filter input line has focus.
+    filter_active: bool,
+    /// Package list: the why side pane is open.
+    why_open: bool,
 }
 
 impl App {
-    pub fn new(scan: ScanResult, theme: Theme) -> Self {
+    pub fn new(scan: ScanResult, theme: Theme, why_depth: u32) -> Self {
         let dash_selected = if scan.sources.is_empty() {
             None
         } else {
             Some(0)
         };
         let enabled = default_toggles(&scan);
+        let graph = DepGraph::build(&scan);
         App {
             scan,
+            graph,
+            why_depth,
             theme,
             screen: Screen::Dashboard,
             dash_selected,
@@ -76,11 +100,17 @@ impl App {
             report: None,
             flash: None,
             scanning: false,
+            pkg_source: None,
+            pkg_cursor: 0,
+            pkg_filter: String::new(),
+            filter_active: false,
+            why_open: false,
         }
     }
 
     /// Swap in a fresh scan (after a refresh), keeping cursors valid.
     pub fn replace_scan(&mut self, scan: ScanResult) {
+        self.graph = DepGraph::build(&scan);
         self.scan = scan;
         let len = self.scan.sources.len();
         self.dash_selected = match (len, self.dash_selected) {
@@ -95,6 +125,7 @@ impl App {
         self.confirming = false;
         self.flash = None;
         self.scanning = false;
+        self.clamp_pkg_cursor();
     }
 
     // --- shared ---
@@ -111,6 +142,8 @@ impl App {
             Screen::Updates if self.report.is_some() => InputMode::Result,
             Screen::Updates if self.confirming => InputMode::Confirm,
             Screen::Updates => InputMode::Updates,
+            Screen::Packages if self.filter_active => InputMode::PackageFilter,
+            Screen::Packages => InputMode::Packages,
         }
     }
     pub fn total_updates(&self) -> usize {
@@ -147,12 +180,14 @@ impl App {
         match self.screen {
             Screen::Dashboard => self.select_next(),
             Screen::Updates => self.update_next(),
+            Screen::Packages => self.pkg_move(1),
         }
     }
     pub fn on_prev(&mut self) {
         match self.screen {
             Screen::Dashboard => self.select_prev(),
             Screen::Updates => self.update_prev(),
+            Screen::Packages => self.pkg_move(-1),
         }
     }
 
@@ -274,6 +309,143 @@ impl App {
         let len = self.available_sources().len();
         self.update_cursor = self.update_cursor.min(len.saturating_sub(1));
     }
+
+    // --- package list ---
+    /// Dashboard Enter: open the selected source's package list.
+    pub fn open_packages(&mut self) {
+        let Some(i) = self.dash_selected else { return };
+        let Some(source) = self.scan.sources.get(i) else {
+            return;
+        };
+        self.pkg_source = Some(source.id.clone());
+        self.pkg_cursor = 0;
+        self.pkg_filter.clear();
+        self.filter_active = false;
+        self.why_open = false;
+        self.screen = Screen::Packages;
+    }
+
+    pub fn pkg_source(&self) -> Option<&SourceId> {
+        self.pkg_source.as_ref()
+    }
+    pub fn pkg_cursor(&self) -> usize {
+        self.pkg_cursor
+    }
+    pub fn pkg_filter(&self) -> &str {
+        &self.pkg_filter
+    }
+    pub fn is_filter_active(&self) -> bool {
+        self.filter_active
+    }
+    pub fn is_why_open(&self) -> bool {
+        self.why_open
+    }
+
+    /// Packages of the open source: name-sorted, or fuzzy-filtered and
+    /// score-ordered while a filter query is set.
+    pub fn visible_packages(&self) -> Vec<&Package> {
+        let Some(source) = &self.pkg_source else {
+            return Vec::new();
+        };
+        let mut pkgs: Vec<&Package> = self
+            .scan
+            .packages
+            .iter()
+            .filter(|p| &p.source_id == source)
+            .collect();
+        if self.pkg_filter.is_empty() {
+            pkgs.sort_by(|a, b| a.name.cmp(&b.name));
+            return pkgs;
+        }
+        let mut scored: Vec<(fuzzy::Score, &Package)> = pkgs
+            .into_iter()
+            .filter_map(|p| fuzzy::matches(&self.pkg_filter, &p.name).map(|s| (s, p)))
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        scored.into_iter().map(|(_, p)| p).collect()
+    }
+
+    /// Total packages of the open source, unfiltered (for the "n of N" line).
+    pub fn pkg_total(&self) -> usize {
+        match &self.pkg_source {
+            Some(source) => self
+                .scan
+                .packages
+                .iter()
+                .filter(|p| &p.source_id == source)
+                .count(),
+            None => 0,
+        }
+    }
+
+    pub fn selected_package(&self) -> Option<&Package> {
+        self.visible_packages().get(self.pkg_cursor).copied()
+    }
+
+    /// The why report for the row under the cursor (feeds the side pane).
+    pub fn why_report(&self) -> Option<WhyReport> {
+        let name = self.selected_package()?.name.clone();
+        Some(analyzer::why(
+            &self.scan,
+            &self.graph,
+            &name,
+            self.why_depth,
+        ))
+    }
+
+    /// Move the package cursor by `delta` rows (±1 nav, ±20 page), clamped.
+    pub fn pkg_move(&mut self, delta: i32) {
+        let len = self.visible_packages().len();
+        if len == 0 {
+            self.pkg_cursor = 0;
+            return;
+        }
+        let next = self.pkg_cursor as i64 + delta as i64;
+        self.pkg_cursor = next.clamp(0, len as i64 - 1) as usize;
+    }
+
+    pub fn start_filter(&mut self) {
+        self.filter_active = true;
+    }
+    pub fn filter_push(&mut self, c: char) {
+        self.pkg_filter.push(c);
+        self.pkg_cursor = 0; // results reorder; snap to the best hit
+    }
+    pub fn filter_pop(&mut self) {
+        self.pkg_filter.pop();
+        self.clamp_pkg_cursor();
+    }
+    /// Enter: keep the query, return focus to the list.
+    pub fn filter_accept(&mut self) {
+        self.filter_active = false;
+    }
+    /// Esc while typing: drop the query entirely.
+    pub fn filter_cancel(&mut self) {
+        self.filter_active = false;
+        self.pkg_filter.clear();
+        self.clamp_pkg_cursor();
+    }
+
+    pub fn toggle_why(&mut self) {
+        self.why_open = !self.why_open;
+    }
+
+    /// Esc on the list unwinds one layer at a time: why pane → filter → back.
+    pub fn back_packages(&mut self) {
+        if self.why_open {
+            self.why_open = false;
+        } else if !self.pkg_filter.is_empty() {
+            self.pkg_filter.clear();
+            self.clamp_pkg_cursor();
+        } else {
+            self.screen = Screen::Dashboard;
+        }
+    }
+
+    fn clamp_pkg_cursor(&mut self) {
+        let len = self.visible_packages().len();
+        self.pkg_cursor = self.pkg_cursor.min(len.saturating_sub(1));
+    }
 }
 
 fn default_toggles(scan: &ScanResult) -> HashMap<SourceId, bool> {
@@ -357,7 +529,7 @@ mod tests {
     }
 
     fn app() -> App {
-        App::new(scan_with_sources(three_sources()), Theme::none())
+        App::new(scan_with_sources(three_sources()), Theme::none(), 20)
     }
 
     // --- dashboard (unchanged behavior) ---
@@ -532,6 +704,106 @@ mod tests {
         app.set_report(sample_report());
         app.replace_scan(scan_with_sources(three_sources()));
         assert!(app.report().is_some()); // the loop refreshes, then shows it
+    }
+
+    // --- package list ---
+    #[test]
+    fn enter_on_a_dashboard_row_opens_that_sources_packages() {
+        let mut app = app();
+        app.on_next(); // select flatpak-user
+        app.open_packages();
+        assert_eq!(app.screen(), Screen::Packages);
+        assert_eq!(app.input_mode(), InputMode::Packages);
+        assert_eq!(app.pkg_source(), Some(&SourceId::flatpak_user()));
+        let names: Vec<&str> = app
+            .visible_packages()
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["org.x.App"]);
+    }
+
+    #[test]
+    fn visible_packages_sort_by_name_and_cursor_clamps() {
+        let mut app = app();
+        app.open_packages(); // pacman: a, b
+        let names: Vec<&str> = app
+            .visible_packages()
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b"]);
+        app.pkg_move(1);
+        assert_eq!(app.pkg_cursor(), 1);
+        app.pkg_move(5);
+        assert_eq!(app.pkg_cursor(), 1); // clamped
+        app.pkg_move(-10);
+        assert_eq!(app.pkg_cursor(), 0);
+        assert_eq!(app.pkg_total(), 2);
+    }
+
+    #[test]
+    fn fuzzy_filter_narrows_and_snaps_the_cursor() {
+        let mut app = app();
+        app.open_packages();
+        app.pkg_move(1); // cursor on "b"
+        app.start_filter();
+        assert_eq!(app.input_mode(), InputMode::PackageFilter);
+        app.filter_push('a');
+        assert_eq!(app.pkg_cursor(), 0); // snapped to best hit
+        let names: Vec<&str> = app
+            .visible_packages()
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a"]);
+        app.filter_accept();
+        assert_eq!(app.input_mode(), InputMode::Packages);
+        assert_eq!(app.pkg_filter(), "a");
+    }
+
+    #[test]
+    fn filter_cancel_drops_the_query_but_accept_keeps_it() {
+        let mut app = app();
+        app.open_packages();
+        app.start_filter();
+        app.filter_push('a');
+        app.filter_cancel();
+        assert_eq!(app.pkg_filter(), "");
+        assert_eq!(app.visible_packages().len(), 2);
+    }
+
+    #[test]
+    fn esc_unwinds_why_then_filter_then_screen() {
+        let mut app = app();
+        app.open_packages();
+        app.start_filter();
+        app.filter_push('a');
+        app.filter_accept();
+        app.toggle_why();
+        assert!(app.is_why_open());
+
+        app.back_packages(); // 1: closes the why pane
+        assert!(!app.is_why_open());
+        assert_eq!(app.pkg_filter(), "a");
+
+        app.back_packages(); // 2: clears the filter
+        assert_eq!(app.pkg_filter(), "");
+        assert_eq!(app.screen(), Screen::Packages);
+
+        app.back_packages(); // 3: back to the dashboard
+        assert_eq!(app.screen(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn why_report_follows_the_cursor() {
+        let mut app = app();
+        app.open_packages();
+        let report = app.why_report().expect("selected row has a report");
+        match report {
+            crate::analyzer::WhyReport::Pacman(p) => assert_eq!(p.package, "a"),
+            other => panic!("expected pacman report, got {other:?}"),
+        }
     }
 
     #[test]

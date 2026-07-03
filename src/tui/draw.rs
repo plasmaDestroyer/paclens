@@ -33,6 +33,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Some(report) => draw_result(frame, area, app, report),
             None => draw_update(frame, area, app),
         },
+        Screen::Packages => draw_packages(frame, area, app),
     }
 }
 
@@ -59,7 +60,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
 
     let g = theme.glyphs;
     let footer = format!(
-        "q quit {b} {up}/{down} navigate {b} u update {b} r refresh",
+        "q quit {b} {up}/{down} navigate {b} enter packages {b} u update {b} r refresh",
         b = g.bullet,
         up = g.up,
         down = g.down,
@@ -368,6 +369,254 @@ fn render_confirm(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
 }
 
 // ---------------------------------------------------------------------------
+// Package list (spec §10.3) + why side pane
+// ---------------------------------------------------------------------------
+
+fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let source = app.pkg_source().map(|s| s.to_string()).unwrap_or_default();
+    let title = format!(" paclens · {source} · {} packages ", app.pkg_total());
+    // panel() wants 'static; build the block by hand for the dynamic title.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(title, theme.title))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let show_filter = app.is_filter_active() || !app.pkg_filter().is_empty();
+    let chunks = Layout::vertical([
+        Constraint::Min(3),    // table (+ optional why pane)
+        Constraint::Length(1), // filter line (may be blank)
+        Constraint::Length(1), // footer
+    ])
+    .split(inner);
+
+    if app.is_why_open() {
+        let panes =
+            Layout::horizontal([Constraint::Min(30), Constraint::Percentage(40)]).split(chunks[0]);
+        // Narrow mode: VERSION/SIZE would crush against the pane; the why
+        // report is what matters here.
+        render_package_table(frame, panes[0], app, true);
+        render_why_pane(frame, panes[1], app);
+    } else {
+        render_package_table(frame, chunks[0], app, false);
+    }
+
+    if show_filter {
+        render_filter_line(frame, chunks[1], app);
+    }
+
+    let g = theme.glyphs;
+    let footer = if app.is_filter_active() {
+        "type to filter · enter apply · esc cancel".to_string()
+    } else {
+        format!(
+            "{up}/{down} navigate {b} / filter {b} w why {b} esc back {b} q quit",
+            b = g.bullet,
+            up = g.up,
+            down = g.down,
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(footer, theme.dim))),
+        chunks[2],
+    );
+}
+
+/// `narrow` drops the VERSION/SIZE columns — used when the why pane halves
+/// the width, where they would truncate into noise.
+fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) {
+    let theme = &app.theme;
+    let pkgs = app.visible_packages();
+
+    if pkgs.is_empty() {
+        let msg = if app.pkg_filter().is_empty() {
+            "no packages"
+        } else {
+            "no matches — esc clears the filter"
+        };
+        frame.render_widget(
+            Paragraph::new(msg)
+                .style(theme.dim)
+                .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
+
+    let header = if narrow {
+        Row::new(vec![Cell::from("NAME"), Cell::from("REASON")])
+    } else {
+        Row::new(vec![
+            Cell::from("NAME"),
+            Cell::from("VERSION"),
+            Cell::from("REASON"),
+            Cell::from(Line::from("SIZE").alignment(Alignment::Right)),
+        ])
+    }
+    .style(theme.header);
+
+    let body: Vec<Row> = pkgs
+        .iter()
+        .map(|p| {
+            let reason = match p.install_reason {
+                crate::model::InstallReason::Explicit => Span::styled("explicit", theme.primary),
+                crate::model::InstallReason::Dependency => Span::styled("dependency", theme.dim),
+                crate::model::InstallReason::Unknown => Span::styled("—", theme.dim),
+            };
+            if narrow {
+                return Row::new(vec![Cell::from(p.name.clone()), Cell::from(reason)]);
+            }
+            let size = match p.size_bytes {
+                Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
+                None => Span::styled("—".to_string(), theme.dim),
+            };
+            Row::new(vec![
+                Cell::from(p.name.clone()),
+                Cell::from(Span::styled(p.version.clone(), theme.dim)),
+                Cell::from(reason),
+                Cell::from(Line::from(size).alignment(Alignment::Right)),
+            ])
+        })
+        .collect();
+
+    let widths: &[Constraint] = if narrow {
+        &[Constraint::Min(20), Constraint::Length(10)]
+    } else {
+        &[
+            Constraint::Min(24),
+            Constraint::Length(18),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ]
+    };
+    let table = Table::new(body, widths.to_vec())
+        .header(header)
+        .column_spacing(2)
+        .row_highlight_style(theme.selected)
+        .highlight_symbol(theme.glyphs.pointer);
+
+    let mut state = TableState::default();
+    state.select(Some(app.pkg_cursor()));
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn render_filter_line(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let shown = app.visible_packages().len();
+    let cursor = if app.is_filter_active() { "▏" } else { "" };
+    let line = Line::from(vec![
+        Span::styled("/", theme.accent),
+        Span::styled(format!("{}{cursor}", app.pkg_filter()), theme.primary),
+        Span::styled(format!("   {shown} of {}", app.pkg_total()), theme.dim),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// The why side pane: the analyzer's report for the row under the cursor,
+/// live — same data the CLI prints (P5).
+fn render_why_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(theme.border)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(report) = app.why_report() else {
+        frame.render_widget(Paragraph::new("no selection").style(theme.dim), inner);
+        return;
+    };
+    let lines = why_pane_lines(&report, theme);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Line<'static>> {
+    use crate::analyzer::{Verdict, WhyReport};
+    use crate::model::InstallReason;
+
+    let kv = |label: &str, value: String, style| {
+        Line::from(vec![
+            Span::styled(format!("{:10}", label), theme.dim),
+            Span::styled(value, style),
+        ])
+    };
+    let names = |list: &[String]| {
+        let mut text = list.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
+        if list.is_empty() {
+            text = "nothing".to_string();
+        } else if list.len() > 6 {
+            text.push_str(&format!(" … {} more", list.len() - 6));
+        }
+        text
+    };
+
+    match report {
+        WhyReport::Pacman(p) => {
+            let mut lines = vec![
+                Line::from(Span::styled(format!("why · {}", p.package), theme.title)),
+                Line::default(),
+            ];
+            let reason = match p.reason {
+                InstallReason::Explicit => "explicit".to_string(),
+                InstallReason::Dependency => match p.depth_from_explicit {
+                    Some(d) => format!("dependency · {d} hop{}", plural(d)),
+                    None => "dependency".to_string(),
+                },
+                InstallReason::Unknown => "unknown".to_string(),
+            };
+            lines.push(kv("reason", reason, theme.primary));
+            // "needed by" doubles as the breakage list — removing this
+            // package breaks exactly what requires it.
+            lines.push(kv("needed by", names(&p.required_by), theme.primary));
+            lines.push(kv("orphans", names(&p.would_remove), theme.primary));
+            lines.push(Line::default());
+            let verdict_style = match p.verdict {
+                Verdict::LikelySafe => theme.success,
+                Verdict::IsADependency => theme.accent,
+                Verdict::Unclear => theme.error,
+            };
+            lines.push(Line::from(vec![
+                Span::styled(p.verdict.to_string(), verdict_style),
+                Span::styled(format!("  [{}]", p.confidence), theme.dim),
+            ]));
+            lines
+        }
+        WhyReport::Flatpak { package, source_id } => vec![
+            Line::from(Span::styled(format!("why · {package}"), theme.title)),
+            Line::default(),
+            Line::from(Span::styled(
+                format!("{source_id} app — self-contained,"),
+                theme.primary,
+            )),
+            Line::from(Span::styled(
+                "not part of the pacman dep graph",
+                theme.primary,
+            )),
+            Line::default(),
+            Line::from(vec![
+                Span::styled("likely safe".to_string(), theme.success),
+                Span::styled("  [confirmed]", theme.dim),
+            ]),
+        ],
+        WhyReport::NotFound { .. } => {
+            vec![Line::from(Span::styled("no data for this row", theme.dim))]
+        }
+    }
+}
+
+fn plural(n: u32) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+// ---------------------------------------------------------------------------
 // Confirm modal
 // ---------------------------------------------------------------------------
 
@@ -666,6 +915,7 @@ mod tests {
         let app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
+            20,
         );
         let text = render(&app, 70, 14);
         assert!(text.contains("paclens"));
@@ -678,6 +928,7 @@ mod tests {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
+            20,
         );
         app.set_scanning(true);
         let text = render(&app, 70, 14);
@@ -696,6 +947,7 @@ mod tests {
                 upd("firefox", "127.0", "127.0.1", SourceId::pacman()),
             ]),
             Theme::none(),
+            20,
         );
         app.goto_updates();
         let text = render(&app, 72, 16);
@@ -724,6 +976,7 @@ mod tests {
                 SourceId::pacman(),
             )]),
             Theme::none(),
+            20,
         );
         app.goto_updates();
         let text = render(&app, 72, 16);
@@ -735,6 +988,7 @@ mod tests {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
+            20,
         );
         app.goto_updates();
         app.toggle_selected(); // pacman off -> plan empty
@@ -748,7 +1002,7 @@ mod tests {
 
     #[test]
     fn update_screen_empty_state_still_shows_the_way_back() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none());
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20);
         app.goto_updates();
         let text = render(&app, 72, 16);
         assert!(text.contains("Nothing to update"), "{text}");
@@ -763,6 +1017,7 @@ mod tests {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
+            20,
         );
         app.goto_updates();
         app.set_flash("nothing selected to update");
@@ -779,6 +1034,7 @@ mod tests {
                 upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
             ]),
             Theme::none(),
+            20,
         );
         app.goto_updates();
         app.open_confirm();
@@ -808,6 +1064,7 @@ mod tests {
                 upd("org.x.Editor", "1.0", "1.1", SourceId::flatpak_user()),
             ]),
             Theme::none(),
+            20,
         );
         app.goto_updates();
         app.open_confirm();
@@ -849,7 +1106,7 @@ mod tests {
 
     #[test]
     fn result_view_shows_every_outcome_and_the_log_path() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none());
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20);
         app.goto_updates();
         app.set_report(report());
         let text = render(&app, 76, 18);
@@ -881,7 +1138,7 @@ mod tests {
 
     #[test]
     fn all_green_result_has_no_failed_segment() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none());
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20);
         app.goto_updates();
         app.set_report(ExecutionReport {
             steps: vec![StepReport {
@@ -896,5 +1153,98 @@ mod tests {
         assert!(text.contains("1 succeeded"), "{text}");
         assert!(!text.contains("failed"), "{text}");
         assert!(text.contains("1 app updated"), "{text}");
+    }
+
+    // --- package list ---
+    fn rich_pkg(name: &str, reason: InstallReason, size: Option<u64>, depends: &[&str]) -> Package {
+        Package {
+            install_reason: reason,
+            size_bytes: size,
+            depends_on: depends.iter().map(|d| d.to_string()).collect(),
+            ..pkg(name, SourceId::pacman())
+        }
+    }
+
+    fn pkg_scan() -> ScanResult {
+        let mut s = scan_with(Vec::new());
+        s.packages = vec![
+            rich_pkg(
+                "firefox",
+                InstallReason::Explicit,
+                Some(240_000_000),
+                &["glibc"],
+            ),
+            rich_pkg("glibc", InstallReason::Dependency, Some(50_000_000), &[]),
+            rich_pkg("bash", InstallReason::Explicit, None, &["glibc"]),
+        ];
+        s
+    }
+
+    fn pkg_app() -> App {
+        let mut app = App::new(pkg_scan(), Theme::none(), 20);
+        app.open_packages(); // dashboard row 0 = pacman
+        app
+    }
+
+    #[test]
+    fn package_list_renders_columns_rows_and_footer() {
+        let text = render(&pkg_app(), 78, 18);
+        assert!(text.contains("pacman"), "title missing:\n{text}");
+        assert!(text.contains("3 packages"), "count missing:\n{text}");
+        for col in ["NAME", "VERSION", "REASON", "SIZE"] {
+            assert!(text.contains(col), "column {col} missing:\n{text}");
+        }
+        assert!(text.contains("firefox"), "{text}");
+        assert!(text.contains("explicit"), "{text}");
+        assert!(text.contains("dependency"), "{text}");
+        assert!(text.contains("228.88 MiB"), "size missing:\n{text}");
+        assert!(text.contains("/ filter"), "footer missing:\n{text}");
+        assert!(text.contains("w why"), "footer missing:\n{text}");
+    }
+
+    #[test]
+    fn filter_line_shows_query_and_counts() {
+        let mut app = pkg_app();
+        app.start_filter();
+        app.filter_push('f');
+        app.filter_push('x');
+        let text = render(&app, 78, 18);
+        assert!(text.contains("/fx"), "query missing:\n{text}");
+        assert!(text.contains("1 of 3"), "counts missing:\n{text}");
+        assert!(text.contains("firefox"), "{text}");
+        assert!(!text.contains("glibc"), "filtered row leaked:\n{text}");
+        assert!(
+            text.contains("enter apply"),
+            "filter footer missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn why_pane_shows_live_verdict_for_the_cursor_row() {
+        let mut app = pkg_app();
+        app.toggle_why();
+        // cursor row 0 = bash (name-sorted) → explicit, nothing requires it.
+        let text = render(&app, 90, 20);
+        assert!(text.contains("why · bash"), "pane title missing:\n{text}");
+        assert!(text.contains("likely safe"), "{text}");
+        assert!(text.contains("[confirmed]"), "{text}");
+
+        app.on_next(); // firefox
+        app.on_next(); // glibc — needed by bash + firefox
+        let text = render(&app, 90, 20);
+        assert!(text.contains("why · glibc"), "pane must follow:\n{text}");
+        assert!(text.contains("is a dependency"), "{text}");
+        assert!(text.contains("bash, firefox"), "{text}");
+    }
+
+    #[test]
+    fn empty_filter_result_says_how_to_recover() {
+        let mut app = pkg_app();
+        app.start_filter();
+        app.filter_push('z');
+        app.filter_push('z');
+        let text = render(&app, 78, 18);
+        assert!(text.contains("no matches"), "{text}");
+        assert!(text.contains("0 of 3"), "{text}");
     }
 }

@@ -27,6 +27,22 @@ pub enum Action {
     CloseConfirm,
     /// Result view → back to the (refreshed) plan view.
     DismissResult,
+    /// Dashboard → open the selected source's package list.
+    OpenPackages,
+    /// Package list → jump a page of rows.
+    NextPage,
+    PrevPage,
+    /// Package list → focus the fuzzy-filter input.
+    StartFilter,
+    /// Package list → toggle the why side pane.
+    ToggleWhy,
+    /// Filter input → append a character.
+    FilterChar(char),
+    FilterBackspace,
+    /// Filter input → keep the query, refocus the list.
+    FilterAccept,
+    /// Filter input → drop the query.
+    FilterCancel,
     Ignore,
 }
 
@@ -45,6 +61,39 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('u') => Action::OpenUpdates,
+        KeyCode::Enter => Action::OpenPackages,
+        _ => Action::Ignore,
+    }
+}
+
+/// Package list key map: nav (incl. paging), filter, why pane, back, quit.
+pub fn map_packages_key(key: KeyEvent) -> Action {
+    if is_quit(&key) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => Action::Next,
+        KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::PageDown => Action::NextPage,
+        KeyCode::PageUp => Action::PrevPage,
+        KeyCode::Char('/') => Action::StartFilter,
+        KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
+        KeyCode::Esc => Action::Back,
+        _ => Action::Ignore,
+    }
+}
+
+/// Filter input key map: printable chars type into the query (`q` included —
+/// only Ctrl-C quits here), Backspace deletes, Enter applies, Esc cancels.
+pub fn map_filter_key(key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Esc => Action::FilterCancel,
+        KeyCode::Enter => Action::FilterAccept,
+        KeyCode::Backspace => Action::FilterBackspace,
+        KeyCode::Char(c) => Action::FilterChar(c),
         _ => Action::Ignore,
     }
 }
@@ -133,10 +182,57 @@ mod tests {
             map_dashboard_key(plain(KeyCode::Char('u'))),
             Action::OpenUpdates
         );
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Enter)),
+            Action::OpenPackages
+        );
         // Update-only keys are ignored on the dashboard.
         assert_eq!(map_dashboard_key(plain(KeyCode::Char(' '))), Action::Ignore);
         assert_eq!(map_dashboard_key(plain(KeyCode::Esc)), Action::Ignore);
-        assert_eq!(map_dashboard_key(plain(KeyCode::Enter)), Action::Ignore);
+    }
+
+    #[test]
+    fn package_list_keys() {
+        assert_eq!(map_packages_key(plain(KeyCode::Char('j'))), Action::Next);
+        assert_eq!(map_packages_key(plain(KeyCode::PageDown)), Action::NextPage);
+        assert_eq!(map_packages_key(plain(KeyCode::PageUp)), Action::PrevPage);
+        assert_eq!(
+            map_packages_key(plain(KeyCode::Char('/'))),
+            Action::StartFilter
+        );
+        assert_eq!(
+            map_packages_key(plain(KeyCode::Char('w'))),
+            Action::ToggleWhy
+        );
+        assert_eq!(
+            map_packages_key(plain(KeyCode::Char('W'))),
+            Action::ToggleWhy
+        );
+        assert_eq!(map_packages_key(plain(KeyCode::Esc)), Action::Back);
+        assert_eq!(map_packages_key(plain(KeyCode::Char('q'))), Action::Quit);
+        assert_eq!(map_packages_key(plain(KeyCode::Enter)), Action::Ignore);
+    }
+
+    #[test]
+    fn filter_input_types_instead_of_quitting() {
+        assert_eq!(
+            map_filter_key(plain(KeyCode::Char('q'))),
+            Action::FilterChar('q') // q must TYPE, not quit
+        );
+        assert_eq!(
+            map_filter_key(plain(KeyCode::Char('/'))),
+            Action::FilterChar('/')
+        );
+        assert_eq!(
+            map_filter_key(plain(KeyCode::Backspace)),
+            Action::FilterBackspace
+        );
+        assert_eq!(map_filter_key(plain(KeyCode::Enter)), Action::FilterAccept);
+        assert_eq!(map_filter_key(plain(KeyCode::Esc)), Action::FilterCancel);
+        assert_eq!(
+            map_filter_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Action::Quit
+        );
     }
 
     #[test]

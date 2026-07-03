@@ -25,7 +25,10 @@ use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
 use app::{App, InputMode};
-use input::{Action, map_confirm_key, map_dashboard_key, map_result_key, map_update_key};
+use input::{
+    Action, map_confirm_key, map_dashboard_key, map_filter_key, map_packages_key, map_result_key,
+    map_update_key,
+};
 use theme::Theme;
 
 /// Open the TUI, run the event loop, and restore the terminal on exit.
@@ -41,7 +44,7 @@ pub fn run(
     let theme = Theme::resolve(config.general.color_theme(), no_color);
     let runner = SystemCommandRunner;
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
-    let mut app = App::new(scan, theme);
+    let mut app = App::new(scan, theme, config.why.max_depth);
 
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app, &runner, config, config_path);
@@ -81,7 +84,19 @@ fn run_loop(
                 app.replace_scan(scan); // also clears the scanning flag
             }
             Action::OpenUpdates => app.goto_updates(),
-            Action::Back => app.back_to_dashboard(),
+            Action::OpenPackages => app.open_packages(),
+            Action::Back => match app.screen() {
+                app::Screen::Packages => app.back_packages(),
+                _ => app.back_to_dashboard(),
+            },
+            Action::NextPage => app.pkg_move(20),
+            Action::PrevPage => app.pkg_move(-20),
+            Action::StartFilter => app.start_filter(),
+            Action::ToggleWhy => app.toggle_why(),
+            Action::FilterChar(c) => app.filter_push(c),
+            Action::FilterBackspace => app.filter_pop(),
+            Action::FilterAccept => app.filter_accept(),
+            Action::FilterCancel => app.filter_cancel(),
             Action::Toggle => app.toggle_selected(),
             Action::Confirm => {
                 // Open the modal only when something would actually run; the
@@ -149,6 +164,8 @@ fn read_action(mode: InputMode) -> anyhow::Result<Action> {
             InputMode::Updates => map_update_key(key),
             InputMode::Confirm => map_confirm_key(key),
             InputMode::Result => map_result_key(key),
+            InputMode::Packages => map_packages_key(key),
+            InputMode::PackageFilter => map_filter_key(key),
         }),
         _ => Ok(Action::Ignore),
     }
