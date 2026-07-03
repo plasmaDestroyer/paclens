@@ -6,6 +6,7 @@
 
 mod action;
 mod dependency;
+mod overlap;
 mod package;
 mod scan;
 mod source;
@@ -14,6 +15,7 @@ mod update;
 
 pub use action::{ActionKind, ActionPlan, ActionStep};
 pub use dependency::{Confidence, DependencyEdge, EdgeKind};
+pub use overlap::{MatchMethod, OverlapCandidate, PackageRef, PrimaryHeuristic, Tradeoff};
 pub use package::{InstallReason, Package};
 pub use scan::{CacheSizes, SCHEMA_VERSION, ScanResult};
 pub use source::{FlatpakScope, Source, SourceId, SourceKind};

@@ -58,10 +58,8 @@ pub struct Overlap {
     pub extra_mappings: Vec<ExtraMapping>,
 }
 
-/// A user-supplied overlap mapping. Parsed now so user config validates;
-/// fields are consumed by overlap detection in v0.0.8.
+/// A user-supplied overlap mapping, merged into the bundled map.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct ExtraMapping {
     pub flatpak_id: String,
     pub pacman_name: String,
