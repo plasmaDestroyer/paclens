@@ -194,6 +194,13 @@ impl MinConfidence {
     }
 }
 
+impl Overlap {
+    /// Validated confidence floor, falling back to the default on an invalid value.
+    pub fn min_confidence(&self) -> MinConfidence {
+        MinConfidence::parse(&self.min_confidence).unwrap_or_default()
+    }
+}
+
 impl General {
     /// Validated log level, falling back to the default on an invalid value.
     pub fn log_level(&self) -> LogLevel {

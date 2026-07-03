@@ -61,11 +61,24 @@ fn help_flag_prints_usage_and_succeeds() {
 
 #[test]
 fn unimplemented_subcommand_fails_with_a_clear_message() {
-    let home = sandbox("overlaps");
-    let out = run(&home, &["overlaps"]);
+    let home = sandbox("cleanup");
+    let out = run(&home, &["cleanup"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not implemented"), "stderr was: {stderr}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn overlaps_prints_a_report_and_succeeds() {
+    // Advisory + read-only, so safe to run against the host: either overlaps
+    // exist or the green "no overlaps detected" prints. Exit 0, escape-free.
+    let home = sandbox("overlaps");
+    let out = run(&home, &["overlaps", "--no-color"]);
+    assert!(out.status.success(), "overlaps should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("overlap"), "stdout was: {stdout}");
+    assert!(!stdout.contains('\u{1b}'), "ANSI in no-color: {stdout:?}");
     let _ = std::fs::remove_dir_all(&home);
 }
 

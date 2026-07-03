@@ -27,9 +27,7 @@ pub enum EdgeKind {
 pub enum Confidence {
     /// Derived from authoritative source data with no inference.
     Confirmed,
-    /// Heuristic derivation, likely correct, basis is stated. First
-    /// constructed by the v0.0.8 overlap matcher; spec §8 defines it now.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// Heuristic derivation, likely correct, basis is stated.
     Inferred,
     /// Tool cannot determine from available data.
     Unknown,

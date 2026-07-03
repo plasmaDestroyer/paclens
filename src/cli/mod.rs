@@ -1,5 +1,6 @@
 //! CLI entry: argument parsing, the init sequence, and subcommand dispatch.
 
+mod overlaps;
 mod status;
 mod style;
 mod update;
@@ -179,7 +180,17 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
-        Command::Overlaps => not_implemented("overlaps", &err_styles),
+        Command::Overlaps => {
+            let out_styles = Styles::resolve(
+                cli.no_color,
+                config.general.color_theme(),
+                std::io::stdout().is_terminal(),
+            );
+            report(
+                overlaps::run(&config, cli.refresh, config_path.as_deref(), &out_styles),
+                &err_styles,
+            )
+        }
         Command::Cleanup => not_implemented("cleanup", &err_styles),
     }
 }
