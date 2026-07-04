@@ -76,6 +76,7 @@ pub fn run(
             cached.unwrap_or_else(ScanResult::empty),
             theme,
             config.why.max_depth,
+            executor::sudo::detect(),
         );
         let mut job = None;
         if start_scanning {
@@ -163,8 +164,8 @@ fn run_loop(
                 let plan = app.update_plan();
                 if plan.is_empty() {
                     app.set_flash("nothing selected to update");
-                } else if executor::executable_steps(&plan) == 0 {
-                    app.set_flash("nothing runnable yet — pacman & system updates arrive in v0.1");
+                } else if executor::executable_steps(&plan, app.privilege_tool()) == 0 {
+                    app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot update");
                 } else {
                     app.open_confirm();
                 }
@@ -173,7 +174,7 @@ fn run_loop(
             Action::Execute => {
                 app.close_confirm();
                 let plan = app.update_plan();
-                match run_plan_suspended(terminal, &plan) {
+                match run_plan_suspended(terminal, &plan, app.privilege_tool()) {
                     Ok(report) => {
                         // Refresh synchronously here: the user just watched the
                         // update run, and the result view must sit on current
@@ -198,6 +199,7 @@ fn run_loop(
 fn run_plan_suspended(
     terminal: &mut DefaultTerminal,
     plan: &ActionPlan,
+    tool: Option<&str>,
 ) -> anyhow::Result<executor::ExecutionReport> {
     disable_raw_mode().context("failed to disable raw mode")?;
     ratatui::crossterm::execute!(std::io::stdout(), LeaveAlternateScreen)
@@ -205,7 +207,7 @@ fn run_plan_suspended(
 
     let result = (|| {
         let mut log = UpdateLog::open_default()?;
-        Ok(executor::execute(plan, &InteractiveRunner, &mut log))
+        Ok(executor::execute(plan, &InteractiveRunner, &mut log, tool))
     })();
 
     enable_raw_mode().context("failed to re-enable raw mode")?;

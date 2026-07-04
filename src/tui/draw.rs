@@ -634,20 +634,23 @@ fn plural(n: u32) -> &'static str {
 /// y/n key hints. Rendered on top of the update screen.
 fn render_confirm_modal(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
     let theme = &app.theme;
-    let apps = executor::executable_targets(plan);
+    let tool = app.privilege_tool();
+    let total = executor::executable_targets(plan, tool);
+    let sources = executor::executable_steps(plan, tool);
 
     let mut body: Vec<Line> = vec![Line::from(Span::styled(
         format!(
-            "Update {apps} Flatpak app{}?",
-            if apps == 1 { "" } else { "s" }
+            "Update {total} package{} across {sources} source{}?",
+            if total == 1 { "" } else { "s" },
+            if sources == 1 { "" } else { "s" },
         ),
         theme.accent,
     ))];
     body.push(Line::default());
     for step in &plan.steps {
-        if executor::skip_reason(step).is_none() {
+        if executor::skip_reason(step, tool).is_none() {
             body.push(Line::from(Span::styled(
-                step.command.join(" "),
+                executor::effective_command(step, tool).join(" "),
                 theme.primary,
             )));
         }
@@ -656,7 +659,7 @@ fn render_confirm_modal(frame: &mut Frame, area: Rect, app: &App, plan: &ActionP
         .steps
         .iter()
         .filter_map(|step| {
-            executor::skip_reason(step).map(|reason| {
+            executor::skip_reason(step, tool).map(|reason| {
                 Line::from(Span::styled(
                     format!("{} will be skipped — {reason}", step.source_id),
                     theme.dim,
@@ -957,6 +960,7 @@ mod tests {
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         let text = render(&app, 70, 14);
         assert!(text.contains("paclens"));
@@ -970,6 +974,7 @@ mod tests {
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         app.set_scanning(true);
         let text = render(&app, 70, 14);
@@ -989,6 +994,7 @@ mod tests {
             ]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         app.goto_updates();
         let text = render(&app, 72, 16);
@@ -1018,6 +1024,7 @@ mod tests {
             )]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         app.goto_updates();
         let text = render(&app, 72, 16);
@@ -1030,6 +1037,7 @@ mod tests {
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         app.goto_updates();
         app.toggle_selected(); // pacman off -> plan empty
@@ -1043,7 +1051,7 @@ mod tests {
 
     #[test]
     fn update_screen_empty_state_still_shows_the_way_back() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20);
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20, Some("sudo"));
         app.goto_updates();
         let text = render(&app, 72, 16);
         assert!(text.contains("Nothing to update"), "{text}");
@@ -1059,6 +1067,7 @@ mod tests {
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         app.goto_updates();
         app.set_flash("nothing selected to update");
@@ -1068,7 +1077,7 @@ mod tests {
 
     // --- confirm modal ---
     #[test]
-    fn confirm_modal_shows_question_command_skip_note_and_keys() {
+    fn confirm_modal_shows_both_effective_commands_with_a_tool() {
         let mut app = App::new(
             scan_with(vec![
                 upd("linux", "1", "2", SourceId::pacman()),
@@ -1076,42 +1085,52 @@ mod tests {
             ]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         app.goto_updates();
         app.open_confirm();
-        let text = render(&app, 76, 20);
+        let text = render(&app, 80, 20);
         assert!(text.contains("confirm"), "modal title missing:\n{text}");
         assert!(
-            text.contains("Update 1 Flatpak app?"),
+            text.contains("Update 2 packages across 2 sources?"),
             "question missing:\n{text}"
+        );
+        assert!(
+            text.contains("sudo pacman -Syu"),
+            "privileged command missing:\n{text}"
         );
         assert!(
             text.contains("flatpak update --user --noninteractive"),
             "exact command missing:\n{text}"
         );
-        assert!(
-            text.contains("pacman will be skipped"),
-            "skip note missing:\n{text}"
-        );
+        assert!(!text.contains("will be skipped"), "{text}");
         assert!(text.contains("[y] update"), "y hint missing:\n{text}");
         assert!(text.contains("[n] cancel"), "n hint missing:\n{text}");
     }
 
     #[test]
-    fn confirm_modal_pluralizes_and_omits_skip_note_when_nothing_skipped() {
+    fn confirm_modal_skips_privileged_steps_without_a_tool() {
         let mut app = App::new(
             scan_with(vec![
+                upd("linux", "1", "2", SourceId::pacman()),
                 upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
-                upd("org.x.Editor", "1.0", "1.1", SourceId::flatpak_user()),
             ]),
             Theme::none(),
             20,
+            None, // no sudo/doas/pkexec on PATH
         );
         app.goto_updates();
         app.open_confirm();
-        let text = render(&app, 76, 20);
-        assert!(text.contains("Update 2 Flatpak apps?"), "{text}");
-        assert!(!text.contains("will be skipped"), "{text}");
+        let text = render(&app, 80, 20);
+        assert!(
+            text.contains("Update 1 package across 1 source?"),
+            "question missing:\n{text}"
+        );
+        assert!(
+            text.contains("pacman will be skipped — no privilege tool"),
+            "skip note missing:\n{text}"
+        );
+        assert!(!text.contains("sudo pacman"), "{text}");
     }
 
     // --- result view ---
@@ -1147,7 +1166,7 @@ mod tests {
 
     #[test]
     fn result_view_shows_every_outcome_and_the_log_path() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20);
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20, Some("sudo"));
         app.goto_updates();
         app.set_report(report());
         let text = render(&app, 76, 18);
@@ -1179,7 +1198,7 @@ mod tests {
 
     #[test]
     fn all_green_result_has_no_failed_segment() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20);
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20, Some("sudo"));
         app.goto_updates();
         app.set_report(ExecutionReport {
             steps: vec![StepReport {
@@ -1222,7 +1241,7 @@ mod tests {
     }
 
     fn pkg_app() -> App {
-        let mut app = App::new(pkg_scan(), Theme::none(), 20);
+        let mut app = App::new(pkg_scan(), Theme::none(), 20, Some("sudo"));
         app.open_packages(); // dashboard row 0 = pacman
         app
     }
@@ -1317,7 +1336,7 @@ mod tests {
         let mut s = scan_with(Vec::new());
         s.sources.clear();
         s.packages.clear();
-        let mut app = App::new(s, Theme::none(), 20);
+        let mut app = App::new(s, Theme::none(), 20, Some("sudo"));
         app.set_scanning(true);
         app.tick();
         let text = render(&app, 70, 12);
@@ -1331,6 +1350,7 @@ mod tests {
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
             20,
+            Some("sudo"),
         );
         app.set_scanning(true);
         let text = render(&app, 70, 14);

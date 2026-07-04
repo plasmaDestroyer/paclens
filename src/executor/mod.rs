@@ -3,9 +3,9 @@
 //! Contract (dev-notes §3): the executor never decides what to do — all
 //! decisions come from the user via the TUI/CLI. It logs every command before
 //! and after execution, and reports exit codes without interpretation (the
-//! renderers interpret). Steps it cannot run *yet* (pacman and flatpak-system
-//! need sudo, which arrives in v0.1) are never silently dropped: they come back
-//! as `Skipped` with an explicit reason.
+//! renderers interpret). Privileged steps (pacman, flatpak-system) run through
+//! the detected privilege tool ([`sudo`], spec §13); with no tool on PATH they
+//! come back as `Skipped` with an explicit reason, never silently dropped.
 //!
 //! Commands run with inherited stdio in the raw terminal — the user sees and
 //! interacts with the tool's own output directly (spec §13.2). The
@@ -13,6 +13,7 @@
 //! `CommandRunner`.
 
 mod log;
+pub mod sudo;
 
 use std::path::PathBuf;
 
@@ -87,35 +88,49 @@ impl ExecutionReport {
     }
 }
 
-/// Why a step cannot run in this version, or `None` if it is executable now.
-/// v0.0.6 executes Flatpak user-scope only — everything needing sudo waits for
-/// the privilege model in v0.1 (roadmap; spec §13).
-pub fn skip_reason(step: &ActionStep) -> Option<&'static str> {
-    if step.source_id == SourceId::flatpak_user() {
-        None
-    } else if step.source_id == SourceId::flatpak_system() {
-        Some("needs sudo — execution arrives in v0.1")
-    } else if step.source_id == SourceId::pacman() {
-        Some("execution arrives in v0.1")
+/// Does this step need privilege escalation? Source-specific (P6, spec §13):
+/// pacman and flatpak-system do; flatpak-user does not.
+pub fn needs_privilege(step: &ActionStep) -> bool {
+    step.source_id != SourceId::flatpak_user()
+}
+
+/// Why a step cannot run, or `None` if it is executable. Since v0.1.0 the only
+/// blocker is a privileged step with no privilege tool on PATH (spec §13.4:
+/// "show error, do not proceed with privileged operations").
+pub fn skip_reason(step: &ActionStep, tool: Option<&str>) -> Option<&'static str> {
+    if needs_privilege(step) && tool.is_none() {
+        Some("no privilege tool found (sudo/doas/pkexec)")
     } else {
-        Some("not executable in this version")
+        None
+    }
+}
+
+/// The exact argv that will run: the plan's bare command with the privilege
+/// tool prepended when the step needs it. Renderers show this same value
+/// before anything runs (P1) — display and execution can never diverge.
+pub fn effective_command(step: &ActionStep, tool: Option<&str>) -> Vec<String> {
+    match (needs_privilege(step), tool) {
+        (true, Some(tool)) => std::iter::once(tool.to_string())
+            .chain(step.command.iter().cloned())
+            .collect(),
+        _ => step.command.clone(),
     }
 }
 
 /// Total packages/apps across the steps that would actually run.
-pub fn executable_targets(plan: &ActionPlan) -> usize {
+pub fn executable_targets(plan: &ActionPlan, tool: Option<&str>) -> usize {
     plan.steps
         .iter()
-        .filter(|s| skip_reason(s).is_none())
+        .filter(|s| skip_reason(s, tool).is_none())
         .map(|s| s.targets.len())
         .sum()
 }
 
 /// How many steps would actually run.
-pub fn executable_steps(plan: &ActionPlan) -> usize {
+pub fn executable_steps(plan: &ActionPlan, tool: Option<&str>) -> usize {
     plan.steps
         .iter()
-        .filter(|s| skip_reason(s).is_none())
+        .filter(|s| skip_reason(s, tool).is_none())
         .count()
 }
 
@@ -138,12 +153,13 @@ pub fn execute(
     plan: &ActionPlan,
     runner: &impl StepRunner,
     log: &mut UpdateLog,
+    tool: Option<&str>,
 ) -> ExecutionReport {
     log.line("update session started");
     let run_ids: Vec<&str> = plan
         .steps
         .iter()
-        .filter(|s| skip_reason(s).is_none())
+        .filter(|s| skip_reason(s, tool).is_none())
         .map(|s| s.source_id.as_str())
         .collect();
     log.line(&format!("sources: [{}]", run_ids.join(", ")));
@@ -152,7 +168,7 @@ pub fn execute(
     for step in &plan.steps {
         let targets = step.targets.len();
 
-        if let Some(reason) = skip_reason(step) {
+        if let Some(reason) = skip_reason(step, tool) {
             log.line(&format!("{}: skipped — {reason}", step.source_id));
             tracing::info!(source = %step.source_id, reason, "update step skipped");
             steps.push(StepReport {
@@ -165,7 +181,8 @@ pub fn execute(
             continue;
         }
 
-        let cmd = step.command.join(" ");
+        let argv = effective_command(step, tool);
+        let cmd = argv.join(" ");
         log.line(&format!(
             "{}: running update ({})",
             step.source_id,
@@ -176,7 +193,7 @@ pub fn execute(
         // terminal a header so the user knows whose output follows (P1).
         println!(":: {cmd}");
 
-        let status = match runner.run(&step.command) {
+        let status = match runner.run(&argv) {
             Ok(Some(0)) => {
                 log.line(&format!("{}: completed, exit 0", step.source_id));
                 StepStatus::Succeeded
@@ -303,27 +320,60 @@ mod tests {
         std::fs::read_to_string(path).unwrap()
     }
 
-    // --- skip classification ---
+    // --- privilege classification ---
     #[test]
-    fn only_flatpak_user_is_executable_in_v006() {
-        assert_eq!(skip_reason(&flatpak_user_step()), None);
-        let sys = step(SourceId::flatpak_system(), &["a"], &["flatpak"]);
-        assert_eq!(
-            skip_reason(&sys),
-            Some("needs sudo — execution arrives in v0.1")
-        );
-        let pac = step(SourceId::pacman(), &["a"], &["pacman", "-Syu"]);
-        assert_eq!(skip_reason(&pac), Some("execution arrives in v0.1"));
+    fn only_flatpak_user_runs_unprivileged() {
+        assert!(!needs_privilege(&flatpak_user_step()));
+        assert!(needs_privilege(&step(
+            SourceId::flatpak_system(),
+            &["a"],
+            &["flatpak"]
+        )));
+        assert!(needs_privilege(&step(
+            SourceId::pacman(),
+            &["a"],
+            &["pacman", "-Syu"]
+        )));
     }
 
     #[test]
-    fn executable_counters_only_count_runnable_steps() {
+    fn privileged_steps_skip_only_without_a_tool() {
+        let pac = step(SourceId::pacman(), &["a"], &["pacman", "-Syu"]);
+        assert_eq!(
+            skip_reason(&pac, None),
+            Some("no privilege tool found (sudo/doas/pkexec)")
+        );
+        assert_eq!(skip_reason(&pac, Some("sudo")), None);
+        // flatpak-user never needs one.
+        assert_eq!(skip_reason(&flatpak_user_step(), None), None);
+    }
+
+    #[test]
+    fn effective_command_prepends_the_tool_only_where_needed() {
+        let pac = step(SourceId::pacman(), &["a"], &["pacman", "-Syu"]);
+        assert_eq!(
+            effective_command(&pac, Some("doas")),
+            vec!["doas", "pacman", "-Syu"]
+        );
+        // No tool → bare command (the step will be skipped anyway).
+        assert_eq!(effective_command(&pac, None), vec!["pacman", "-Syu"]);
+        // Unprivileged step never gets a prefix.
+        assert_eq!(
+            effective_command(&flatpak_user_step(), Some("sudo"))[0],
+            "flatpak"
+        );
+    }
+
+    #[test]
+    fn executable_counters_depend_on_the_tool() {
         let p = plan(vec![
             step(SourceId::pacman(), &["linux", "firefox"], &["pacman"]),
             flatpak_user_step(),
         ]);
-        assert_eq!(executable_steps(&p), 1);
-        assert_eq!(executable_targets(&p), 2); // the two flatpak apps, not pacman's
+        assert_eq!(executable_steps(&p, None), 1);
+        assert_eq!(executable_targets(&p, None), 2); // flatpak apps only
+        assert_eq!(executable_steps(&p, Some("sudo")), 2);
+        assert_eq!(executable_targets(&p, Some("sudo")), 4);
     }
 
     #[test]
@@ -341,7 +391,7 @@ mod tests {
         let mut log = UpdateLog::open_in(&dir).unwrap();
         let runner = ScriptedRunner::new(vec![Ok(Some(0))]);
 
-        let report = execute(&plan(vec![flatpak_user_step()]), &runner, &mut log);
+        let report = execute(&plan(vec![flatpak_user_step()]), &runner, &mut log, None);
 
         assert_eq!(
             runner.calls.borrow().as_slice(),
@@ -370,18 +420,43 @@ mod tests {
             step(SourceId::pacman(), &["linux"], &["pacman", "-Syu"]),
             flatpak_user_step(),
         ]);
-        let report = execute(&p, &runner, &mut log);
+        // No privilege tool → pacman never reaches the runner.
+        let report = execute(&p, &runner, &mut log, None);
 
-        // pacman never reached the runner.
         assert_eq!(runner.calls.borrow().len(), 1);
         assert_eq!(
             report.steps[0].status,
             StepStatus::Skipped {
-                reason: "execution arrives in v0.1".to_string()
+                reason: "no privilege tool found (sudo/doas/pkexec)".to_string()
             }
         );
         assert_eq!(report.skipped(), 1);
         assert_eq!(report.executed(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn privileged_step_runs_with_the_tool_prefix() {
+        let dir = sandbox("priv");
+        let mut log = UpdateLog::open_in(&dir).unwrap();
+        let runner = ScriptedRunner::new(vec![Ok(Some(0)), Ok(Some(0))]);
+
+        let p = plan(vec![
+            step(SourceId::pacman(), &["linux"], &["pacman", "-Syu"]),
+            flatpak_user_step(),
+        ]);
+        let report = execute(&p, &runner, &mut log, Some("sudo"));
+
+        let calls = runner.calls.borrow();
+        assert_eq!(calls[0], vec!["sudo", "pacman", "-Syu"]);
+        assert_eq!(calls[1][0], "flatpak"); // no prefix for user scope
+        assert_eq!(report.succeeded(), 2);
+        assert_eq!(report.skipped(), 0);
+        assert!(
+            log_text(&dir).contains("sources: [pacman, flatpak-user]"),
+            "{}",
+            log_text(&dir)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -393,7 +468,7 @@ mod tests {
 
         // Two runnable steps (synthetic, but the executor must not care).
         let p = plan(vec![flatpak_user_step(), flatpak_user_step()]);
-        let report = execute(&p, &runner, &mut log);
+        let report = execute(&p, &runner, &mut log, None);
 
         assert_eq!(runner.calls.borrow().len(), 2);
         assert_eq!(
@@ -418,7 +493,7 @@ mod tests {
         ]);
 
         let p = plan(vec![flatpak_user_step(), flatpak_user_step()]);
-        let report = execute(&p, &runner, &mut log);
+        let report = execute(&p, &runner, &mut log, None);
 
         assert_eq!(
             report.steps[0].status,
@@ -445,13 +520,13 @@ mod tests {
             step(SourceId::pacman(), &["linux"], &["pacman", "-Syu"]),
             flatpak_user_step(),
         ]);
-        let report = execute(&p, &runner, &mut log);
+        let report = execute(&p, &runner, &mut log, None);
 
         let text = log_text(&dir);
         assert!(text.contains("update session started"), "{text}");
         assert!(text.contains("sources: [flatpak-user]"), "{text}");
         assert!(
-            text.contains("pacman: skipped — execution arrives in v0.1"),
+            text.contains("pacman: skipped — no privilege tool found (sudo/doas/pkexec)"),
             "{text}"
         );
         assert!(
@@ -476,7 +551,7 @@ mod tests {
         let mut log = UpdateLog::open_in(&dir).unwrap();
         let runner = ScriptedRunner::new(vec![Ok(Some(2))]);
 
-        execute(&plan(vec![flatpak_user_step()]), &runner, &mut log);
+        execute(&plan(vec![flatpak_user_step()]), &runner, &mut log, None);
 
         let text = log_text(&dir);
         assert!(text.contains("flatpak-user: failed, exit 2"), "{text}");
@@ -493,7 +568,7 @@ mod tests {
         let mut log = UpdateLog::open_in(&dir).unwrap();
         let runner = ScriptedRunner::new(Vec::new());
 
-        let report = execute(&plan(Vec::new()), &runner, &mut log);
+        let report = execute(&plan(Vec::new()), &runner, &mut log, None);
 
         assert!(report.steps.is_empty());
         assert!(runner.calls.borrow().is_empty());

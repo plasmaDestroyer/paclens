@@ -78,10 +78,17 @@ pub struct App {
     why_open: bool,
     /// Spinner animation frame, advanced by the loop's poll tick.
     spinner_frame: usize,
+    /// The privilege tool detected at startup (spec §13.4), if any.
+    privilege_tool: Option<&'static str>,
 }
 
 impl App {
-    pub fn new(scan: ScanResult, theme: Theme, why_depth: u32) -> Self {
+    pub fn new(
+        scan: ScanResult,
+        theme: Theme,
+        why_depth: u32,
+        privilege_tool: Option<&'static str>,
+    ) -> Self {
         let dash_selected = if scan.sources.is_empty() {
             None
         } else {
@@ -108,6 +115,7 @@ impl App {
             filter_active: false,
             why_open: false,
             spinner_frame: 0,
+            privilege_tool,
         }
     }
 
@@ -272,6 +280,10 @@ impl App {
     /// The plan for the currently enabled sources (shared with the CLI via P5).
     pub fn update_plan(&self) -> ActionPlan {
         planner::plan_updates(&self.scan, |id| self.is_enabled(id))
+    }
+
+    pub fn privilege_tool(&self) -> Option<&'static str> {
+        self.privilege_tool
     }
 
     pub fn toggle_selected(&mut self) {
@@ -542,7 +554,12 @@ mod tests {
     }
 
     fn app() -> App {
-        App::new(scan_with_sources(three_sources()), Theme::none(), 20)
+        App::new(
+            scan_with_sources(three_sources()),
+            Theme::none(),
+            20,
+            Some("sudo"),
+        )
     }
 
     // --- dashboard (unchanged behavior) ---

@@ -58,32 +58,41 @@ pub fn run(
     execute_flow(&plan, styles)
 }
 
-/// The confirm + execute half of a bare `paclens update`: announce what will
-/// be skipped, ask `[y/N]`, run the plan, and report every outcome.
+/// The confirm + execute half of a bare `paclens update`: show the exact
+/// commands (P1), announce skips, ask `[y/N]`, run, report every outcome.
 fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
+    let tool = executor::sudo::detect();
+
     for step in &plan.steps {
-        if let Some(reason) = executor::skip_reason(step) {
-            println!(
+        match executor::skip_reason(step, tool) {
+            Some(reason) => println!(
                 "  {}",
                 styles.dim(&format!(
                     "{} will be skipped — {reason}",
                     step.source_id.as_str()
                 ))
-            );
+            ),
+            None => println!(
+                "  {} {}",
+                styles.dim("will run:"),
+                executor::effective_command(step, tool).join(" ")
+            ),
         }
     }
 
-    let apps = executor::executable_targets(plan);
-    if apps == 0 {
+    let total = executor::executable_targets(plan, tool);
+    if total == 0 {
         println!("\n{}", styles.dim("nothing to execute"));
         return Ok(());
     }
 
+    let sources = executor::executable_steps(plan, tool);
     print!(
         "\n{} {} ",
         styles.summary_updates(&format!(
-            "Update {apps} Flatpak app{}?",
-            if apps == 1 { "" } else { "s" }
+            "Update {total} package{} across {sources} source{}?",
+            if total == 1 { "" } else { "s" },
+            if sources == 1 { "" } else { "s" },
         )),
         styles.dim("[y/N]")
     );
@@ -97,7 +106,7 @@ fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
 
     println!();
     let mut log = UpdateLog::open_default()?;
-    let report = executor::execute(plan, &InteractiveRunner, &mut log);
+    let report = executor::execute(plan, &InteractiveRunner, &mut log, tool);
 
     println!();
     print!("{}", render_report(&report, styles));
