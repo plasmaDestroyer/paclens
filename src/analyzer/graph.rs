@@ -203,6 +203,7 @@ mod tests {
             required_by: Vec::new(),
             optional_deps: Vec::new(),
             provides: provides.iter().map(|p| p.to_string()).collect(),
+            runtime: false,
         }
     }
 

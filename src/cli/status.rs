@@ -136,6 +136,7 @@ mod tests {
             required_by: Vec::new(),
             optional_deps: Vec::new(),
             provides: Vec::new(),
+            runtime: false,
         }
     }
 
@@ -162,6 +163,7 @@ mod tests {
                     kind: SourceKind::Pacman,
                     available: true,
                     last_scanned: None,
+                    accurate_updates: true,
                 },
                 Source {
                     id: SourceId::flatpak_user(),
@@ -170,6 +172,7 @@ mod tests {
                     },
                     available: flatpak_ok,
                     last_scanned: None,
+                    accurate_updates: true,
                 },
             ],
             packages,

@@ -156,6 +156,7 @@ mod tests {
                     kind: SourceKind::Pacman,
                     available: true,
                     last_scanned: Some(scanned_at),
+                    accurate_updates: true,
                 },
                 Source {
                     id: SourceId::flatpak_user(),
@@ -164,6 +165,7 @@ mod tests {
                     },
                     available: true,
                     last_scanned: Some(scanned_at),
+                    accurate_updates: true,
                 },
             ],
             packages: Vec::new(),

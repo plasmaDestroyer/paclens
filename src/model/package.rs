@@ -27,6 +27,10 @@ pub struct Package {
     pub optional_deps: Vec<String>,
     /// Virtual package names this provides (`pacman -Qi` "Provides").
     pub provides: Vec<String>,
+    /// A Flatpak runtime (platform/SDK/theme/driver) rather than an app.
+    /// Always false for pacman packages. Spec §4.3 deviation (dev-notes §7).
+    #[serde(default)]
+    pub runtime: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

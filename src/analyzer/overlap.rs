@@ -88,7 +88,8 @@ pub fn detect_overlaps(
     let mut out: Vec<OverlapCandidate> = scan
         .packages
         .iter()
-        .filter(|p| p.source_id.as_str().starts_with("flatpak"))
+        // Runtimes are never overlap candidates (spec 9.1 + 9.3).
+        .filter(|p| p.source_id.as_str().starts_with("flatpak") && !p.runtime)
         .filter(|app| !ignored(&app.name))
         .filter_map(|app| {
             let (pacman_pkg, method, confidence) = match_app(app, &native, &map)?;
@@ -203,6 +204,7 @@ mod tests {
             required_by: Vec::new(),
             optional_deps: Vec::new(),
             provides: Vec::new(),
+            runtime: false,
         }
     }
 
@@ -218,6 +220,7 @@ mod tests {
             required_by: Vec::new(),
             optional_deps: Vec::new(),
             provides: Vec::new(),
+            runtime: false,
         }
     }
 

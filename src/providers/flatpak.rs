@@ -46,43 +46,61 @@ impl Provider for FlatpakProvider<'_> {
         super::binary_on_path(FLATPAK_BIN)
     }
 
+    /// Apps *and* runtimes: `flatpak update` updates both, so both belong in
+    /// the scan (the user's pending updates are often runtimes — GNOME
+    /// Platform, GL drivers, themes). Runtimes can repeat rows (branches /
+    /// arches share an ID); dedup on (name, version, source).
     fn scan_installed(&self) -> Result<Vec<Package>, ProviderError> {
-        let out = self
-            .runner
-            .run(FLATPAK_BIN, &["list", "--app", LIST_COLUMNS])
-            .map_err(|source| ProviderError::Exec {
-                program: FLATPAK_BIN.to_string(),
-                source,
-            })?;
-        if out.exit_code != 0 {
-            return Err(ProviderError::CommandFailed {
-                program: format!("{FLATPAK_BIN} list --app"),
-                exit_code: out.exit_code,
-                stderr: out.stderr,
-            });
-        }
-        Ok(parse_list_apps(&out.stdout))
+        let apps = self.list(&["list", "--app", LIST_COLUMNS], false)?;
+        let mut runtimes = self.list(&["list", "--runtime", LIST_COLUMNS], true)?;
+
+        let mut packages = apps;
+        packages.append(&mut runtimes);
+        packages.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
+        packages.dedup_by(|a, b| {
+            a.name == b.name && a.version == b.version && a.source_id == b.source_id
+        });
+        Ok(packages)
     }
 
+    /// No `--app` filter: runtime updates count too — they are what
+    /// `flatpak update` will actually install.
     fn scan_updates(&self) -> Result<Vec<PendingUpdate>, ProviderError> {
         let out = self
             .runner
-            .run(
-                FLATPAK_BIN,
-                &["remote-ls", "--updates", "--app", UPDATE_COLUMNS],
-            )
+            .run(FLATPAK_BIN, &["remote-ls", "--updates", UPDATE_COLUMNS])
             .map_err(|source| ProviderError::Exec {
                 program: FLATPAK_BIN.to_string(),
                 source,
             })?;
         if out.exit_code != 0 {
             return Err(ProviderError::CommandFailed {
-                program: format!("{FLATPAK_BIN} remote-ls --updates --app"),
+                program: format!("{FLATPAK_BIN} remote-ls --updates"),
                 exit_code: out.exit_code,
                 stderr: out.stderr,
             });
         }
         Ok(parse_updates(&out.stdout))
+    }
+}
+
+impl FlatpakProvider<'_> {
+    fn list(&self, args: &[&str], runtime: bool) -> Result<Vec<Package>, ProviderError> {
+        let out = self
+            .runner
+            .run(FLATPAK_BIN, args)
+            .map_err(|source| ProviderError::Exec {
+                program: FLATPAK_BIN.to_string(),
+                source,
+            })?;
+        if out.exit_code != 0 {
+            return Err(ProviderError::CommandFailed {
+                program: format!("{FLATPAK_BIN} {}", args.join(" ")),
+                exit_code: out.exit_code,
+                stderr: out.stderr,
+            });
+        }
+        Ok(parse_list(&out.stdout, runtime))
     }
 }
 
@@ -94,9 +112,10 @@ fn scope_source_id(installation: &str) -> SourceId {
     }
 }
 
-/// Parse `flatpak list --app --columns=application,name,version,origin,installation`.
-/// Tab-separated; `name` is the display name, `application` is the app id.
-fn parse_list_apps(stdout: &str) -> Vec<Package> {
+/// Parse `flatpak list --columns=application,name,version,origin,installation`
+/// output (apps or runtimes). Tab-separated; `name` is the display name,
+/// `application` is the app id.
+fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
     stdout
         .lines()
         .filter_map(|line| {
@@ -123,12 +142,13 @@ fn parse_list_apps(stdout: &str) -> Vec<Package> {
                 required_by: Vec::new(),
                 optional_deps: Vec::new(),
                 provides: Vec::new(),
+                runtime,
             })
         })
         .collect()
 }
 
-/// Parse `flatpak remote-ls --updates --app --columns=application,version`.
+/// Parse `flatpak remote-ls --updates --columns=application,version`.
 /// The current version and scope are unknown from this command; the scanner
 /// reconciles them against the installed list.
 fn parse_updates(stdout: &str) -> Vec<PendingUpdate> {
@@ -161,19 +181,59 @@ mod tests {
 
     const LIST_KEY: &str =
         "flatpak list --app --columns=application,name,version,origin,installation";
-    const UPDATES_KEY: &str = "flatpak remote-ls --updates --app --columns=application,version";
+    const RUNTIME_KEY: &str =
+        "flatpak list --runtime --columns=application,name,version,origin,installation";
+    const UPDATES_KEY: &str = "flatpak remote-ls --updates --columns=application,version";
 
     const LIST_FIXTURE: &str = include_str!("../../tests/fixtures/flatpak/list_apps.txt");
+    const RUNTIME_FIXTURE: &str = include_str!("../../tests/fixtures/flatpak/list_runtimes.txt");
     const UPDATES_FIXTURE: &str =
         include_str!("../../tests/fixtures/flatpak/remote_ls_updates.txt");
 
+    /// Runner with both list calls stubbed (runtimes empty unless overridden).
+    fn runner_with_lists(apps: &str, runtimes: &str) -> MockRunner {
+        MockRunner::new()
+            .with(LIST_KEY, apps, 0)
+            .with(RUNTIME_KEY, runtimes, 0)
+    }
+
     #[test]
     fn parse_list_apps_fixture_has_expected_count() {
-        let runner = MockRunner::new().with(LIST_KEY, LIST_FIXTURE, 0);
+        let runner = runner_with_lists(LIST_FIXTURE, "");
         let provider = FlatpakProvider::new(&runner);
         let pkgs = provider.scan_installed().unwrap();
         assert_eq!(pkgs.len(), 3);
-        assert_eq!(pkgs[0].name, "org.mozilla.firefox");
+        assert!(pkgs.iter().all(|p| !p.runtime));
+        assert!(pkgs.iter().any(|p| p.name == "org.mozilla.firefox"));
+    }
+
+    #[test]
+    fn runtimes_are_scanned_flagged_and_deduped() {
+        // Real fixture: 9 rows, org.freedesktop.Platform.GL.default repeats
+        // with the same version (branch/arch duplicates) → deduped.
+        let runner = runner_with_lists("", RUNTIME_FIXTURE);
+        let provider = FlatpakProvider::new(&runner);
+        let pkgs = provider.scan_installed().unwrap();
+        assert!(pkgs.len() < 9, "dupes not collapsed: {}", pkgs.len());
+        assert!(pkgs.iter().all(|p| p.runtime));
+        assert!(
+            pkgs.iter().any(|p| p.name == "org.gnome.Platform"),
+            "missing gnome platform"
+        );
+        let gl: Vec<_> = pkgs
+            .iter()
+            .filter(|p| p.name == "org.freedesktop.Platform.GL.default")
+            .collect();
+        assert_eq!(gl.len(), 1, "GL.default should dedup to one");
+    }
+
+    #[test]
+    fn apps_and_runtimes_merge_into_one_list() {
+        let runner = runner_with_lists(LIST_FIXTURE, RUNTIME_FIXTURE);
+        let provider = FlatpakProvider::new(&runner);
+        let pkgs = provider.scan_installed().unwrap();
+        assert!(pkgs.iter().any(|p| !p.runtime));
+        assert!(pkgs.iter().any(|p| p.runtime));
     }
 
     #[test]
@@ -187,21 +247,23 @@ mod tests {
     fn parse_list_apps_reads_columns_and_scope() {
         let stdout = "org.mozilla.firefox\tFirefox\t128.0\tflathub\tsystem\n\
                       md.obsidian.Obsidian\tObsidian\t1.6.0\tflathub\tuser\n";
-        let runner = MockRunner::new().with(LIST_KEY, stdout, 0);
+        let runner = runner_with_lists(stdout, "");
         let provider = FlatpakProvider::new(&runner);
         let pkgs = provider.scan_installed().unwrap();
         assert_eq!(pkgs.len(), 2);
-        assert_eq!(pkgs[0].name, "org.mozilla.firefox");
-        assert_eq!(pkgs[0].version, "128.0");
-        assert_eq!(pkgs[0].description.as_deref(), Some("Firefox"));
-        assert_eq!(pkgs[0].source_id, SourceId::flatpak_system());
-        assert_eq!(pkgs[1].source_id, SourceId::flatpak_user());
+        // scan_installed name-sorts, so obsidian comes first.
+        assert_eq!(pkgs[0].name, "md.obsidian.Obsidian");
+        assert_eq!(pkgs[0].source_id, SourceId::flatpak_user());
+        assert_eq!(pkgs[1].name, "org.mozilla.firefox");
+        assert_eq!(pkgs[1].version, "128.0");
+        assert_eq!(pkgs[1].description.as_deref(), Some("Firefox"));
+        assert_eq!(pkgs[1].source_id, SourceId::flatpak_system());
     }
 
     #[test]
     fn parse_list_apps_handles_missing_version() {
         let stdout = "org.example.App\tExample\t\tflathub\tuser\n";
-        let runner = MockRunner::new().with(LIST_KEY, stdout, 0);
+        let runner = runner_with_lists(stdout, "");
         let provider = FlatpakProvider::new(&runner);
         let pkgs = provider.scan_installed().unwrap();
         assert_eq!(pkgs.len(), 1);
@@ -210,7 +272,7 @@ mod tests {
 
     #[test]
     fn empty_list_is_ok_not_error() {
-        let runner = MockRunner::new().with(LIST_KEY, "", 0);
+        let runner = runner_with_lists("", "");
         let provider = FlatpakProvider::new(&runner);
         assert_eq!(provider.scan_installed().unwrap().len(), 0);
     }

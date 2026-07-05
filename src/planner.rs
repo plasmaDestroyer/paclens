@@ -73,6 +73,7 @@ mod tests {
             kind,
             available,
             last_scanned: None,
+            accurate_updates: true,
         }
     }
 

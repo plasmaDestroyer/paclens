@@ -291,6 +291,7 @@ mod tests {
                     kind: SourceKind::Pacman,
                     available: true,
                     last_scanned: None,
+                    accurate_updates: true,
                 },
                 Source {
                     id: SourceId::flatpak_user(),
@@ -299,6 +300,7 @@ mod tests {
                     },
                     available: true,
                     last_scanned: None,
+                    accurate_updates: true,
                 },
             ],
             packages: Vec::new(),
@@ -429,7 +431,7 @@ mod tests {
             "headline missing:\n{text}"
         );
         assert!(
-            text.contains("✓ flatpak-user    2 apps updated"),
+            text.contains("✓ flatpak-user    2 flatpaks updated"),
             "success line missing:\n{text}"
         );
         assert!(
@@ -460,7 +462,7 @@ mod tests {
             "headline missing:\n{text}"
         );
         assert!(!text.contains("failed"), "{text}");
-        assert!(text.contains("1 app updated"), "{text}");
+        assert!(text.contains("1 flatpak updated"), "{text}");
     }
 
     #[test]

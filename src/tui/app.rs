@@ -499,6 +499,7 @@ mod tests {
             required_by: Vec::new(),
             optional_deps: Vec::new(),
             provides: Vec::new(),
+            runtime: false,
         }
     }
 
@@ -518,6 +519,7 @@ mod tests {
                 kind: SourceKind::Pacman,
                 available: true,
                 last_scanned: None,
+                accurate_updates: true,
             },
             Source {
                 id: SourceId::flatpak_user(),
@@ -526,6 +528,7 @@ mod tests {
                 },
                 available: true,
                 last_scanned: None,
+                accurate_updates: true,
             },
             Source {
                 id: SourceId::flatpak_system(),
@@ -534,6 +537,7 @@ mod tests {
                 },
                 available: false,
                 last_scanned: None,
+                accurate_updates: true,
             },
         ]
     }
@@ -860,6 +864,7 @@ mod tests {
             kind: SourceKind::Pacman,
             available: true,
             last_scanned: None,
+            accurate_updates: true,
         }]));
         assert_eq!(app.update_cursor(), 0);
         assert!(app.is_enabled(&SourceId::pacman())); // toggles reset to on

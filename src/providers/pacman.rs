@@ -1,8 +1,11 @@
 //! pacman provider (spec §5.2).
 //!
 //! `scan_installed` parses full metadata from a single `pacman -Qi` call (the
-//! source of the dependency graph, dev-notes §2.3) and `scan_updates` parses
-//! `pacman -Qu`.
+//! source of the dependency graph, dev-notes §2.3). `scan_updates` prefers
+//! `checkupdates` (pacman-contrib) — it syncs a temp DB copy, so pending
+//! updates are accurate even when the local sync DB is stale, which is exactly
+//! where `pacman -Qu` silently reports zero. Without pacman-contrib it falls
+//! back to `-Qu` and the scanner marks the source's counts as possibly stale.
 
 use std::collections::HashMap;
 
@@ -11,6 +14,7 @@ use crate::model::{InstallReason, Package, PendingUpdate, SourceId};
 use super::{CommandRunner, Provider, ProviderError};
 
 pub const PACMAN_BIN: &str = "pacman";
+pub const CHECKUPDATES_BIN: &str = "checkupdates";
 
 /// The argv for a full pacman system update (no `--noconfirm`, per spec Q6 /
 /// dev-notes decisions: it suppresses conflict resolution). Pure — building the
@@ -22,11 +26,29 @@ pub fn update_command() -> Vec<String> {
 
 pub struct PacmanProvider<'a> {
     runner: &'a dyn CommandRunner,
+    /// checkupdates (pacman-contrib) found on PATH at construction.
+    checkupdates: bool,
 }
 
 impl<'a> PacmanProvider<'a> {
     pub fn new(runner: &'a dyn CommandRunner) -> Self {
-        Self { runner }
+        Self::with_checkupdates(runner, super::binary_on_path(CHECKUPDATES_BIN))
+    }
+
+    /// The hermetic constructor: checkupdates availability injected.
+    pub fn with_checkupdates(runner: &'a dyn CommandRunner, checkupdates: bool) -> Self {
+        Self {
+            runner,
+            checkupdates,
+        }
+    }
+
+    /// True when update counts come from checkupdates (temp-DB sync) rather
+    /// than the possibly-stale local sync DB. The scanner passes availability
+    /// straight through; only tests read this back.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub fn updates_accurate(&self) -> bool {
+        self.checkupdates
     }
 }
 
@@ -54,6 +76,10 @@ impl Provider for PacmanProvider<'_> {
     }
 
     fn scan_updates(&self) -> Result<Vec<PendingUpdate>, ProviderError> {
+        if self.checkupdates {
+            return self.scan_updates_checkupdates();
+        }
+        tracing::warn!("pacman-contrib not installed; falling back to pacman -Qu (may be stale)");
         let out = self
             .runner
             .run(PACMAN_BIN, &["-Qu"])
@@ -68,6 +94,29 @@ impl Provider for PacmanProvider<'_> {
             1 if out.stdout.trim().is_empty() => Ok(Vec::new()),
             code => Err(ProviderError::CommandFailed {
                 program: format!("{PACMAN_BIN} -Qu"),
+                exit_code: code,
+                stderr: out.stderr,
+            }),
+        }
+    }
+}
+
+impl PacmanProvider<'_> {
+    /// `checkupdates --nocolor`: same `name old -> new` line format as `-Qu`.
+    /// Exit 2 is its documented "no updates" code, not an error.
+    fn scan_updates_checkupdates(&self) -> Result<Vec<PendingUpdate>, ProviderError> {
+        let out = self
+            .runner
+            .run(CHECKUPDATES_BIN, &["--nocolor"])
+            .map_err(|source| ProviderError::Exec {
+                program: CHECKUPDATES_BIN.to_string(),
+                source,
+            })?;
+        match out.exit_code {
+            0 => Ok(parse_updates(&out.stdout)),
+            2 => Ok(Vec::new()),
+            code => Err(ProviderError::CommandFailed {
+                program: format!("{CHECKUPDATES_BIN} --nocolor"),
                 exit_code: code,
                 stderr: out.stderr,
             }),
@@ -141,6 +190,7 @@ fn parse_record(lines: &[&str]) -> Option<Package> {
         required_by: parse_pkg_list(fields.get("Required By")),
         optional_deps: parse_optional_deps(fields.get("Optional Deps")),
         provides: parse_pkg_list(fields.get("Provides")),
+        runtime: false,
     })
 }
 
@@ -340,11 +390,15 @@ mod tests {
         assert!(PacmanProvider::new(&runner).scan_installed().is_err());
     }
 
+    /// The `pacman -Qu` fallback path: checkupdates injected as absent.
+    fn qu_provider(runner: &MockRunner) -> PacmanProvider<'_> {
+        PacmanProvider::with_checkupdates(runner, false)
+    }
+
     #[test]
     fn parse_updates_fixture_has_expected_count() {
         let runner = MockRunner::new().with("pacman -Qu", QU_SAMPLE, 0);
-        let provider = PacmanProvider::new(&runner);
-        let ups = provider.scan_updates().unwrap();
+        let ups = qu_provider(&runner).scan_updates().unwrap();
         assert_eq!(ups.len(), 4);
         assert_eq!(ups[0].package_name, "firefox");
         assert_eq!(ups[0].current_version, "128.0-1");
@@ -354,28 +408,55 @@ mod tests {
     #[test]
     fn empty_update_fixture_yields_none() {
         let runner = MockRunner::new().with("pacman -Qu", QU_EMPTY, 0);
-        assert_eq!(
-            PacmanProvider::new(&runner).scan_updates().unwrap().len(),
-            0
-        );
+        assert_eq!(qu_provider(&runner).scan_updates().unwrap().len(), 0);
     }
 
     #[test]
     fn no_updates_exit_one_is_empty_not_error() {
         let runner = MockRunner::new().with("pacman -Qu", "", 1);
-        assert_eq!(
-            PacmanProvider::new(&runner).scan_updates().unwrap().len(),
-            0
-        );
+        assert_eq!(qu_provider(&runner).scan_updates().unwrap().len(), 0);
     }
 
     #[test]
     fn parse_updates_ignores_malformed_line() {
         let runner = MockRunner::new().with("pacman -Qu", "garbage line without arrow\n", 0);
-        assert_eq!(
-            PacmanProvider::new(&runner).scan_updates().unwrap().len(),
-            0
-        );
+        assert_eq!(qu_provider(&runner).scan_updates().unwrap().len(), 0);
+    }
+
+    // --- checkupdates path ---
+    const CHECKUPDATES_FIXTURE: &str =
+        include_str!("../../tests/fixtures/pacman/checkupdates_sample.txt");
+
+    #[test]
+    fn checkupdates_is_preferred_and_parses_the_same_format() {
+        let runner = MockRunner::new().with("checkupdates --nocolor", CHECKUPDATES_FIXTURE, 0);
+        let provider = PacmanProvider::with_checkupdates(&runner, true);
+        assert!(provider.updates_accurate());
+        let ups = provider.scan_updates().unwrap();
+        assert_eq!(ups.len(), 6);
+        assert_eq!(ups[0].package_name, "accountsservice");
+        assert_eq!(ups[0].current_version, "26.26.9-1.1");
+        assert_eq!(ups[0].available_version, "26.27.3-1.1");
+    }
+
+    #[test]
+    fn checkupdates_exit_two_means_no_updates() {
+        let runner = MockRunner::new().with("checkupdates --nocolor", "", 2);
+        let provider = PacmanProvider::with_checkupdates(&runner, true);
+        assert_eq!(provider.scan_updates().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn checkupdates_other_failures_are_errors() {
+        let runner = MockRunner::new().with("checkupdates --nocolor", "", 1);
+        let provider = PacmanProvider::with_checkupdates(&runner, true);
+        assert!(provider.scan_updates().is_err());
+    }
+
+    #[test]
+    fn fallback_provider_reports_inaccurate_updates() {
+        let runner = MockRunner::new();
+        assert!(!qu_provider(&runner).updates_accurate());
     }
 
     // --- pure helper tests (small + specific) ---

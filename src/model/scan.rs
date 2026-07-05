@@ -12,7 +12,8 @@ use super::{Package, PendingUpdate, Source};
 
 /// Bump on any breaking change to `ScanResult`. A cache with a mismatched
 /// version is discarded and re-scanned (spec §6.5).
-pub const SCHEMA_VERSION: u32 = 1;
+/// v2: `Source.accurate_updates` + `Package.runtime` (v0.1.1).
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {

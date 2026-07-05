@@ -55,6 +55,7 @@ mod tests {
             required_by: Vec::new(),
             optional_deps: Vec::new(),
             provides: Vec::new(),
+            runtime: false,
         }
     }
 
@@ -73,6 +74,7 @@ mod tests {
             kind,
             available,
             last_scanned: None,
+            accurate_updates: true,
         }
     }
 

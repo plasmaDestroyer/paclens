@@ -134,11 +134,12 @@ pub fn executable_steps(plan: &ActionPlan, tool: Option<&str>) -> usize {
         .count()
 }
 
-/// `"3 apps"` / `"1 package"` — the unit the source itself uses.
+/// `"3 flatpaks"` / `"1 package"` — the unit the source itself uses
+/// ("flatpaks", not "apps": runtime updates count too).
 pub fn target_noun(source_id: &SourceId, count: usize) -> String {
     let unit = match (source_id.as_str().starts_with("flatpak"), count) {
-        (true, 1) => "app",
-        (true, _) => "apps",
+        (true, 1) => "flatpak",
+        (true, _) => "flatpaks",
         (false, 1) => "package",
         (false, _) => "packages",
     };
@@ -378,8 +379,8 @@ mod tests {
 
     #[test]
     fn target_noun_matches_each_sources_vocabulary() {
-        assert_eq!(target_noun(&SourceId::flatpak_user(), 1), "1 app");
-        assert_eq!(target_noun(&SourceId::flatpak_system(), 3), "3 apps");
+        assert_eq!(target_noun(&SourceId::flatpak_user(), 1), "1 flatpak");
+        assert_eq!(target_noun(&SourceId::flatpak_system(), 3), "3 flatpaks");
         assert_eq!(target_noun(&SourceId::pacman(), 1), "1 package");
         assert_eq!(target_noun(&SourceId::pacman(), 19), "19 packages");
     }
@@ -530,7 +531,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("flatpak-user: running update (2 apps)"),
+            text.contains("flatpak-user: running update (2 flatpaks)"),
             "{text}"
         );
         assert!(text.contains("flatpak-user: completed, exit 0"), "{text}");

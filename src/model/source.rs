@@ -72,6 +72,15 @@ pub struct Source {
     /// Was the source's binary found on PATH at scan time?
     pub available: bool,
     pub last_scanned: Option<DateTime<Utc>>,
+    /// False when update counts came from a possibly-stale local DB (pacman
+    /// without pacman-contrib's checkupdates). Spec §4.2 deviation, recorded
+    /// in dev-notes §7.
+    #[serde(default = "default_true")]
+    pub accurate_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

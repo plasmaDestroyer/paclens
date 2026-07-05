@@ -174,6 +174,7 @@ mod tests {
                 required_by: Vec::new(),
                 optional_deps: Vec::new(),
                 provides: Vec::new(),
+                runtime: false,
             }],
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),

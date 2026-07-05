@@ -887,6 +887,7 @@ mod tests {
             required_by: Vec::new(),
             optional_deps: Vec::new(),
             provides: Vec::new(),
+            runtime: false,
         }
     }
 
@@ -909,6 +910,7 @@ mod tests {
                     kind: SourceKind::Pacman,
                     available: true,
                     last_scanned: None,
+                    accurate_updates: true,
                 },
                 Source {
                     id: SourceId::flatpak_user(),
@@ -917,6 +919,7 @@ mod tests {
                     },
                     available: true,
                     last_scanned: None,
+                    accurate_updates: true,
                 },
                 Source {
                     id: SourceId::flatpak_system(),
@@ -925,6 +928,7 @@ mod tests {
                     },
                     available: false,
                     last_scanned: None,
+                    accurate_updates: true,
                 },
             ],
             packages: vec![pkg("a", SourceId::pacman())],
@@ -1178,7 +1182,7 @@ mod tests {
             text.contains("x flatpak-user"), // ascii check in the none theme
             "success mark missing:\n{text}"
         );
-        assert!(text.contains("2 apps updated"), "{text}");
+        assert!(text.contains("2 flatpaks updated"), "{text}");
         assert!(
             text.contains("! flatpak-system"), // ascii cross
             "failure mark missing:\n{text}"
@@ -1212,7 +1216,7 @@ mod tests {
         assert!(text.contains("1 source ran"), "{text}");
         assert!(text.contains("1 succeeded"), "{text}");
         assert!(!text.contains("failed"), "{text}");
-        assert!(text.contains("1 app updated"), "{text}");
+        assert!(text.contains("1 flatpak updated"), "{text}");
     }
 
     // --- package list ---
