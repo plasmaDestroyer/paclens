@@ -47,12 +47,46 @@ pub fn draw(frame: &mut Frame, app: &App) {
 // Dashboard
 // ---------------------------------------------------------------------------
 
+/// The linutil-style quadrant dashboard (chosen with the user): sources +
+/// system panes on the left, pending updates + keys on the right. Below a
+/// comfortable size it falls back to the flat single-table layout.
 fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let block = panel(theme, " paclens · dashboard ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    if inner.width < 56 || inner.height < 14 {
+        draw_dashboard_flat(frame, inner, app);
+        return;
+    }
+
+    let cols =
+        Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).split(inner);
+    let left = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(cols[0]);
+    let right = Layout::vertical([Constraint::Min(5), Constraint::Length(4)]).split(cols[1]);
+
+    let sources_pane = subpane(theme, " sources ");
+    let sources_inner = sources_pane.inner(left[0]);
+    frame.render_widget(sources_pane, left[0]);
+    render_table(frame, sources_inner, app);
+
+    render_system_pane(frame, left[1], app);
+    render_updates_pane(frame, right[0], app);
+
+    let keys_pane = subpane(theme, " keys ");
+    let keys_inner = keys_pane.inner(right[1]);
+    frame.render_widget(keys_pane, right[1]);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(dashboard_keys(theme), theme.dim)))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        keys_inner,
+    );
+}
+
+/// The pre-quadrant layout, kept for small terminals.
+fn draw_dashboard_flat(frame: &mut Frame, inner: Rect, app: &App) {
+    let theme = &app.theme;
     let chunks = Layout::vertical([
         Constraint::Length(1), // summary
         Constraint::Length(1), // spacer
@@ -61,24 +95,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .split(inner);
 
-    render_summary(frame, chunks[0], app);
-    render_table(frame, chunks[2], app);
-
-    let g = theme.glyphs;
-    let footer = format!(
-        "q quit {b} {up}/{down} navigate {b} enter packages {b} u update {b} r refresh",
-        b = g.bullet,
-        up = g.up,
-        down = g.down,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, theme.dim))),
-        chunks[3],
-    );
-}
-
-fn render_summary(frame: &mut Frame, area: Rect, app: &App) {
-    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(24)]).split(area);
+    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(24)]).split(chunks[0]);
     frame.render_widget(
         Paragraph::new(summary_line(app)).alignment(Alignment::Left),
         cols[0],
@@ -87,6 +104,150 @@ fn render_summary(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(scanned_line(app)).alignment(Alignment::Right),
         cols[1],
     );
+    render_table(frame, chunks[2], app);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(dashboard_keys(theme), theme.dim))),
+        chunks[3],
+    );
+}
+
+fn dashboard_keys(theme: &Theme) -> String {
+    let g = theme.glyphs;
+    format!(
+        "q quit {b} {up}/{down} navigate {b} enter packages {b} u update {b} r refresh",
+        b = g.bullet,
+        up = g.up,
+        down = g.down,
+    )
+}
+
+/// Bordered inner pane with a dim border and a bold-dim title.
+fn subpane(theme: &Theme, title: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(title, theme.header))
+        .padding(Padding::horizontal(1))
+}
+
+/// System pane: cache size, orphans, overlaps, scan age — the analyzer's
+/// dashboard debut (dev-notes §7 "dashboard enrichment").
+fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let pane = subpane(theme, " system ");
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    let kv = |label: &str, value: Span<'static>| {
+        Line::from(vec![
+            Span::styled(format!("{:14}", label), theme.dim),
+            value,
+        ])
+    };
+    let count = |n: usize| {
+        if n > 0 {
+            Span::styled(n.to_string(), theme.accent)
+        } else {
+            Span::styled("0".to_string(), theme.dim)
+        }
+    };
+
+    let cache = match app.scan().cache_sizes.pacman_cache_bytes {
+        Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
+        None => Span::styled("—".to_string(), theme.dim),
+    };
+    let mut lines = vec![
+        kv("pacman cache", cache),
+        kv("orphans", count(app.orphan_count())),
+        kv("overlaps", count(app.overlap_count())),
+        kv("scanned", scanned_span(app)),
+    ];
+    if app.stale_update_counts() {
+        lines.push(Line::from(Span::styled(
+            "stale? install pacman-contrib",
+            theme.accent,
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Pending-updates pane: grouped per source, capped per group.
+fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let total = app.total_updates();
+    let title = if total == 0 {
+        " pending updates ".to_string()
+    } else {
+        format!(" pending updates ({total}) ")
+    };
+    let pane = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(title, theme.header))
+        .padding(Padding::horizontal(1));
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    if total == 0 {
+        frame.render_widget(
+            Paragraph::new(summary_line(app)).alignment(Alignment::Center),
+            centered(inner, inner.width, 1),
+        );
+        return;
+    }
+
+    const PER_SOURCE_CAP: usize = 8;
+    let mut lines: Vec<Line> = Vec::new();
+    for source in &app.scan().sources {
+        let ups = app.updates_for(&source.id);
+        if ups.is_empty() {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(vec![
+            Span::styled(source.id.to_string(), theme.title),
+            Span::styled(format!("  ({})", ups.len()), theme.dim),
+        ]));
+        let name_w = ups
+            .iter()
+            .take(PER_SOURCE_CAP)
+            .map(|u| u.package_name.len())
+            .max()
+            .unwrap_or(0);
+        for u in ups.iter().take(PER_SOURCE_CAP) {
+            let new_version = if u.available_version.is_empty() {
+                Span::styled("?", theme.dim)
+            } else {
+                Span::styled(u.available_version.clone(), theme.accent)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:name_w$}", u.package_name), theme.primary),
+                Span::raw("  "),
+                Span::styled(u.current_version.clone(), theme.dim),
+                Span::styled(format!(" {} ", theme.glyphs.arrow), theme.dim),
+                new_version,
+            ]));
+        }
+        if ups.len() > PER_SOURCE_CAP {
+            lines.push(Line::from(Span::styled(
+                format!(" … {} more", ups.len() - PER_SOURCE_CAP),
+                theme.dim,
+            )));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn scanned_span(app: &App) -> Span<'static> {
+    let theme = &app.theme;
+    if app.is_scanning() {
+        return Span::styled(format!("{} scanning sources…", app.spinner()), theme.accent);
+    }
+    Span::styled(relative_time(app.scan().scanned_at), theme.dim)
 }
 
 fn summary_line(app: &App) -> Line<'static> {
@@ -104,16 +265,12 @@ fn summary_line(app: &App) -> Line<'static> {
 }
 
 fn scanned_line(app: &App) -> Line<'static> {
-    let theme = &app.theme;
     if app.is_scanning() {
-        return Line::from(Span::styled(
-            format!("{} scanning sources…", app.spinner()),
-            theme.accent,
-        ));
+        return Line::from(scanned_span(app));
     }
     Line::from(Span::styled(
         format!("scanned {}", relative_time(app.scan().scanned_at)),
-        theme.dim,
+        app.theme.dim,
     ))
 }
 
@@ -133,8 +290,8 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
 
     let header = Row::new(vec![
         Cell::from("SOURCE"),
-        Cell::from(Line::from("INSTALLED").alignment(Alignment::Right)),
-        Cell::from(Line::from("UPDATES").alignment(Alignment::Right)),
+        Cell::from(Line::from("INST").alignment(Alignment::Right)),
+        Cell::from(Line::from("UPD").alignment(Alignment::Right)),
         Cell::from("STATUS"),
     ])
     .style(theme.header);
@@ -167,15 +324,15 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     let widths = [
-        Constraint::Min(14),
-        Constraint::Length(9),
-        Constraint::Length(7),
-        Constraint::Length(16),
+        Constraint::Min(13),
+        Constraint::Length(5),
+        Constraint::Length(4),
+        Constraint::Length(12),
     ];
 
     let table = Table::new(body, widths)
         .header(header)
-        .column_spacing(2)
+        .column_spacing(1)
         .row_highlight_style(theme.selected)
         .highlight_symbol(theme.glyphs.pointer);
 
@@ -869,6 +1026,7 @@ mod tests {
         CacheSizes, FlatpakScope, InstallReason, Package, PendingUpdate, SCHEMA_VERSION,
         ScanResult, Source, SourceId, SourceKind,
     };
+    use crate::tui::app::AppOptions;
     use crate::tui::theme::Theme;
     use chrono::Utc;
     use ratatui::Terminal;
@@ -963,8 +1121,7 @@ mod tests {
         let app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         let text = render(&app, 70, 14);
         assert!(text.contains("paclens"));
@@ -972,13 +1129,82 @@ mod tests {
         assert!(text.contains("u update"), "footer hint missing:\n{text}");
     }
 
+    // --- quadrant dashboard (rendered at a comfortable size) ---
+    #[test]
+    fn quadrant_dashboard_shows_all_four_panes() {
+        let app = App::new(
+            scan_with(vec![
+                upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
+                upd("firefox", "127.0", "127.0.1", SourceId::pacman()),
+            ]),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        let text = render(&app, 96, 24);
+        for pane in ["sources", "pending updates (2)", "system", "keys"] {
+            assert!(text.contains(pane), "pane {pane} missing:\n{text}");
+        }
+        assert!(text.contains("orphans"), "{text}");
+        assert!(text.contains("overlaps"), "{text}");
+        assert!(text.contains("pacman cache"), "{text}");
+        // Grouped preview with version transitions.
+        assert!(text.contains("6.9.1 -> 6.9.2"), "preview missing:\n{text}");
+        assert!(text.contains("q quit"), "keys missing:\n{text}");
+    }
+
+    #[test]
+    fn quadrant_updates_pane_caps_long_groups() {
+        let ups: Vec<PendingUpdate> = (0..12)
+            .map(|i| upd(&format!("pkg{i:02}"), "1", "2", SourceId::pacman()))
+            .collect();
+        let app = App::new(scan_with(ups), Theme::none(), AppOptions::test());
+        let text = render(&app, 96, 30);
+        assert!(text.contains("pending updates (12)"), "{text}");
+        assert!(text.contains("… 4 more"), "cap marker missing:\n{text}");
+    }
+
+    #[test]
+    fn stale_counts_hint_appears_only_on_the_qu_fallback() {
+        let mut s = scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]);
+        s.sources[0].accurate_updates = false;
+        let app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 96, 24);
+        assert!(
+            text.contains("stale? install pacman-contrib"),
+            "hint missing:\n{text}"
+        );
+
+        let accurate = App::new(
+            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        let text = render(&accurate, 96, 24);
+        assert!(!text.contains("pacman-contrib"), "{text}");
+    }
+
+    #[test]
+    fn small_terminal_falls_back_to_the_flat_dashboard() {
+        let app = App::new(
+            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        let text = render(&app, 50, 12);
+        assert!(
+            !text.contains("pacman cache"),
+            "quadrants leaked in:\n{text}"
+        );
+        assert!(text.contains("SOURCE"), "{text}");
+        assert!(text.contains("1 update available"), "{text}");
+    }
+
     #[test]
     fn dashboard_shows_a_scanning_indicator_instead_of_the_scan_age() {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         app.set_scanning(true);
         let text = render(&app, 70, 14);
@@ -997,8 +1223,7 @@ mod tests {
                 upd("firefox", "127.0", "127.0.1", SourceId::pacman()),
             ]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         app.goto_updates();
         let text = render(&app, 72, 16);
@@ -1027,8 +1252,7 @@ mod tests {
                 SourceId::pacman(),
             )]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         app.goto_updates();
         let text = render(&app, 72, 16);
@@ -1040,8 +1264,7 @@ mod tests {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         app.goto_updates();
         app.toggle_selected(); // pacman off -> plan empty
@@ -1055,7 +1278,7 @@ mod tests {
 
     #[test]
     fn update_screen_empty_state_still_shows_the_way_back() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20, Some("sudo"));
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         app.goto_updates();
         let text = render(&app, 72, 16);
         assert!(text.contains("Nothing to update"), "{text}");
@@ -1070,8 +1293,7 @@ mod tests {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         app.goto_updates();
         app.set_flash("nothing selected to update");
@@ -1088,8 +1310,7 @@ mod tests {
                 upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
             ]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         app.goto_updates();
         app.open_confirm();
@@ -1120,8 +1341,10 @@ mod tests {
                 upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
             ]),
             Theme::none(),
-            20,
-            None, // no sudo/doas/pkexec on PATH
+            AppOptions {
+                privilege_tool: None, // no sudo/doas/pkexec on PATH
+                ..AppOptions::test()
+            },
         );
         app.goto_updates();
         app.open_confirm();
@@ -1170,7 +1393,7 @@ mod tests {
 
     #[test]
     fn result_view_shows_every_outcome_and_the_log_path() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20, Some("sudo"));
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         app.goto_updates();
         app.set_report(report());
         let text = render(&app, 76, 18);
@@ -1202,7 +1425,7 @@ mod tests {
 
     #[test]
     fn all_green_result_has_no_failed_segment() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), 20, Some("sudo"));
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         app.goto_updates();
         app.set_report(ExecutionReport {
             steps: vec![StepReport {
@@ -1245,7 +1468,7 @@ mod tests {
     }
 
     fn pkg_app() -> App {
-        let mut app = App::new(pkg_scan(), Theme::none(), 20, Some("sudo"));
+        let mut app = App::new(pkg_scan(), Theme::none(), AppOptions::test());
         app.open_packages(); // dashboard row 0 = pacman
         app
     }
@@ -1340,7 +1563,7 @@ mod tests {
         let mut s = scan_with(Vec::new());
         s.sources.clear();
         s.packages.clear();
-        let mut app = App::new(s, Theme::none(), 20, Some("sudo"));
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.set_scanning(true);
         app.tick();
         let text = render(&app, 70, 12);
@@ -1353,8 +1576,7 @@ mod tests {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         );
         app.set_scanning(true);
         let text = render(&app, 70, 14);

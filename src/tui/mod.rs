@@ -75,8 +75,7 @@ pub fn run(
         let mut app = App::new(
             cached.unwrap_or_else(ScanResult::empty),
             theme,
-            config.why.max_depth,
-            executor::sudo::detect(),
+            app::AppOptions::from_config(config, executor::sudo::detect()),
         );
         let mut job = None;
         if start_scanning {

@@ -8,11 +8,46 @@
 use std::collections::HashMap;
 
 use crate::analyzer::{self, DepGraph, WhyReport};
+use crate::config::{Config, ExtraMapping};
 use crate::executor::ExecutionReport;
 use crate::fuzzy;
 use crate::model::{ActionPlan, Package, PendingUpdate, ScanResult, Source, SourceId, summarize};
 use crate::planner;
 use crate::tui::theme::Theme;
+
+/// Startup knobs the `App` keeps for the whole session.
+pub struct AppOptions {
+    /// `config.why.max_depth`.
+    pub why_depth: u32,
+    /// The privilege tool detected at startup (spec §13.4), if any.
+    pub privilege_tool: Option<&'static str>,
+    /// `config.overlap.ignore`, for the dashboard's overlap count.
+    pub overlap_ignore: Vec<String>,
+    /// `config.overlap.extra_mappings`, same.
+    pub extra_mappings: Vec<ExtraMapping>,
+}
+
+impl AppOptions {
+    pub fn from_config(config: &Config, privilege_tool: Option<&'static str>) -> Self {
+        AppOptions {
+            why_depth: config.why.max_depth,
+            privilege_tool,
+            overlap_ignore: config.overlap.ignore.clone(),
+            extra_mappings: config.overlap.extra_mappings.clone(),
+        }
+    }
+
+    /// Deterministic defaults for unit tests.
+    #[cfg(test)]
+    pub fn test() -> Self {
+        AppOptions {
+            why_depth: 20,
+            privilege_tool: Some("sudo"),
+            overlap_ignore: Vec::new(),
+            extra_mappings: Vec::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -48,8 +83,8 @@ pub struct App {
     scan: ScanResult,
     /// Rebuilt with every scan (never serialized) — powers the why pane.
     graph: DepGraph,
-    /// `config.why.max_depth`, captured at startup.
-    why_depth: u32,
+    /// Session options captured at startup.
+    opts: AppOptions,
     pub theme: Theme,
     screen: Screen,
     dash_selected: Option<usize>,
@@ -78,17 +113,14 @@ pub struct App {
     why_open: bool,
     /// Spinner animation frame, advanced by the loop's poll tick.
     spinner_frame: usize,
-    /// The privilege tool detected at startup (spec §13.4), if any.
-    privilege_tool: Option<&'static str>,
+    /// Dashboard system pane: orphan candidates in the current scan.
+    orphan_count: usize,
+    /// Dashboard system pane: detected overlaps in the current scan.
+    overlap_count: usize,
 }
 
 impl App {
-    pub fn new(
-        scan: ScanResult,
-        theme: Theme,
-        why_depth: u32,
-        privilege_tool: Option<&'static str>,
-    ) -> Self {
+    pub fn new(scan: ScanResult, theme: Theme, opts: AppOptions) -> Self {
         let dash_selected = if scan.sources.is_empty() {
             None
         } else {
@@ -96,10 +128,13 @@ impl App {
         };
         let enabled = default_toggles(&scan);
         let graph = DepGraph::build(&scan);
+        let orphan_count = graph.orphans(&scan).len();
+        let overlap_count =
+            analyzer::detect_overlaps(&scan, &opts.overlap_ignore, &opts.extra_mappings).len();
         App {
             scan,
             graph,
-            why_depth,
+            opts,
             theme,
             screen: Screen::Dashboard,
             dash_selected,
@@ -115,13 +150,18 @@ impl App {
             filter_active: false,
             why_open: false,
             spinner_frame: 0,
-            privilege_tool,
+            orphan_count,
+            overlap_count,
         }
     }
 
     /// Swap in a fresh scan (after a refresh), keeping cursors valid.
     pub fn replace_scan(&mut self, scan: ScanResult) {
         self.graph = DepGraph::build(&scan);
+        self.orphan_count = self.graph.orphans(&scan).len();
+        self.overlap_count =
+            analyzer::detect_overlaps(&scan, &self.opts.overlap_ignore, &self.opts.extra_mappings)
+                .len();
         self.scan = scan;
         let len = self.scan.sources.len();
         self.dash_selected = match (len, self.dash_selected) {
@@ -283,7 +323,22 @@ impl App {
     }
 
     pub fn privilege_tool(&self) -> Option<&'static str> {
-        self.privilege_tool
+        self.opts.privilege_tool
+    }
+
+    pub fn orphan_count(&self) -> usize {
+        self.orphan_count
+    }
+    pub fn overlap_count(&self) -> usize {
+        self.overlap_count
+    }
+
+    /// The pacman source scanned via the stale `-Qu` fallback, if so.
+    pub fn stale_update_counts(&self) -> bool {
+        self.scan
+            .sources
+            .iter()
+            .any(|s| s.available && !s.accurate_updates)
     }
 
     pub fn toggle_selected(&mut self) {
@@ -414,7 +469,7 @@ impl App {
             &self.scan,
             &self.graph,
             &name,
-            self.why_depth,
+            self.opts.why_depth,
         ))
     }
 
@@ -561,8 +616,7 @@ mod tests {
         App::new(
             scan_with_sources(three_sources()),
             Theme::none(),
-            20,
-            Some("sudo"),
+            AppOptions::test(),
         )
     }
 

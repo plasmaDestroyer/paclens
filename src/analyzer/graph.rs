@@ -167,8 +167,7 @@ impl DepGraph {
 
     /// Orphan candidates (spec §7.2): installed as a dependency, nothing
     /// requires them. Replaces `pacman -Qtd`.
-    /// Spec §7.2 deliverable; the cleanup screen (v0.0.9+) is its consumer.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// Spec §7.2 deliverable; feeds the dashboard's system pane.
     pub fn orphans(&self, scan: &ScanResult) -> Vec<String> {
         let mut out: Vec<String> = scan
             .packages
