@@ -392,6 +392,24 @@ YYYY-MM-DD | no --noconfirm for pacman
 2026-06-13 | dashboard enrichment deferred (user request 2026-06-12)
            | homescreen should eventually carry much more: storage breakdown,
            | orphan/overlap counts (spec §10.3). Design pass before v0.1.0.
+           | → delivered 2026-07-05 as the v0.1.1 quadrant dashboard.
+
+2026-07-05 | pacman updates via checkupdates, -Qu only as fallback
+           | pacman -Qu compares against the local sync DB, which is stale
+           | unless the user recently ran pacman -Sy — it silently reports
+           | zero pending updates. checkupdates (pacman-contrib) syncs a
+           | temp DB copy and is accurate. Source.accurate_updates records
+           | which path ran (spec §4.2 deviation); the UI hints when stale.
+
+2026-07-05 | flatpak runtimes are first-class packages
+           | flatpak update updates runtimes (platforms, GL drivers, themes),
+           | so they count as installed and as update targets. Package.runtime
+           | flags them (spec §4.3 deviation); overlap matching excludes them
+           | (spec §9.3). SCHEMA_VERSION bumped to 2 for both new fields.
+
+2026-07-05 | scan lanes on scoped threads (spec Q5 resolved)
+           | pacman, flatpak, and du run concurrently; wall time is the
+           | slowest lane. std::thread::scope, no tokio needed in the scanner.
 ```
 
 ---
