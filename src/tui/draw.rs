@@ -396,13 +396,13 @@ fn render_update_footer(frame: &mut Frame, area: Rect, theme: &Theme, has_plan: 
     let g = theme.glyphs;
     let footer = if has_plan {
         format!(
-            "space toggle {b} {up}/{down} source {b} esc back {b} q quit",
+            "space toggle {b} {up}/{down} source {b} l log {b} esc back {b} q quit",
             b = g.bullet,
             up = g.up,
             down = g.down,
         )
     } else {
-        format!("esc back {b} q quit", b = g.bullet)
+        format!("l log {b} esc back {b} q quit", b = g.bullet)
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(footer, theme.dim))),
@@ -554,25 +554,50 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
 
     let show_filter = app.is_filter_active() || !app.pkg_filter().is_empty();
     let chunks = Layout::vertical([
+        Constraint::Length(1), // source summary
         Constraint::Min(3),    // table (+ optional why pane)
         Constraint::Length(1), // filter line (may be blank)
         Constraint::Length(1), // footer
     ])
     .split(inner);
 
+    let (explicit, deps, runtimes, bytes) = app.pkg_summary();
+    let mut summary = vec![
+        Span::styled(explicit.to_string(), theme.accent),
+        Span::styled(" explicit ", theme.primary),
+        Span::styled(format!("{b} ", b = theme.glyphs.bullet), theme.dim),
+        Span::styled(deps.to_string(), theme.accent),
+        Span::styled(" dependencies ", theme.primary),
+    ];
+    if runtimes > 0 {
+        summary.extend([
+            Span::styled(format!("{b} ", b = theme.glyphs.bullet), theme.dim),
+            Span::styled(runtimes.to_string(), theme.accent),
+            Span::styled(" runtimes ", theme.primary),
+        ]);
+    }
+    if bytes > 0 {
+        summary.extend([
+            Span::styled(format!("{b} ", b = theme.glyphs.bullet), theme.dim),
+            Span::styled(crate::format::human_bytes(bytes), theme.primary),
+            Span::styled(" total", theme.dim),
+        ]);
+    }
+    frame.render_widget(Paragraph::new(Line::from(summary)), chunks[0]);
+
     if app.is_why_open() {
         let panes =
-            Layout::horizontal([Constraint::Min(30), Constraint::Percentage(40)]).split(chunks[0]);
-        // Narrow mode: VERSION/SIZE would crush against the pane; the why
+            Layout::horizontal([Constraint::Min(30), Constraint::Percentage(40)]).split(chunks[1]);
+        // Narrow mode: extra columns would crush against the pane; the why
         // report is what matters here.
         render_package_table(frame, panes[0], app, true);
         render_why_pane(frame, panes[1], app);
     } else {
-        render_package_table(frame, chunks[0], app, false);
+        render_package_table(frame, chunks[1], app, false);
     }
 
     if show_filter {
-        render_filter_line(frame, chunks[1], app);
+        render_filter_line(frame, chunks[2], app);
     }
 
     let g = theme.glyphs;
@@ -588,7 +613,7 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(footer, theme.dim))),
-        chunks[2],
+        chunks[3],
     );
 }
 
@@ -619,8 +644,10 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
         Row::new(vec![
             Cell::from("NAME"),
             Cell::from("VERSION"),
+            Cell::from("KIND"),
             Cell::from("REASON"),
             Cell::from(Line::from("SIZE").alignment(Alignment::Right)),
+            Cell::from("DESCRIPTION"),
         ])
     }
     .style(theme.header);
@@ -636,15 +663,25 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
             if narrow {
                 return Row::new(vec![Cell::from(p.name.clone()), Cell::from(reason)]);
             }
+            let kind = if p.runtime {
+                Span::styled("runtime", theme.dim)
+            } else if p.source_id.as_str().starts_with("flatpak") {
+                Span::styled("app", theme.primary)
+            } else {
+                Span::styled("—", theme.dim)
+            };
             let size = match p.size_bytes {
                 Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
                 None => Span::styled("—".to_string(), theme.dim),
             };
+            let description = Span::styled(p.description.clone().unwrap_or_default(), theme.dim);
             Row::new(vec![
                 Cell::from(p.name.clone()),
                 Cell::from(Span::styled(p.version.clone(), theme.dim)),
+                Cell::from(kind),
                 Cell::from(reason),
                 Cell::from(Line::from(size).alignment(Alignment::Right)),
+                Cell::from(description),
             ])
         })
         .collect();
@@ -653,10 +690,12 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
         &[Constraint::Min(20), Constraint::Length(10)]
     } else {
         &[
-            Constraint::Min(24),
-            Constraint::Length(18),
+            Constraint::Min(20),
+            Constraint::Length(12),
+            Constraint::Length(7),
             Constraint::Length(10),
             Constraint::Length(10),
+            Constraint::Min(10),
         ]
     };
     let table = Table::new(body, widths.to_vec())
@@ -911,7 +950,7 @@ fn draw_result(frame: &mut Frame, area: Rect, app: &App, report: &ExecutionRepor
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "press any key to continue",
+            "l view log · any other key continues",
             theme.dim,
         ))),
         chunks[4],
@@ -1420,7 +1459,7 @@ mod tests {
             text.contains("log: /tmp/paclens/2026-06-12.log"),
             "log path missing:\n{text}"
         );
-        assert!(text.contains("press any key to continue"), "{text}");
+        assert!(text.contains("l view log"), "{text}");
     }
 
     #[test]
@@ -1475,18 +1514,47 @@ mod tests {
 
     #[test]
     fn package_list_renders_columns_rows_and_footer() {
-        let text = render(&pkg_app(), 78, 18);
+        let text = render(&pkg_app(), 100, 18);
         assert!(text.contains("pacman"), "title missing:\n{text}");
         assert!(text.contains("3 packages"), "count missing:\n{text}");
-        for col in ["NAME", "VERSION", "REASON", "SIZE"] {
+        for col in ["NAME", "VERSION", "KIND", "REASON", "SIZE", "DESCRIPTION"] {
             assert!(text.contains(col), "column {col} missing:\n{text}");
         }
         assert!(text.contains("firefox"), "{text}");
         assert!(text.contains("explicit"), "{text}");
         assert!(text.contains("dependency"), "{text}");
         assert!(text.contains("228.88 MiB"), "size missing:\n{text}");
+        // Header summary line.
+        assert!(text.contains("2 explicit"), "summary missing:\n{text}");
+        assert!(text.contains("1 dependencies"), "summary missing:\n{text}");
+        assert!(
+            text.contains("276.57 MiB total"),
+            "summary missing:\n{text}"
+        );
         assert!(text.contains("/ filter"), "footer missing:\n{text}");
         assert!(text.contains("w why"), "footer missing:\n{text}");
+    }
+
+    #[test]
+    fn package_list_marks_runtimes_in_the_kind_column() {
+        let mut s = scan_with(Vec::new());
+        let mut platform = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        platform.runtime = true;
+        platform.description = Some("GNOME Platform".to_string());
+        let mut calc = pkg("org.gnome.Calculator", SourceId::flatpak_user());
+        calc.description = Some("Calculator".to_string());
+        s.packages = vec![platform, calc];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.on_next(); // select flatpak-user on the dashboard
+        app.open_packages();
+        let text = render(&app, 100, 18);
+        assert!(text.contains("runtime"), "kind missing:\n{text}");
+        assert!(text.contains("app"), "kind missing:\n{text}");
+        assert!(
+            text.contains("GNOME Platform"),
+            "description missing:\n{text}"
+        );
+        assert!(text.contains("1 runtimes"), "summary missing:\n{text}");
     }
 
     #[test]

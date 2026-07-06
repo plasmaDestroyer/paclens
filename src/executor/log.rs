@@ -43,6 +43,24 @@ impl UpdateLog {
         &self.path
     }
 
+    /// The newest update log on disk, if any session ever ran (for the TUI's
+    /// `L` log viewer). Update logs are named `YYYY-MM-DD.log`, so the lexical
+    /// maximum is the newest.
+    pub fn latest_path() -> Option<PathBuf> {
+        let dirs = ProjectDirs::from("", "", "paclens")?;
+        Self::latest_in(&dirs.data_dir().join("logs"))
+    }
+
+    fn latest_in(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".log") && !n.starts_with("paclens-"))
+            .max()
+            .map(|name| dir.join(name))
+    }
+
     /// Append one spec-format line: `[<UTC timestamp> INFO] <msg>`. Best-effort:
     /// a failed write must never abort a running update, so it is only traced.
     pub fn line(&mut self, msg: &str) {
@@ -77,6 +95,31 @@ mod tests {
             "bad line: {text}"
         );
         assert!(text.starts_with('['), "missing timestamp bracket: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn latest_in_picks_the_newest_update_log_and_ignores_tracing_logs() {
+        let dir = sandbox("latest");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "2026-07-01.log",
+            "2026-07-04.log",
+            "2026-07-02.log",
+            "paclens-2026-07-05-120000.log", // tracing log, not an update log
+        ] {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        assert_eq!(UpdateLog::latest_in(&dir), Some(dir.join("2026-07-04.log")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn latest_in_is_none_for_missing_or_empty_dir() {
+        let dir = sandbox("latest-empty");
+        assert_eq!(UpdateLog::latest_in(&dir), None); // dir doesn't exist
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(UpdateLog::latest_in(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

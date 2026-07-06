@@ -187,27 +187,38 @@ fn run_loop(
                 }
             }
             Action::DismissResult => app.dismiss_report(),
+            Action::OpenLog => match UpdateLog::latest_path() {
+                Some(path) => {
+                    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+                    let outcome = with_suspended(terminal, || {
+                        std::process::Command::new(&pager)
+                            .arg(&path)
+                            .status()
+                            .map(|_| ())
+                            .map_err(anyhow::Error::from)
+                    });
+                    if let Err(err) = outcome {
+                        app.set_flash(format!("could not open {pager}: {err:#}"));
+                    }
+                }
+                None => app.set_flash("no update log yet — nothing has been executed"),
+            },
             Action::Ignore => {}
         }
     }
 }
 
-/// Suspend the TUI, run the plan in the raw terminal (the user sees flatpak's
-/// own output and prompts directly — spec §13.2), then restore the TUI.
-/// Restore always runs, even when opening the update log failed.
-fn run_plan_suspended(
+/// Suspend the TUI (raw mode off, main screen back), run `f` in the raw
+/// terminal, then restore. Restore always runs, even when `f` failed.
+fn with_suspended<T>(
     terminal: &mut DefaultTerminal,
-    plan: &ActionPlan,
-    tool: Option<&str>,
-) -> anyhow::Result<executor::ExecutionReport> {
+    f: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     disable_raw_mode().context("failed to disable raw mode")?;
     ratatui::crossterm::execute!(std::io::stdout(), LeaveAlternateScreen)
         .context("failed to leave the alternate screen")?;
 
-    let result = (|| {
-        let mut log = UpdateLog::open_default()?;
-        Ok(executor::execute(plan, &InteractiveRunner, &mut log, tool))
-    })();
+    let result = f();
 
     enable_raw_mode().context("failed to re-enable raw mode")?;
     ratatui::crossterm::execute!(std::io::stdout(), EnterAlternateScreen)
@@ -216,6 +227,19 @@ fn run_plan_suspended(
         .clear()
         .context("failed to clear the restored terminal")?;
     result
+}
+
+/// Run the plan in the raw terminal (the user sees flatpak/pacman output and
+/// the sudo prompt directly — spec §13.2), then restore the TUI.
+fn run_plan_suspended(
+    terminal: &mut DefaultTerminal,
+    plan: &ActionPlan,
+    tool: Option<&str>,
+) -> anyhow::Result<executor::ExecutionReport> {
+    with_suspended(terminal, || {
+        let mut log = UpdateLog::open_default()?;
+        Ok(executor::execute(plan, &InteractiveRunner, &mut log, tool))
+    })
 }
 
 /// Read the pending key press and map it with the active mode's key map.

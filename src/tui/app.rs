@@ -458,6 +458,30 @@ impl App {
         }
     }
 
+    /// Header summary for the open source: (explicit, dependencies, runtimes,
+    /// total size in bytes).
+    pub fn pkg_summary(&self) -> (usize, usize, usize, u64) {
+        let Some(source) = &self.pkg_source else {
+            return (0, 0, 0, 0);
+        };
+        let mut explicit = 0;
+        let mut deps = 0;
+        let mut runtimes = 0;
+        let mut bytes = 0u64;
+        for p in self.scan.packages.iter().filter(|p| &p.source_id == source) {
+            match p.install_reason {
+                crate::model::InstallReason::Explicit => explicit += 1,
+                crate::model::InstallReason::Dependency => deps += 1,
+                crate::model::InstallReason::Unknown => {}
+            }
+            if p.runtime {
+                runtimes += 1;
+            }
+            bytes += p.size_bytes.unwrap_or(0);
+        }
+        (explicit, deps, runtimes, bytes)
+    }
+
     pub fn selected_package(&self) -> Option<&Package> {
         self.visible_packages().get(self.pkg_cursor).copied()
     }

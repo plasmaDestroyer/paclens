@@ -27,6 +27,8 @@ pub enum Action {
     CloseConfirm,
     /// Result view → back to the (refreshed) plan view.
     DismissResult,
+    /// Update screen / result view → open the newest update log in $PAGER.
+    OpenLog,
     /// Dashboard → open the selected source's package list.
     OpenPackages,
     /// Package list → jump a page of rows.
@@ -109,6 +111,7 @@ pub fn map_update_key(key: KeyEvent) -> Action {
         KeyCode::Char(' ') => Action::Toggle,
         KeyCode::Enter => Action::Confirm,
         KeyCode::Esc => Action::Back,
+        KeyCode::Char('l') | KeyCode::Char('L') => Action::OpenLog,
         _ => Action::Ignore,
     }
 }
@@ -136,7 +139,10 @@ pub fn map_result_key(key: KeyEvent) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
         return Action::Quit;
     }
-    Action::DismissResult
+    match key.code {
+        KeyCode::Char('l') | KeyCode::Char('L') => Action::OpenLog,
+        _ => Action::DismissResult,
+    }
 }
 
 #[cfg(test)]
@@ -273,10 +279,17 @@ mod tests {
     }
 
     #[test]
-    fn result_view_dismisses_on_any_key() {
+    fn result_view_dismisses_on_any_key_except_log() {
         for any in [KeyCode::Enter, KeyCode::Esc, KeyCode::Char('q')] {
             assert_eq!(map_result_key(plain(any)), Action::DismissResult);
         }
+        assert_eq!(map_result_key(plain(KeyCode::Char('l'))), Action::OpenLog);
+    }
+
+    #[test]
+    fn update_screen_opens_the_log_on_l() {
+        assert_eq!(map_update_key(plain(KeyCode::Char('l'))), Action::OpenLog);
+        assert_eq!(map_update_key(plain(KeyCode::Char('L'))), Action::OpenLog);
     }
 
     #[test]
