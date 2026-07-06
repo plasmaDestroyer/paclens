@@ -75,6 +75,23 @@ pub enum InputMode {
     Result,
     Packages,
     PackageFilter,
+    /// Inline log viewer (over the update screen or result view).
+    LogView,
+    /// Inline execution console: keys are forwarded to the running command.
+    Exec,
+}
+
+/// The inline log viewer: file contents + scroll offset.
+pub struct LogView {
+    pub lines: Vec<String>,
+    pub scroll: usize,
+}
+
+/// The inline execution console: streamed output; `done` set when the
+/// session finished and the report is ready to hand to the result view.
+pub struct ExecView {
+    pub lines: Vec<String>,
+    pub done: Option<ExecutionReport>,
 }
 
 /// One source's row in the dashboard table — a view-model derived from the scan.
@@ -120,6 +137,10 @@ pub struct App {
     why_open: bool,
     /// Spinner animation frame, advanced by the loop's poll tick.
     spinner_frame: usize,
+    /// Inline log viewer, over the update screen.
+    log_view: Option<LogView>,
+    /// Inline execution console, over the update screen.
+    exec: Option<ExecView>,
     /// Dashboard: which pane has focus (←/→ or h/l switches).
     dash_focus: DashPane,
     /// Dashboard: scroll offset of the pending-updates pane.
@@ -161,6 +182,8 @@ impl App {
             filter_active: false,
             why_open: false,
             spinner_frame: 0,
+            log_view: None,
+            exec: None,
             dash_focus: DashPane::Sources,
             updates_scroll: 0,
             orphan_count,
@@ -204,6 +227,8 @@ impl App {
     pub fn input_mode(&self) -> InputMode {
         match self.screen {
             Screen::Dashboard => InputMode::Dashboard,
+            Screen::Updates if self.exec.is_some() => InputMode::Exec,
+            Screen::Updates if self.log_view.is_some() => InputMode::LogView,
             Screen::Updates if self.report.is_some() => InputMode::Result,
             Screen::Updates if self.confirming => InputMode::Confirm,
             Screen::Updates => InputMode::Updates,
@@ -407,6 +432,54 @@ impl App {
         };
         let now = !self.is_enabled(&id);
         self.enabled.insert(id, now);
+    }
+
+    // --- inline log viewer ---
+    pub fn log_view(&self) -> Option<&LogView> {
+        self.log_view.as_ref()
+    }
+    pub fn open_log(&mut self, text: String) {
+        self.log_view = Some(LogView {
+            lines: text.lines().map(|l| l.to_string()).collect(),
+            scroll: 0,
+        });
+    }
+    pub fn close_log(&mut self) {
+        self.log_view = None;
+    }
+    pub fn log_scroll(&mut self, delta: i64) {
+        if let Some(view) = &mut self.log_view {
+            let max = view.lines.len().saturating_sub(1) as i64;
+            view.scroll = (view.scroll as i64 + delta).clamp(0, max) as usize;
+        }
+    }
+
+    // --- inline execution console ---
+    pub fn exec(&self) -> Option<&ExecView> {
+        self.exec.as_ref()
+    }
+    pub fn start_exec(&mut self) {
+        self.exec = Some(ExecView {
+            lines: Vec::new(),
+            done: None,
+        });
+    }
+    pub fn exec_push_line(&mut self, line: String) {
+        if let Some(view) = &mut self.exec {
+            view.lines.push(line);
+        }
+    }
+    pub fn exec_finish(&mut self, report: ExecutionReport) {
+        if let Some(view) = &mut self.exec {
+            view.done = Some(report);
+        }
+    }
+    pub fn exec_is_done(&self) -> bool {
+        self.exec.as_ref().is_some_and(|v| v.done.is_some())
+    }
+    /// Close the console; hand back the report for the result view.
+    pub fn take_exec_report(&mut self) -> Option<ExecutionReport> {
+        self.exec.take().and_then(|v| v.done)
     }
 
     // --- confirm modal + execution result ---
@@ -985,6 +1058,31 @@ mod tests {
             crate::analyzer::WhyReport::Pacman(p) => assert_eq!(p.package, "a"),
             other => panic!("expected pacman report, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn exec_and_log_states_drive_the_input_mode() {
+        let mut app = app();
+        app.goto_updates();
+        app.open_log("a\nb\nc".to_string());
+        assert_eq!(app.input_mode(), InputMode::LogView);
+        app.log_scroll(5);
+        assert_eq!(app.log_view().unwrap().scroll, 2); // clamped to last line
+        app.log_scroll(-10);
+        assert_eq!(app.log_view().unwrap().scroll, 0);
+        app.close_log();
+        assert_eq!(app.input_mode(), InputMode::Updates);
+
+        app.start_exec();
+        assert_eq!(app.input_mode(), InputMode::Exec);
+        assert!(!app.exec_is_done());
+        app.exec_push_line("out".to_string());
+        app.exec_finish(sample_report());
+        assert!(app.exec_is_done());
+        let report = app.take_exec_report().expect("report");
+        assert_eq!(report.succeeded(), 1);
+        assert!(app.exec().is_none());
+        assert_eq!(app.input_mode(), InputMode::Updates);
     }
 
     #[test]

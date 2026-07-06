@@ -33,6 +33,12 @@ pub enum Action {
     FocusLeft,
     /// Dashboard → focus the pending-updates pane (→/l).
     FocusRight,
+    /// Log viewer → close it.
+    CloseLog,
+    /// Execution console → forward these bytes to the running command.
+    ExecInput(char),
+    /// Execution console, finished → hand off to the result view.
+    ExecDismiss,
     /// Dashboard → open the selected source's package list.
     OpenPackages,
     /// Package list → jump a page of rows.
@@ -135,6 +141,39 @@ pub fn map_confirm_key(key: KeyEvent) -> Action {
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
             Action::CloseConfirm
         }
+        _ => Action::Ignore,
+    }
+}
+
+/// Inline log viewer: scroll like a pager, `q`/`Esc` close (as in `less` —
+/// a viewer's q must not quit the whole app). Ctrl-C still quits.
+pub fn map_log_key(key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => Action::Next,
+        KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::PageDown => Action::NextPage,
+        KeyCode::PageUp => Action::PrevPage,
+        KeyCode::Esc | KeyCode::Char('q') => Action::CloseLog,
+        _ => Action::Ignore,
+    }
+}
+
+/// Execution console key map. While the command runs, printable keys and
+/// Enter are forwarded to its stdin (sudo password, pacman prompts); when
+/// `done`, any key hands off to the result view. Ctrl-C still quits.
+pub fn map_exec_key(key: KeyEvent, done: bool) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Action::Quit;
+    }
+    if done {
+        return Action::ExecDismiss;
+    }
+    match key.code {
+        KeyCode::Char(c) => Action::ExecInput(c),
+        KeyCode::Enter => Action::ExecInput('\n'),
         _ => Action::Ignore,
     }
 }
@@ -310,11 +349,49 @@ mod tests {
 
     #[test]
     fn ctrl_c_quits_from_modal_and_result_too() {
-        for map in [map_confirm_key, map_result_key] {
+        for map in [map_confirm_key, map_result_key, map_log_key] {
             assert_eq!(
                 map(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
                 Action::Quit
             );
         }
+        assert_eq!(
+            map_exec_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL), false),
+            Action::Quit
+        );
+    }
+
+    #[test]
+    fn log_viewer_scrolls_and_closes_like_a_pager() {
+        assert_eq!(map_log_key(plain(KeyCode::Char('j'))), Action::Next);
+        assert_eq!(map_log_key(plain(KeyCode::PageUp)), Action::PrevPage);
+        assert_eq!(map_log_key(plain(KeyCode::Char('q'))), Action::CloseLog);
+        assert_eq!(map_log_key(plain(KeyCode::Esc)), Action::CloseLog);
+    }
+
+    #[test]
+    fn exec_console_forwards_keys_while_running_and_dismisses_when_done() {
+        assert_eq!(
+            map_exec_key(plain(KeyCode::Char('y')), false),
+            Action::ExecInput('y')
+        );
+        assert_eq!(
+            map_exec_key(plain(KeyCode::Enter), false),
+            Action::ExecInput('\n')
+        );
+        // q while running is INPUT, not quit — it may be part of a password.
+        assert_eq!(
+            map_exec_key(plain(KeyCode::Char('q')), false),
+            Action::ExecInput('q')
+        );
+        assert_eq!(map_exec_key(plain(KeyCode::Esc), false), Action::Ignore);
+        assert_eq!(
+            map_exec_key(plain(KeyCode::Char('x')), true),
+            Action::ExecDismiss
+        );
+        assert_eq!(
+            map_exec_key(plain(KeyCode::Enter), true),
+            Action::ExecDismiss
+        );
     }
 }

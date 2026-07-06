@@ -411,6 +411,16 @@ YYYY-MM-DD | no --noconfirm for pacman
            | pacman, flatpak, and du run concurrently; wall time is the
            | slowest lane. std::thread::scope, no tokio needed in the scanner.
 
+2026-07-06 | inline execution console replaces TUI suspend (user request)
+           | update output streams into the update window via piped stdio;
+           | typed keys forward to the child's stdin (sudo -S password,
+           | pacman prompts). Deviates from spec §13.2 suspend flow for the
+           | sudo/no-tool cases; doas/pkexec keep the suspend path (they
+           | cannot read a piped stdin). Password is forwarded, never echoed,
+           | never stored (§13.5 holds). L opens the update log inline too.
+           | Ceiling: no cancel mid-run, no backspace in blind input; a pty
+           | (portable-pty) is the upgrade path if prompts misbehave.
+
 2026-07-06 | why pane follows the cursor instead of arrow-scrolling
            | roadmap v0.1.2 says "panel navigable with arrow keys"; we keep
            | arrows on the package list (the pane live-follows the cursor)

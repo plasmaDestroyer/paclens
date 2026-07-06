@@ -8,6 +8,7 @@
 
 mod app;
 mod draw;
+mod exec;
 mod input;
 mod theme;
 
@@ -30,8 +31,8 @@ use crate::scanner;
 
 use app::{App, InputMode};
 use input::{
-    Action, map_confirm_key, map_dashboard_key, map_filter_key, map_packages_key, map_result_key,
-    map_update_key,
+    Action, map_confirm_key, map_dashboard_key, map_exec_key, map_filter_key, map_log_key,
+    map_packages_key, map_result_key, map_update_key,
 };
 use theme::Theme;
 
@@ -95,6 +96,7 @@ fn run_loop(
     config: &Config,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
+    let mut exec_session: Option<exec::ExecSession> = None;
     loop {
         terminal
             .draw(|frame| draw::draw(frame, app))
@@ -121,19 +123,58 @@ fn run_loop(
             }
         }
 
+        // Land streamed execution output, if a session is running.
+        if let Some(session) = &exec_session {
+            loop {
+                match session.events.try_recv() {
+                    Ok(exec::ExecEvent::Line(line)) => app.exec_push_line(line),
+                    Ok(exec::ExecEvent::Done(report)) => {
+                        app.exec_push_line(String::new());
+                        app.exec_push_line("done — press any key to continue".to_string());
+                        app.exec_finish(report);
+                        exec_session = None;
+                        break;
+                    }
+                    Ok(exec::ExecEvent::Failed(err)) => {
+                        app.take_exec_report();
+                        app.set_flash(format!("update failed: {err}"));
+                        exec_session = None;
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        exec_session = None;
+                        break;
+                    }
+                }
+            }
+        }
+
         // Wait for a key with a timeout so the spinner keeps animating.
         if !event::poll(TICK).context("failed to poll for terminal events")? {
             app.tick();
             continue;
         }
-        let action = read_action(app.input_mode())?;
+        let action = read_action(app.input_mode(), app.exec_is_done())?;
         // A key press dismisses any flash; `Confirm` sets a fresh one below.
         app.clear_flash();
 
         match action {
             Action::Quit => return Ok(()),
-            Action::Next => app.on_next(),
-            Action::Prev => app.on_prev(),
+            Action::Next => {
+                if app.log_view().is_some() {
+                    app.log_scroll(1);
+                } else {
+                    app.on_next();
+                }
+            }
+            Action::Prev => {
+                if app.log_view().is_some() {
+                    app.log_scroll(-1);
+                } else {
+                    app.on_prev();
+                }
+            }
             Action::Refresh => {
                 // Background re-scan; the dashboard shows the spinner while
                 // the current data stays interactive.
@@ -148,8 +189,20 @@ fn run_loop(
                 app::Screen::Packages => app.back_packages(),
                 _ => app.back_to_dashboard(),
             },
-            Action::NextPage => app.pkg_move(20),
-            Action::PrevPage => app.pkg_move(-20),
+            Action::NextPage => {
+                if app.log_view().is_some() {
+                    app.log_scroll(20);
+                } else {
+                    app.pkg_move(20);
+                }
+            }
+            Action::PrevPage => {
+                if app.log_view().is_some() {
+                    app.log_scroll(-20);
+                } else {
+                    app.pkg_move(-20);
+                }
+            }
             Action::StartFilter => app.start_filter(),
             Action::ToggleWhy => app.toggle_why(),
             Action::FilterChar(c) => app.filter_push(c),
@@ -173,36 +226,51 @@ fn run_loop(
             Action::Execute => {
                 app.close_confirm();
                 let plan = app.update_plan();
-                match run_plan_suspended(terminal, &plan, app.privilege_tool()) {
-                    Ok(report) => {
-                        // Refresh synchronously here: the user just watched the
-                        // update run, and the result view must sit on current
-                        // data the moment it appears.
-                        let runner = SystemCommandRunner;
-                        let scan = scanner::load_or_scan(&runner, config, true, config_path)?;
-                        app.replace_scan(scan);
-                        app.set_report(report);
+                let tool = app.privilege_tool();
+                if exec::tool_supports_pipe(tool) {
+                    // Inline console: output streams into the update window;
+                    // typed keys (sudo password, pacman prompts) forward to
+                    // the running command. No terminal suspend.
+                    app.start_exec();
+                    exec_session = Some(exec::start(plan, tool.map(String::from), None));
+                } else {
+                    // doas/pkexec cannot read a piped stdin — suspend for them.
+                    match run_plan_suspended(terminal, &plan, tool) {
+                        Ok(report) => {
+                            let runner = SystemCommandRunner;
+                            let scan = scanner::load_or_scan(&runner, config, true, config_path)?;
+                            app.replace_scan(scan);
+                            app.set_report(report);
+                        }
+                        Err(err) => app.set_flash(format!("update failed: {err:#}")),
                     }
-                    Err(err) => app.set_flash(format!("update failed: {err:#}")),
                 }
             }
             Action::DismissResult => app.dismiss_report(),
             Action::FocusLeft => app.focus_sources(),
             Action::FocusRight => app.focus_updates(),
-            Action::OpenLog => match UpdateLog::latest_path() {
-                Some(path) => {
-                    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
-                    let outcome = with_suspended(terminal, || {
-                        std::process::Command::new(&pager)
-                            .arg(&path)
-                            .status()
-                            .map(|_| ())
-                            .map_err(anyhow::Error::from)
-                    });
-                    if let Err(err) = outcome {
-                        app.set_flash(format!("could not open {pager}: {err:#}"));
-                    }
+            Action::ExecInput(c) => {
+                if let Some(session) = &exec_session {
+                    let mut buf = [0u8; 4];
+                    session.forward(c.encode_utf8(&mut buf).as_bytes().to_vec());
                 }
+            }
+            Action::ExecDismiss => {
+                if let Some(report) = app.take_exec_report() {
+                    // Refresh in the background; the result view shows now.
+                    if job.is_none() {
+                        app.set_scanning(true);
+                        job = Some(spawn_scan(config.clone()));
+                    }
+                    app.set_report(report);
+                }
+            }
+            Action::CloseLog => app.close_log(),
+            Action::OpenLog => match UpdateLog::latest_path() {
+                Some(path) => match std::fs::read_to_string(&path) {
+                    Ok(text) => app.open_log(text),
+                    Err(err) => app.set_flash(format!("could not read the log: {err}")),
+                },
                 None => app.set_flash("no update log yet — nothing has been executed"),
             },
             Action::Ignore => {}
@@ -245,7 +313,7 @@ fn run_plan_suspended(
 }
 
 /// Read the pending key press and map it with the active mode's key map.
-fn read_action(mode: InputMode) -> anyhow::Result<Action> {
+fn read_action(mode: InputMode, exec_done: bool) -> anyhow::Result<Action> {
     match event::read().context("failed to read a terminal event")? {
         Event::Key(key) if key.kind == KeyEventKind::Press => Ok(match mode {
             InputMode::Dashboard => map_dashboard_key(key),
@@ -254,6 +322,8 @@ fn read_action(mode: InputMode) -> anyhow::Result<Action> {
             InputMode::Result => map_result_key(key),
             InputMode::Packages => map_packages_key(key),
             InputMode::PackageFilter => map_filter_key(key),
+            InputMode::LogView => map_log_key(key),
+            InputMode::Exec => map_exec_key(key, exec_done),
         }),
         _ => Ok(Action::Ignore),
     }

@@ -35,12 +35,112 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     match app.screen() {
         Screen::Dashboard => draw_dashboard(frame, area, app),
-        Screen::Updates => match app.report() {
-            Some(report) => draw_result(frame, area, app, report),
-            None => draw_update(frame, area, app),
-        },
+        Screen::Updates => {
+            if let Some(view) = app.exec() {
+                draw_exec(frame, area, app, view);
+            } else if let Some(view) = app.log_view() {
+                draw_log(frame, area, app, view);
+            } else if let Some(report) = app.report() {
+                draw_result(frame, area, app, report);
+            } else {
+                draw_update(frame, area, app);
+            }
+        }
         Screen::Packages => draw_packages(frame, area, app),
     }
+}
+
+/// The inline execution console: streamed command output in the update
+/// window, tail-following; typed keys go to the running command.
+fn draw_exec(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::ExecView) {
+    let theme = &app.theme;
+    let running = view.done.is_none();
+    let title = if running {
+        format!(" paclens · updating {} ", app.spinner())
+    } else {
+        " paclens · update finished ".to_string()
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(if running {
+            theme.selected
+        } else {
+            theme.border
+        })
+        .title(Span::styled(title, theme.title))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(inner);
+
+    let lines: Vec<Line> = view
+        .lines
+        .iter()
+        .map(|l| {
+            if l.starts_with("::") {
+                Line::from(Span::styled(l.clone(), theme.accent))
+            } else {
+                Line::from(Span::styled(l.clone(), theme.primary))
+            }
+        })
+        .collect();
+    // Tail-follow: keep the newest lines in view.
+    let viewport = chunks[0].height as usize;
+    let scroll = lines.len().saturating_sub(viewport);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), chunks[0]);
+
+    let footer = if running {
+        keys_line(
+            theme,
+            &[("typed keys", "answer prompts (sudo password, pacman y/n)")],
+        )
+    } else {
+        keys_line(theme, &[("any key", "continue to the result")])
+    };
+    frame.render_widget(Paragraph::new(footer), chunks[1]);
+}
+
+/// The inline log viewer: the newest update log, scrollable like a pager.
+fn draw_log(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::LogView) {
+    let theme = &app.theme;
+    let block = panel(theme, " paclens · update log ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(inner);
+
+    let lines: Vec<Line> = view
+        .lines
+        .iter()
+        .map(|l| Line::from(Span::styled(l.clone(), theme.primary)))
+        .collect();
+    let total = lines.len();
+    frame.render_widget(
+        Paragraph::new(lines).scroll((view.scroll as u16, 0)),
+        chunks[0],
+    );
+
+    let g = theme.glyphs;
+    let updown = format!("{}/{}", g.up, g.down);
+    let mut spans = keys_line(
+        theme,
+        &[
+            (&updown, "scroll"),
+            ("pgup/pgdn", "page"),
+            ("q/esc", "close"),
+        ],
+    )
+    .spans;
+    let below = total.saturating_sub(view.scroll + chunks[0].height as usize);
+    if below > 0 {
+        spans.push(Span::styled(
+            format!("   {} {below} more", g.down),
+            theme.dim,
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), chunks[1]);
 }
 
 // ---------------------------------------------------------------------------
@@ -82,11 +182,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let keys_pane = subpane(theme, " keys ");
     let keys_inner = keys_pane.inner(right[1]);
     frame.render_widget(keys_pane, right[1]);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(dashboard_keys(theme), theme.dim)))
-            .wrap(ratatui::widgets::Wrap { trim: true }),
-        keys_inner,
-    );
+    frame.render_widget(Paragraph::new(dashboard_key_rows(theme)), keys_inner);
 }
 
 /// The pre-quadrant layout, kept for small terminals.
@@ -110,20 +206,50 @@ fn draw_dashboard_flat(frame: &mut Frame, inner: Rect, app: &App) {
         cols[1],
     );
     render_table(frame, chunks[2], app);
+    let g = theme.glyphs;
+    let updown = format!("{}/{}", g.up, g.down);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(dashboard_keys(theme), theme.dim))),
+        Paragraph::new(keys_line(
+            theme,
+            &[
+                (&updown, "move"),
+                ("enter", "packages"),
+                ("u", "update"),
+                ("r", "refresh"),
+                ("q", "quit"),
+            ],
+        )),
         chunks[3],
     );
 }
 
-fn dashboard_keys(theme: &Theme) -> String {
+/// One styled key-hint line: the key bold, its label dim, dim bullets between.
+fn keys_line(theme: &Theme, pairs: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (key, label)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                format!("  {}  ", theme.glyphs.bullet),
+                theme.dim,
+            ));
+        }
+        spans.push(Span::styled((*key).to_string(), theme.title));
+        spans.push(Span::styled(format!(" {label}"), theme.dim));
+    }
+    Line::from(spans)
+}
+
+/// The dashboard key hints, split into two tidy rows for the keys pane.
+fn dashboard_key_rows(theme: &Theme) -> Vec<Line<'static>> {
     let g = theme.glyphs;
-    format!(
-        "q quit {b} {up}/{down} move {b} ←/→ pane {b} enter packages {b} u update {b} r refresh",
-        b = g.bullet,
-        up = g.up,
-        down = g.down,
-    )
+    let updown = format!("{}/{}", g.up, g.down);
+    vec![
+        keys_line(
+            theme,
+            &[(&updown, "move"), ("←/→", "pane"), ("enter", "packages")],
+        ),
+        keys_line(theme, &[("u", "update"), ("r", "refresh"), ("q", "quit")]),
+    ]
 }
 
 /// Bordered inner pane with a dim border and a bold-dim title.
@@ -146,7 +272,8 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
 
     let kv = |label: &str, value: Span<'static>| {
         Line::from(vec![
-            Span::styled(format!("{:14}", label), theme.dim),
+            Span::styled(format!("{} ", theme.glyphs.bullet), theme.dim),
+            Span::styled(format!("{:13}", label), theme.dim),
             value,
         ])
     };
@@ -416,20 +543,22 @@ fn draw_update(frame: &mut Frame, area: Rect, app: &App) {
 /// keys are dropped in the empty state where there is nothing to toggle.
 fn render_update_footer(frame: &mut Frame, area: Rect, theme: &Theme, has_plan: bool) {
     let g = theme.glyphs;
-    let footer = if has_plan {
-        format!(
-            "space toggle {b} {up}/{down} source {b} l log {b} esc back {b} q quit",
-            b = g.bullet,
-            up = g.up,
-            down = g.down,
+    let updown = format!("{}/{}", g.up, g.down);
+    let line = if has_plan {
+        keys_line(
+            theme,
+            &[
+                ("space", "toggle"),
+                (&updown, "source"),
+                ("l", "log"),
+                ("esc", "back"),
+                ("q", "quit"),
+            ],
         )
     } else {
-        format!("l log {b} esc back {b} q quit", b = g.bullet)
+        keys_line(theme, &[("l", "log"), ("esc", "back"), ("q", "quit")])
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, theme.dim))),
-        area,
-    );
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// The last row of `area` (for a footer outside a Layout split).
@@ -623,20 +752,25 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let g = theme.glyphs;
-    let footer = if app.is_filter_active() {
-        "type to filter · enter apply · esc cancel".to_string()
+    let updown = format!("{}/{}", g.up, g.down);
+    let line = if app.is_filter_active() {
+        keys_line(
+            theme,
+            &[("type", "to filter"), ("enter", "apply"), ("esc", "cancel")],
+        )
     } else {
-        format!(
-            "{up}/{down} navigate {b} / filter {b} w why {b} esc back {b} q quit",
-            b = g.bullet,
-            up = g.up,
-            down = g.down,
+        keys_line(
+            theme,
+            &[
+                (&updown, "navigate"),
+                ("/", "filter"),
+                ("w", "why"),
+                ("esc", "back"),
+                ("q", "quit"),
+            ],
         )
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer, theme.dim))),
-        chunks[3],
-    );
+    frame.render_widget(Paragraph::new(line), chunks[3]);
 }
 
 /// `narrow` drops the VERSION/SIZE columns — used when the why pane halves
@@ -1002,10 +1136,10 @@ fn draw_result(frame: &mut Frame, area: Rect, app: &App, report: &ExecutionRepor
         chunks[3],
     );
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "l view log · any other key continues",
-            theme.dim,
-        ))),
+        Paragraph::new(keys_line(
+            theme,
+            &[("l", "view log"), ("any other key", "continues")],
+        )),
         chunks[4],
     );
 }
@@ -1083,7 +1217,7 @@ pub fn draw_splash(frame: &mut Frame, theme: &Theme, spinner: Option<&str>) {
     let rect = centered(inner, inner.width, 2);
     frame.render_widget(Paragraph::new(lines), rect);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("q quit", theme.dim))),
+        Paragraph::new(keys_line(theme, &[("q", "quit")])),
         bottom_line(inner),
     );
 }
@@ -1714,6 +1848,59 @@ mod tests {
         let text = render(&app, 78, 18);
         assert!(text.contains("no matches"), "{text}");
         assert!(text.contains("0 of 3"), "{text}");
+    }
+
+    // --- inline exec console + log viewer ---
+    #[test]
+    fn exec_console_tails_output_and_swaps_footer_when_done() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.goto_updates();
+        app.start_exec();
+        app.exec_push_line(":: sudo pacman -Syu".to_string());
+        for i in 0..40 {
+            app.exec_push_line(format!("downloading package {i}"));
+        }
+        let text = render(&app, 90, 20);
+        assert!(text.contains("updating"), "title missing:\n{text}");
+        assert!(
+            text.contains("downloading package 39"),
+            "not tailing:\n{text}"
+        );
+        assert!(
+            !text.contains("downloading package 0\n"),
+            "old lines should scroll away"
+        );
+        assert!(
+            text.contains("answer prompts"),
+            "running footer missing:\n{text}"
+        );
+
+        app.exec_finish(crate::executor::ExecutionReport {
+            steps: Vec::new(),
+            log_path: PathBuf::from("/tmp/x.log"),
+        });
+        let text = render(&app, 90, 20);
+        assert!(text.contains("update finished"), "{text}");
+        assert!(text.contains("continue to the result"), "{text}");
+    }
+
+    #[test]
+    fn log_viewer_scrolls_and_shows_position() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.goto_updates();
+        let text: String = (0..60)
+            .map(|i| format!("[2026-07-06 INFO] line {i}\n"))
+            .collect();
+        app.open_log(text);
+        let rendered = render(&app, 90, 20);
+        assert!(rendered.contains("update log"), "{rendered}");
+        assert!(rendered.contains("line 0"), "{rendered}");
+        assert!(rendered.contains("more"), "position missing:\n{rendered}");
+
+        app.log_scroll(30);
+        let rendered = render(&app, 90, 20);
+        assert!(!rendered.contains("line 0\n"), "did not scroll");
+        assert!(rendered.contains("line 30"), "{rendered}");
     }
 
     // --- startup splash ---
