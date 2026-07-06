@@ -410,6 +410,13 @@ YYYY-MM-DD | no --noconfirm for pacman
 2026-07-05 | scan lanes on scoped threads (spec Q5 resolved)
            | pacman, flatpak, and du run concurrently; wall time is the
            | slowest lane. std::thread::scope, no tokio needed in the scanner.
+
+2026-07-06 | why pane follows the cursor instead of arrow-scrolling
+           | roadmap v0.1.2 says "panel navigable with arrow keys"; we keep
+           | arrows on the package list (the pane live-follows the cursor)
+           | and cap the chain tree to fit with "… n more" — better UX than
+           | a focus switch. W stays on the package list; the update screen
+           | has no per-package cursor to hang it on.
 ```
 
 ---
