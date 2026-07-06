@@ -66,7 +66,12 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let left = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(cols[0]);
     let right = Layout::vertical([Constraint::Min(5), Constraint::Length(4)]).split(cols[1]);
 
-    let sources_pane = subpane(theme, " sources ");
+    let sources_focused = app.dash_focus() == crate::tui::app::DashPane::Sources;
+    let sources_pane = subpane(theme, " sources ").border_style(if sources_focused {
+        theme.selected
+    } else {
+        theme.border
+    });
     let sources_inner = sources_pane.inner(left[0]);
     frame.render_widget(sources_pane, left[0]);
     render_table(frame, sources_inner, app);
@@ -114,7 +119,7 @@ fn draw_dashboard_flat(frame: &mut Frame, inner: Rect, app: &App) {
 fn dashboard_keys(theme: &Theme) -> String {
     let g = theme.glyphs;
     format!(
-        "q quit {b} {up}/{down} navigate {b} enter packages {b} u update {b} r refresh",
+        "q quit {b} {up}/{down} move {b} ←/→ pane {b} enter packages {b} u update {b} r refresh",
         b = g.bullet,
         up = g.up,
         down = g.down,
@@ -181,10 +186,15 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         format!(" pending updates ({total}) ")
     };
+    let focused = app.dash_focus() == crate::tui::app::DashPane::Updates;
     let pane = Block::default()
         .borders(Borders::ALL)
         .border_set(theme.border_set)
-        .border_style(theme.border)
+        .border_style(if focused {
+            theme.selected
+        } else {
+            theme.border
+        })
         .title(Span::styled(title, theme.header))
         .padding(Padding::horizontal(1));
     let inner = pane.inner(area);
@@ -198,7 +208,7 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    const PER_SOURCE_CAP: usize = 8;
+    // The full list — ↑/↓ (j/k) scroll it while the pane has focus.
     let mut lines: Vec<Line> = Vec::new();
     for source in &app.scan().sources {
         let ups = app.updates_for(&source.id);
@@ -212,13 +222,8 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(source.id.to_string(), theme.title),
             Span::styled(format!("  ({})", ups.len()), theme.dim),
         ]));
-        let name_w = ups
-            .iter()
-            .take(PER_SOURCE_CAP)
-            .map(|u| u.package_name.len())
-            .max()
-            .unwrap_or(0);
-        for u in ups.iter().take(PER_SOURCE_CAP) {
+        let name_w = ups.iter().map(|u| u.package_name.len()).max().unwrap_or(0);
+        for u in &ups {
             let new_version = if u.available_version.is_empty() {
                 Span::styled("?", theme.dim)
             } else {
@@ -232,14 +237,31 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
                 new_version,
             ]));
         }
-        if ups.len() > PER_SOURCE_CAP {
-            lines.push(Line::from(Span::styled(
-                format!(" … {} more", ups.len() - PER_SOURCE_CAP),
-                theme.dim,
-            )));
+    }
+    let below = lines
+        .len()
+        .saturating_sub(app.updates_scroll() + inner.height as usize);
+    frame.render_widget(
+        Paragraph::new(lines).scroll((app.updates_scroll() as u16, 0)),
+        inner,
+    );
+    if below > 0 {
+        // Scroll indicator on the bottom border.
+        let hint = format!(" {} {below} more ", theme.glyphs.down);
+        let w = hint.chars().count() as u16;
+        if area.width > w + 2 {
+            let rect = Rect {
+                x: area.x + area.width - w - 2,
+                y: area.y + area.height - 1,
+                width: w,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(hint, theme.dim))),
+                rect,
+            );
         }
     }
-    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn scanned_span(app: &App) -> Span<'static> {
@@ -1223,14 +1245,49 @@ mod tests {
     }
 
     #[test]
-    fn quadrant_updates_pane_caps_long_groups() {
-        let ups: Vec<PendingUpdate> = (0..12)
+    fn quadrant_updates_pane_scrolls_the_full_list() {
+        let ups: Vec<PendingUpdate> = (0..30)
             .map(|i| upd(&format!("pkg{i:02}"), "1", "2", SourceId::pacman()))
             .collect();
-        let app = App::new(scan_with(ups), Theme::none(), AppOptions::test());
-        let text = render(&app, 96, 30);
-        assert!(text.contains("pending updates (12)"), "{text}");
-        assert!(text.contains("… 4 more"), "cap marker missing:\n{text}");
+        let mut app = App::new(scan_with(ups), Theme::none(), AppOptions::test());
+        let text = render(&app, 96, 24);
+        assert!(text.contains("pending updates (30)"), "{text}");
+        assert!(text.contains("pkg00"), "{text}");
+        assert!(!text.contains("pkg29"), "everything fit?!\n{text}");
+        assert!(text.contains("more "), "scroll indicator missing:\n{text}");
+
+        // Focus the pane and scroll: later rows come into view.
+        app.focus_updates();
+        for _ in 0..15 {
+            app.on_next();
+        }
+        let text = render(&app, 96, 24);
+        assert!(!text.contains("pkg00"), "did not scroll:\n{text}");
+        assert!(text.contains("pkg29"), "end not reachable:\n{text}");
+    }
+
+    #[test]
+    fn dashboard_arrows_follow_the_focused_pane() {
+        let ups: Vec<PendingUpdate> = (0..5)
+            .map(|i| upd(&format!("pkg{i}"), "1", "2", SourceId::pacman()))
+            .collect();
+        let mut app = App::new(scan_with(ups), Theme::none(), AppOptions::test());
+        // Sources focus: ↓ moves the cursor, scroll stays.
+        app.on_next();
+        assert_eq!(app.selected(), Some(1));
+        assert_eq!(app.updates_scroll(), 0);
+        // Updates focus: ↓ scrolls, cursor stays.
+        app.focus_updates();
+        app.on_next();
+        assert_eq!(app.selected(), Some(1));
+        assert_eq!(app.updates_scroll(), 1);
+        app.on_prev();
+        app.on_prev(); // clamped at 0
+        assert_eq!(app.updates_scroll(), 0);
+        // Back to sources.
+        app.focus_sources();
+        app.on_next();
+        assert_eq!(app.selected(), Some(2));
     }
 
     #[test]

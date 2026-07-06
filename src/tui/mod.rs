@@ -187,6 +187,8 @@ fn run_loop(
                 }
             }
             Action::DismissResult => app.dismiss_report(),
+            Action::FocusLeft => app.focus_sources(),
+            Action::FocusRight => app.focus_updates(),
             Action::OpenLog => match UpdateLog::latest_path() {
                 Some(path) => {
                     let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());

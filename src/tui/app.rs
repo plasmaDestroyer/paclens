@@ -49,6 +49,13 @@ impl AppOptions {
     }
 }
 
+/// Which dashboard pane owns ↑/↓: the sources table or the updates preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashPane {
+    Sources,
+    Updates,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Dashboard,
@@ -113,6 +120,10 @@ pub struct App {
     why_open: bool,
     /// Spinner animation frame, advanced by the loop's poll tick.
     spinner_frame: usize,
+    /// Dashboard: which pane has focus (←/→ or h/l switches).
+    dash_focus: DashPane,
+    /// Dashboard: scroll offset of the pending-updates pane.
+    updates_scroll: usize,
     /// Dashboard system pane: orphan candidates in the current scan.
     orphan_count: usize,
     /// Dashboard system pane: detected overlaps in the current scan.
@@ -150,6 +161,8 @@ impl App {
             filter_active: false,
             why_open: false,
             spinner_frame: 0,
+            dash_focus: DashPane::Sources,
+            updates_scroll: 0,
             orphan_count,
             overlap_count,
         }
@@ -176,6 +189,7 @@ impl App {
         self.confirming = false;
         self.flash = None;
         self.scanning = false;
+        self.updates_scroll = 0;
         self.clamp_pkg_cursor();
     }
 
@@ -236,20 +250,62 @@ impl App {
         self.screen = Screen::Dashboard;
     }
 
-    /// Move the active screen's cursor forward / back.
+    /// Move the active screen's cursor forward / back. On the dashboard the
+    /// focused pane decides: sources cursor vs updates-pane scroll.
     pub fn on_next(&mut self) {
-        match self.screen {
-            Screen::Dashboard => self.select_next(),
-            Screen::Updates => self.update_next(),
-            Screen::Packages => self.pkg_move(1),
+        match (self.screen, self.dash_focus) {
+            (Screen::Dashboard, DashPane::Sources) => self.select_next(),
+            (Screen::Dashboard, DashPane::Updates) => {
+                let max = self.updates_pane_rows().saturating_sub(1);
+                self.updates_scroll = (self.updates_scroll + 1).min(max);
+            }
+            (Screen::Updates, _) => self.update_next(),
+            (Screen::Packages, _) => self.pkg_move(1),
         }
     }
     pub fn on_prev(&mut self) {
-        match self.screen {
-            Screen::Dashboard => self.select_prev(),
-            Screen::Updates => self.update_prev(),
-            Screen::Packages => self.pkg_move(-1),
+        match (self.screen, self.dash_focus) {
+            (Screen::Dashboard, DashPane::Sources) => self.select_prev(),
+            (Screen::Dashboard, DashPane::Updates) => {
+                self.updates_scroll = self.updates_scroll.saturating_sub(1);
+            }
+            (Screen::Updates, _) => self.update_prev(),
+            (Screen::Packages, _) => self.pkg_move(-1),
         }
+    }
+
+    // --- dashboard pane focus + updates scroll ---
+    pub fn dash_focus(&self) -> DashPane {
+        self.dash_focus
+    }
+    pub fn focus_sources(&mut self) {
+        self.dash_focus = DashPane::Sources;
+    }
+    pub fn focus_updates(&mut self) {
+        self.dash_focus = DashPane::Updates;
+    }
+    pub fn updates_scroll(&self) -> usize {
+        self.updates_scroll
+    }
+
+    /// Total renderable rows of the pending-updates pane (group headers +
+    /// update rows + blank separators) — the scroll clamp.
+    fn updates_pane_rows(&self) -> usize {
+        let mut rows = 0;
+        let mut groups = 0;
+        for source in &self.scan.sources {
+            let n = self
+                .scan
+                .updates
+                .iter()
+                .filter(|u| u.source_id == source.id)
+                .count();
+            if n > 0 {
+                groups += 1;
+                rows += 1 + n; // header + rows
+            }
+        }
+        rows + groups.max(1) - 1 // blank line between groups
     }
 
     // --- dashboard ---

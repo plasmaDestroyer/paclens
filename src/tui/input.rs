@@ -29,6 +29,10 @@ pub enum Action {
     DismissResult,
     /// Update screen / result view → open the newest update log in $PAGER.
     OpenLog,
+    /// Dashboard → focus the sources pane (←/h).
+    FocusLeft,
+    /// Dashboard → focus the pending-updates pane (→/l).
+    FocusRight,
     /// Dashboard → open the selected source's package list.
     OpenPackages,
     /// Package list → jump a page of rows.
@@ -61,6 +65,8 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => Action::Next,
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::Left | KeyCode::Char('h') => Action::FocusLeft,
+        KeyCode::Right | KeyCode::Char('l') => Action::FocusRight,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('u') => Action::OpenUpdates,
         KeyCode::Enter => Action::OpenPackages,
@@ -195,6 +201,16 @@ mod tests {
         // Update-only keys are ignored on the dashboard.
         assert_eq!(map_dashboard_key(plain(KeyCode::Char(' '))), Action::Ignore);
         assert_eq!(map_dashboard_key(plain(KeyCode::Esc)), Action::Ignore);
+    }
+
+    #[test]
+    fn dashboard_pane_focus_keys() {
+        for left in [KeyCode::Left, KeyCode::Char('h')] {
+            assert_eq!(map_dashboard_key(plain(left)), Action::FocusLeft);
+        }
+        for right in [KeyCode::Right, KeyCode::Char('l')] {
+            assert_eq!(map_dashboard_key(plain(right)), Action::FocusRight);
+        }
     }
 
     #[test]
