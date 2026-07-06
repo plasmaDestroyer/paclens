@@ -58,6 +58,12 @@ impl Styles {
         self.glyphs.cross
     }
 
+    /// Tree-drawing glyphs as (branch, last, pipe, blank).
+    pub fn tree_glyphs(&self) -> (&'static str, &'static str, &'static str, &'static str) {
+        let g = &self.glyphs;
+        (g.tree_branch, g.tree_last, g.tree_pipe, g.tree_blank)
+    }
+
     /// Apply `style` only when color is enabled; otherwise return the text plain.
     fn paint(&self, text: &str, style: impl FnOnce(String) -> StyledContent<String>) -> String {
         if self.color {

@@ -55,8 +55,99 @@ pub struct PacmanWhy {
     pub depth_from_explicit: Option<u32>,
     /// Direct deps that would be orphaned (their only requirer is this).
     pub would_remove: Vec<String>,
+    /// Reverse-dep chain as a tree (spec §10.3 / roadmap v0.1.2): each root is
+    /// a direct requirer, children are *their* requirers, every edge labeled.
+    pub tree: Vec<TreeNode>,
     pub verdict: Verdict,
     pub confidence: Confidence,
+}
+
+/// One node of the reverse-dependency tree. `confidence` labels the edge from
+/// the parent (all pacman edges are Confirmed today; Inferred edges arrive
+/// with the v0.1.3 relationship model). `truncated` counts children hidden by
+/// the branch cap — shown as "… n more", never silently dropped (P3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeNode {
+    pub name: String,
+    pub confidence: Confidence,
+    pub children: Vec<TreeNode>,
+    pub truncated: usize,
+}
+
+/// Display caps: the tree explains, it does not enumerate — the transitive
+/// list already carries the full set.
+const TREE_DEPTH: u32 = 3;
+const TREE_BRANCH: usize = 5;
+
+/// Build the reverse-dep tree upward from `name`, cycle-safe along each path.
+fn reverse_tree(graph: &DepGraph, name: &str, depth: u32, path: &mut Vec<String>) -> Vec<TreeNode> {
+    if depth == 0 {
+        return Vec::new();
+    }
+    let requirers = graph.required_by(name);
+    let total = requirers.len();
+    path.push(name.to_string());
+    let mut nodes: Vec<TreeNode> = Vec::new();
+    for r in requirers {
+        if nodes.len() == TREE_BRANCH {
+            break;
+        }
+        if path.contains(&r) {
+            continue; // cycle back-edge
+        }
+        let children = reverse_tree(graph, &r, depth - 1, path);
+        nodes.push(TreeNode {
+            name: r,
+            confidence: Confidence::Confirmed,
+            children,
+            truncated: 0,
+        });
+    }
+    path.pop();
+    if total > TREE_BRANCH
+        && let Some(last) = nodes.last_mut()
+    {
+        last.truncated = total - TREE_BRANCH;
+    }
+    if total > TREE_BRANCH && nodes.is_empty() {
+        // Everything was a cycle back-edge; nothing to attach the count to.
+        return nodes;
+    }
+    nodes
+}
+
+/// One renderable tree row: the drawing prefix (built from the caller's
+/// glyphs), the package name, the edge confidence, and how many siblings were
+/// hidden after this node ("… n more").
+pub struct TreeLine {
+    pub prefix: String,
+    pub name: String,
+    pub confidence: Confidence,
+    pub truncated: usize,
+}
+
+/// Flatten a reverse-dep tree into drawable rows. `glyphs` = (branch, last,
+/// pipe, blank), so the CLI and the TUI render the exact same structure with
+/// their own character sets (P5).
+pub fn tree_lines(nodes: &[TreeNode], glyphs: (&str, &str, &str, &str)) -> Vec<TreeLine> {
+    let mut out = Vec::new();
+    flatten(nodes, "", glyphs, &mut out);
+    out
+}
+
+fn flatten(nodes: &[TreeNode], indent: &str, g: (&str, &str, &str, &str), out: &mut Vec<TreeLine>) {
+    let (branch, last, pipe, blank) = g;
+    for (i, node) in nodes.iter().enumerate() {
+        let is_last = i + 1 == nodes.len();
+        out.push(TreeLine {
+            prefix: format!("{indent}{}", if is_last { last } else { branch }),
+            name: node.name.clone(),
+            confidence: node.confidence,
+            truncated: node.truncated,
+        });
+        let child_indent = format!("{indent}{}", if is_last { blank } else { pipe });
+        flatten(&node.children, &child_indent, g, out);
+    }
 }
 
 pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> WhyReport {
@@ -103,6 +194,7 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         reason: pkg.install_reason,
         transitive_required_by: graph.transitive_required_by(name, max_depth),
         depth_from_explicit: graph.depth_from_explicit(scan, name),
+        tree: reverse_tree(graph, name, TREE_DEPTH.min(max_depth), &mut Vec::new()),
         required_by,
         would_remove,
         verdict,
@@ -255,6 +347,83 @@ mod tests {
             WhyReport::NotFound { suggestion, .. } => assert_eq!(suggestion, None),
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    // --- reverse-dep tree ---
+    #[test]
+    fn tree_nests_requirers_with_confirmed_edges() {
+        let p = pacman("glibc");
+        // Direct requirers as roots (sorted): firefox, readline.
+        let names: Vec<&str> = p.tree.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["firefox", "readline"]);
+        // readline is required by bash → nested child.
+        let readline = &p.tree[1];
+        assert_eq!(readline.children.len(), 1);
+        assert_eq!(readline.children[0].name, "bash");
+        assert!(p.tree.iter().all(|n| n.confidence == Confidence::Confirmed));
+    }
+
+    #[test]
+    fn tree_is_empty_for_a_leaf() {
+        assert!(pacman("firefox").tree.is_empty());
+    }
+
+    #[test]
+    fn tree_survives_cycles() {
+        let mut s = scan();
+        s.packages
+            .push(pkg("a", InstallReason::Dependency, &["b"], &[]));
+        s.packages
+            .push(pkg("b", InstallReason::Dependency, &["a"], &[]));
+        let g = DepGraph::build(&s);
+        let report = why(&s, &g, "a", 20);
+        let WhyReport::Pacman(p) = report else {
+            panic!("expected pacman")
+        };
+        // b requires a; a requires b would loop — cut as a back-edge.
+        assert_eq!(p.tree.len(), 1);
+        assert_eq!(p.tree[0].name, "b");
+        assert!(p.tree[0].children.is_empty());
+    }
+
+    #[test]
+    fn tree_caps_branches_and_reports_the_hidden_count() {
+        let mut s = scan();
+        for i in 0..8 {
+            s.packages.push(pkg(
+                &format!("user{i}"),
+                InstallReason::Explicit,
+                &["glibc"],
+                &[],
+            ));
+        }
+        let g = DepGraph::build(&s);
+        let WhyReport::Pacman(p) = why(&s, &g, "glibc", 20) else {
+            panic!("expected pacman")
+        };
+        assert_eq!(p.tree.len(), 5, "branch cap");
+        let hidden: usize = p.tree.iter().map(|n| n.truncated).sum();
+        // 10 requirers total (firefox, readline + 8 users) → 5 hidden.
+        assert_eq!(hidden, 5);
+    }
+
+    #[test]
+    fn tree_lines_flatten_with_correct_prefixes() {
+        let p = pacman("glibc");
+        let rows = tree_lines(&p.tree, ("|- ", "`- ", "|  ", "   "));
+        let drawn: Vec<String> = rows
+            .iter()
+            .map(|r| format!("{}{}", r.prefix, r.name))
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![
+                "|- firefox",
+                "`- readline",
+                "   `- bash",
+                "      `- scripter"
+            ]
+        );
     }
 
     #[test]

@@ -11,4 +11,7 @@ mod why;
 
 pub use graph::DepGraph;
 pub use overlap::detect_overlaps;
-pub use why::{PacmanWhy, Verdict, WhyReport, why};
+pub use why::{PacmanWhy, Verdict, WhyReport, tree_lines, why};
+// Named in bin code only through PacmanWhy.tree's type; tests construct it.
+#[allow(unused_imports)]
+pub use why::TreeNode;

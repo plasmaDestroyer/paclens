@@ -21,6 +21,11 @@ pub struct Glyphs {
     pub cross: &'static str,
     /// Animation frames for the background-scan spinner.
     pub spinner: &'static [&'static str],
+    /// Tree drawing: mid branch, last branch, continuation pipe, blank indent.
+    pub tree_branch: &'static str,
+    pub tree_last: &'static str,
+    pub tree_pipe: &'static str,
+    pub tree_blank: &'static str,
 }
 
 pub const UNICODE: Glyphs = Glyphs {
@@ -34,6 +39,10 @@ pub const UNICODE: Glyphs = Glyphs {
     check: "✓",
     cross: "✗",
     spinner: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+    tree_branch: "├─ ",
+    tree_last: "└─ ",
+    tree_pipe: "│  ",
+    tree_blank: "   ",
 };
 
 pub const ASCII: Glyphs = Glyphs {
@@ -47,6 +56,10 @@ pub const ASCII: Glyphs = Glyphs {
     check: "x",
     cross: "!",
     spinner: &["|", "/", "-", "\\"],
+    tree_branch: "|- ",
+    tree_last: "`- ",
+    tree_pipe: "|  ",
+    tree_blank: "   ",
 };
 
 #[cfg(test)]

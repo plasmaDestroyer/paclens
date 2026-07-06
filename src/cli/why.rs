@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::analyzer::{self, DepGraph, PacmanWhy, Verdict, WhyReport};
+use crate::analyzer::{self, DepGraph, PacmanWhy, Verdict, WhyReport, tree_lines};
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::model::InstallReason;
@@ -95,12 +95,30 @@ fn render_pacman(p: &PacmanWhy, show_transitive: bool, s: &Styles) -> String {
     out.push_str(&field(s, "reason", &reason));
 
     out.push_str(&field(s, "required by", &name_list(&p.required_by, s)));
-    if show_transitive && p.transitive_required_by.len() > p.required_by.len() {
-        out.push_str(&field(
-            s,
-            "transitively",
-            &name_list(&p.transitive_required_by, s),
-        ));
+    if show_transitive && !p.tree.is_empty() {
+        out.push_str(&field(s, "chain", ""));
+        for line in tree_lines(&p.tree, s.tree_glyphs()) {
+            let more = if line.truncated > 0 {
+                s.dim(&format!("  … {} more", line.truncated))
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "    {}{} {}{more}\n",
+                s.dim(&line.prefix),
+                line.name,
+                s.dim(&format!("[{}]", line.confidence)),
+            ));
+        }
+        if p.transitive_required_by.len() > p.required_by.len() {
+            out.push_str(&format!(
+                "    {}\n",
+                s.dim(&format!(
+                    "{} packages depend on this in total",
+                    p.transitive_required_by.len()
+                ))
+            ));
+        }
     }
     out.push_str(&field(
         s,
@@ -149,6 +167,7 @@ fn name_list(names: &[String], s: &Styles) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyzer::TreeNode;
     use crate::config::ColorTheme;
     use crate::model::{Confidence, SourceId};
 
@@ -164,6 +183,7 @@ mod tests {
             transitive_required_by: Vec::new(),
             depth_from_explicit: Some(0),
             would_remove: Vec::new(),
+            tree: Vec::new(),
             verdict: Verdict::LikelySafe,
             confidence: Confidence::Confirmed,
         }
@@ -194,6 +214,25 @@ mod tests {
             ],
             depth_from_explicit: Some(1),
             would_remove: Vec::new(),
+            tree: vec![
+                TreeNode {
+                    name: "firefox".to_string(),
+                    confidence: Confidence::Confirmed,
+                    children: Vec::new(),
+                    truncated: 0,
+                },
+                TreeNode {
+                    name: "readline".to_string(),
+                    confidence: Confidence::Confirmed,
+                    children: vec![TreeNode {
+                        name: "bash".to_string(),
+                        confidence: Confidence::Confirmed,
+                        children: Vec::new(),
+                        truncated: 0,
+                    }],
+                    truncated: 0,
+                },
+            ],
             verdict: Verdict::IsADependency,
             confidence: Confidence::Confirmed,
         };
@@ -203,23 +242,39 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("firefox, readline"), "{text}");
-        assert!(text.contains("transitively"), "{text}");
+        assert!(text.contains("chain:"), "{text}");
+        assert!(text.contains("├─ firefox [confirmed]"), "{text}");
+        assert!(text.contains("└─ readline [confirmed]"), "{text}");
+        assert!(
+            text.contains("   └─ bash [confirmed]"),
+            "nested indent missing:\n{text}"
+        );
+        assert!(
+            text.contains("3 packages depend on this in total"),
+            "{text}"
+        );
         assert!(text.contains("would break"), "{text}");
         assert!(text.contains("is a dependency [confirmed]"), "{text}");
     }
 
     #[test]
-    fn transitive_line_respects_the_config_toggle() {
+    fn chain_respects_the_config_toggle() {
         let p = PacmanWhy {
             required_by: vec!["a".to_string()],
             transitive_required_by: vec!["a".to_string(), "b".to_string()],
+            tree: vec![TreeNode {
+                name: "a".to_string(),
+                confidence: Confidence::Confirmed,
+                children: Vec::new(),
+                truncated: 0,
+            }],
             verdict: Verdict::IsADependency,
             ..base()
         };
         let on = render_report(&WhyReport::Pacman(p.clone()), true, &plain());
         let off = render_report(&WhyReport::Pacman(p), false, &plain());
-        assert!(on.contains("transitively"), "{on}");
-        assert!(!off.contains("transitively"), "{off}");
+        assert!(on.contains("chain:"), "{on}");
+        assert!(!off.contains("chain:"), "{off}");
     }
 
     #[test]

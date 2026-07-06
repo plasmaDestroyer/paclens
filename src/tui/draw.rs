@@ -782,6 +782,37 @@ fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Lin
             // package breaks exactly what requires it.
             lines.push(kv("needed by", names(&p.required_by), theme.primary));
             lines.push(kv("orphans", names(&p.would_remove), theme.primary));
+            if !p.tree.is_empty() {
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled("chain".to_string(), theme.dim)));
+                let g = theme.glyphs;
+                const TREE_ROWS: usize = 10;
+                let rows = crate::analyzer::tree_lines(
+                    &p.tree,
+                    (g.tree_branch, g.tree_last, g.tree_pipe, g.tree_blank),
+                );
+                let total = rows.len();
+                for row in rows.into_iter().take(TREE_ROWS) {
+                    let mut spans = vec![
+                        Span::styled(row.prefix, theme.dim),
+                        Span::styled(row.name, theme.primary),
+                        Span::styled(format!(" [{}]", row.confidence), theme.dim),
+                    ];
+                    if row.truncated > 0 {
+                        spans.push(Span::styled(
+                            format!("  … {} more", row.truncated),
+                            theme.dim,
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+                if total > TREE_ROWS {
+                    lines.push(Line::from(Span::styled(
+                        format!("… {} more rows", total - TREE_ROWS),
+                        theme.dim,
+                    )));
+                }
+            }
             lines.push(Line::default());
             let verdict_style = match p.verdict {
                 Verdict::LikelySafe => theme.success,
@@ -1590,6 +1621,31 @@ mod tests {
         assert!(text.contains("why · glibc"), "pane must follow:\n{text}");
         assert!(text.contains("is a dependency"), "{text}");
         assert!(text.contains("bash, firefox"), "{text}");
+    }
+
+    #[test]
+    fn why_pane_draws_the_dependency_chain_with_labels() {
+        let mut s = scan_with(Vec::new());
+        s.packages = vec![
+            rich_pkg("bash", InstallReason::Explicit, None, &["readline"]),
+            rich_pkg("readline", InstallReason::Dependency, None, &["glibc"]),
+            rich_pkg("glibc", InstallReason::Dependency, None, &[]),
+        ];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        app.pkg_move(1); // glibc (name-sorted: bash, glibc, readline)
+        app.toggle_why();
+        let text = render(&app, 100, 22);
+        assert!(text.contains("why · glibc"), "{text}");
+        assert!(text.contains("chain"), "chain section missing:\n{text}");
+        assert!(
+            text.contains("`- readline [confirmed]"),
+            "labeled edge missing:\n{text}"
+        );
+        assert!(
+            text.contains("`- bash [confirmed]"),
+            "nested edge missing:\n{text}"
+        );
     }
 
     #[test]
