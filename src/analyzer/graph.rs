@@ -1,14 +1,17 @@
-//! The in-memory dependency graph (spec §7), built from one scan's pacman
-//! packages — never from pactree, never serialized (rebuilt on every load).
+//! The in-memory dependency graph (spec §7), built from one scan — never from
+//! pactree, never serialized (rebuilt on every load; dev-notes §7).
 //!
 //! Nodes are package names; edges are `package → dependency` weighted with
-//! `DependencyEdge`. Virtual names from `Provides` are resolved through an
-//! alias map so a dep on `sh` lands on `bash`. All queries run in-memory.
+//! `DependencyEdge`. pacman edges are `Real`/`Confirmed`; flatpak app →
+//! runtime grouping edges are `Inferred`/`Inferred` (spec §7.4). Virtual
+//! names from `Provides` are resolved through an alias map so a dep on `sh`
+//! lands on `bash` (pacman only). All queries run in-memory.
 
 use std::collections::{HashMap, HashSet};
 
 use petgraph::Direction;
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 
 use crate::model::{Confidence, DependencyEdge, EdgeKind, InstallReason, ScanResult, SourceId};
 
@@ -18,49 +21,55 @@ pub struct DepGraph {
 }
 
 impl DepGraph {
-    /// Build from the scan's **pacman** packages (the roadmap scopes the graph
-    /// to pacman; Flatpak apps are self-contained). Pure — no IO.
+    /// Build from the scan's packages: pacman deps as `Real`/`Confirmed`
+    /// edges, flatpak app → runtime grouping as `Inferred`/`Inferred` edges
+    /// (spec §7.4, v0.1.3). Pure — no IO.
     pub fn build(scan: &ScanResult) -> Self {
-        let pacman: Vec<_> = scan
-            .packages
-            .iter()
-            .filter(|p| p.source_id == SourceId::pacman())
-            .collect();
-
-        // Provides alias map: virtual name → real provider. First provider
-        // wins on the rare duplicate — good enough for lookup purposes.
+        // Provides alias map (pacman only — flatpaks have no provides):
+        // virtual name → real provider. First provider wins on the rare
+        // duplicate — good enough for lookup purposes.
         let mut alias: HashMap<&str, &str> = HashMap::new();
-        for pkg in &pacman {
+        for pkg in &scan.packages {
+            if pkg.source_id != SourceId::pacman() {
+                continue;
+            }
             for provided in &pkg.provides {
                 alias.entry(provided.as_str()).or_insert(pkg.name.as_str());
             }
         }
+        // A name that is itself installed is never treated as an alias.
+        let installed: HashSet<&str> = scan.packages.iter().map(|p| p.name.as_str()).collect();
 
         let mut dep_graph = DepGraph {
             graph: DiGraph::new(),
             index: HashMap::new(),
         };
-        for pkg in &pacman {
+        for pkg in &scan.packages {
             let from = dep_graph.get_or_insert(&pkg.name);
+            let is_pacman = pkg.source_id == SourceId::pacman();
             for dep in &pkg.depends_on {
-                // Resolve a virtual dep to its real provider; a name that is
-                // itself installed is never treated as an alias.
-                let target = if dep_graph.index.contains_key(dep.as_str())
-                    || pacman.iter().any(|p| &p.name == dep)
-                {
+                // Resolve a virtual dep to its real provider (pacman only).
+                let target = if !is_pacman || installed.contains(dep.as_str()) {
                     dep.as_str()
                 } else {
                     alias.get(dep.as_str()).copied().unwrap_or(dep.as_str())
                 };
                 let to = dep_graph.get_or_insert(target);
-                dep_graph.graph.add_edge(
-                    from,
-                    to,
+                let edge = if is_pacman {
                     DependencyEdge {
                         kind: EdgeKind::Real,
                         confidence: Confidence::Confirmed,
-                    },
-                );
+                    }
+                } else {
+                    // flatpak's runtime column is authoritative for "uses",
+                    // but the grouping relation is our derivation — labeled
+                    // Inferred, never promoted (P3).
+                    DependencyEdge {
+                        kind: EdgeKind::Inferred,
+                        confidence: Confidence::Inferred,
+                    }
+                };
+                dep_graph.graph.add_edge(from, to, edge);
             }
         }
         dep_graph
@@ -91,6 +100,25 @@ impl DepGraph {
     /// What requires `name` (reverse deps), sorted.
     pub fn required_by(&self, name: &str) -> Vec<String> {
         self.neighbors(name, Direction::Incoming)
+    }
+
+    /// Reverse deps with their edge confidence, sorted by name. On duplicate
+    /// edges the worst label wins (never promote, P3). Feeds the why tree.
+    pub fn required_by_edges(&self, name: &str) -> Vec<(String, Confidence)> {
+        let Some(&idx) = self.index.get(name) else {
+            return Vec::new();
+        };
+        let mut best: HashMap<String, Confidence> = HashMap::new();
+        for edge in self.graph.edges_directed(idx, Direction::Incoming) {
+            let parent = self.graph[edge.source()].clone();
+            let conf = edge.weight().confidence;
+            best.entry(parent)
+                .and_modify(|c| *c = (*c).max(conf))
+                .or_insert(conf);
+        }
+        let mut out: Vec<(String, Confidence)> = best.into_iter().collect();
+        out.sort();
+        out
     }
 
     fn neighbors(&self, name: &str, dir: Direction) -> Vec<String> {
@@ -208,10 +236,18 @@ mod tests {
 
     /// firefox(E) → glibc(D); bash(E) → readline(D) → glibc; bash provides sh;
     /// zsh-ish "scripter"(D) depends on virtual sh; leafdep(D) orphaned;
-    /// one flatpak app that must be ignored.
+    /// one flatpak app grouped onto its runtime.
     fn scan() -> ScanResult {
-        let mut flatpak = pkg("org.x.App", InstallReason::Unknown, &["glibc"], &[]);
-        flatpak.source_id = SourceId::flatpak_user();
+        let mut app = pkg(
+            "org.x.App",
+            InstallReason::Unknown,
+            &["org.gnome.Platform"],
+            &[],
+        );
+        app.source_id = SourceId::flatpak_user();
+        let mut runtime = pkg("org.gnome.Platform", InstallReason::Unknown, &[], &[]);
+        runtime.source_id = SourceId::flatpak_user();
+        runtime.runtime = true;
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
@@ -223,7 +259,8 @@ mod tests {
                 pkg("glibc", InstallReason::Dependency, &[], &[]),
                 pkg("scripter", InstallReason::Dependency, &["sh"], &[]),
                 pkg("leafdep", InstallReason::Dependency, &[], &[]),
-                flatpak,
+                app,
+                runtime,
             ],
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
@@ -237,11 +274,32 @@ mod tests {
     }
 
     #[test]
-    fn builds_nodes_for_pacman_only() {
+    fn builds_nodes_for_both_sources() {
         let (_, g) = graph();
         assert!(g.contains("firefox"));
         assert!(g.contains("glibc"));
-        assert!(!g.contains("org.x.App"), "flatpak apps stay out");
+        assert!(g.contains("org.x.App"), "flatpak apps join in v0.1.3");
+        assert!(g.contains("org.gnome.Platform"));
+    }
+
+    #[test]
+    fn flatpak_app_groups_onto_its_runtime_as_inferred() {
+        let (_, g) = graph();
+        assert_eq!(g.requires("org.x.App"), vec!["org.gnome.Platform"]);
+        assert_eq!(
+            g.required_by_edges("org.gnome.Platform"),
+            vec![("org.x.App".to_string(), Confidence::Inferred)]
+        );
+    }
+
+    #[test]
+    fn pacman_reverse_edges_are_confirmed() {
+        let (_, g) = graph();
+        assert_eq!(
+            g.required_by_edges("readline"),
+            vec![("bash".to_string(), Confidence::Confirmed)]
+        );
+        assert!(g.required_by_edges("nope").is_empty());
     }
 
     #[test]
@@ -315,7 +373,8 @@ mod tests {
     fn orphans_are_dependency_installed_with_no_requirers() {
         let (s, g) = graph();
         // leafdep: dependency, nothing requires it. scripter: dependency but
-        // nothing requires it either → also an orphan candidate.
+        // nothing requires it either → also an orphan candidate. Flatpak
+        // packages never appear (pacman-only concept).
         assert_eq!(g.orphans(&s), vec!["leafdep", "scripter"]);
     }
 

@@ -17,9 +17,8 @@ pub struct DependencyEdge {
 pub enum EdgeKind {
     /// From pacman dep data. Ground truth.
     Real,
-    /// Heuristic. Cross-source or appstream-derived. First constructed by the
-    /// v0.0.8 overlap detector — spec §4.5 defines the full enum now.
-    #[expect(dead_code)]
+    /// Heuristic. Cross-source or appstream-derived — flatpak app → runtime
+    /// grouping edges wear this (spec §7.4, v0.1.3).
     Inferred,
 }
 
