@@ -427,6 +427,28 @@ YYYY-MM-DD | no --noconfirm for pacman
            | and cap the chain tree to fit with "… n more" — better UX than
            | a focus switch. W stays on the package list; the update screen
            | has no per-package cursor to hang it on.
+
+2026-07-07 | dep graph stays rebuilt-on-load, NOT serialized (v0.1.3)
+           | roadmap v0.1.3 says "graph cache (serialized petgraph)"; the
+           | standing v0.0.3 decision wins: serializing petgraph couples the
+           | cache to petgraph's internals, and a rebuild from the cached
+           | ScanResult is <100ms on a full system. Deviation, not drift.
+
+2026-07-07 | flatpak enters the graph as app → runtime Inferred edges
+           | flatpak list's runtime column is authoritative for "app uses
+           | runtime", but the grouping relation (spec §7.4) is our
+           | derivation — every such edge is EdgeKind::Inferred with
+           | Confidence::Inferred, and the why verdict wears the worst edge
+           | label. Runtimes stay out of orphans() (pacman-only concept).
+
+2026-07-07 | WhyReport unified across sources (v0.1.3)
+           | the Flatpak variant died; every found package gets the full
+           | WhyDetail with source_id + runtime flag. Verdicts: flatpak app
+           | leaf = likely safe [confirmed] (self-contained), used runtime =
+           | is a dependency [inferred], unused runtime = likely safe
+           | [inferred] (absence of inferred edges is itself inferred). The
+           | Unknown-install-reason ⇒ Unclear rule is pacman-only — flatpaks
+           | always scan with an Unknown reason and the graph decides.
 ```
 
 ---
