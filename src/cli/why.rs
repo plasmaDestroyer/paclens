@@ -6,10 +6,10 @@
 
 use std::path::Path;
 
-use crate::analyzer::{self, DepGraph, PacmanWhy, Verdict, WhyReport, tree_lines};
+use crate::analyzer::{self, DepGraph, Verdict, WhyDetail, WhyReport, tree_lines};
 use crate::cli::style::Styles;
 use crate::config::Config;
-use crate::model::InstallReason;
+use crate::model::{InstallReason, SourceId};
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
@@ -46,53 +46,48 @@ pub fn run(
     }
 }
 
-/// Render a found report (pacman or flatpak). Pure for testability.
+/// Render a found report (any source — unified in v0.1.3). Pure for
+/// testability.
 fn render_report(report: &WhyReport, show_transitive: bool, s: &Styles) -> String {
     match report {
-        WhyReport::Pacman(p) => render_pacman(p, show_transitive, s),
-        WhyReport::Flatpak { package, source_id } => {
-            let mut out = String::new();
-            out.push_str(&format!("{}\n", s.title(package)));
-            out.push_str(&field(s, "source", &source_id.to_string()));
-            out.push_str(&field(
-                s,
-                "reason",
-                "flatpak apps are self-contained — not part of the pacman dependency graph",
-            ));
-            out.push_str(&field(
-                s,
-                "removal",
-                &format!("flatpak uninstall {package}"),
-            ));
-            out.push_str(&format!(
-                "  {}   {} {}\n",
-                s.dim(&format!("{:18}", "verdict:")),
-                s.summary_ok("likely safe"),
-                s.dim("[confirmed]")
-            ));
-            out
-        }
+        WhyReport::Found(p) => render_detail(p, show_transitive, s),
         WhyReport::NotFound { .. } => String::new(), // handled by the caller
     }
 }
 
-fn render_pacman(p: &PacmanWhy, show_transitive: bool, s: &Styles) -> String {
+fn render_detail(p: &WhyDetail, show_transitive: bool, s: &Styles) -> String {
+    let is_pacman = p.source_id == SourceId::pacman();
     let mut out = String::new();
     out.push_str(&format!("{}\n", s.title(&p.package)));
-    out.push_str(&field(s, "source", "pacman"));
+    out.push_str(&field(s, "source", &p.source_id.to_string()));
 
-    let reason = match p.reason {
-        InstallReason::Explicit => "explicitly installed".to_string(),
-        InstallReason::Dependency => match p.depth_from_explicit {
-            Some(d) => format!(
-                "installed as a dependency ({d} hop{} from an explicit install)",
-                if d == 1 { "" } else { "s" }
-            ),
-            None => "installed as a dependency (nothing explicit reaches it)".to_string(),
-        },
-        InstallReason::Unknown => "unknown".to_string(),
+    let reason = if !is_pacman {
+        if p.runtime {
+            "flatpak runtime — shared by the apps that depend on it".to_string()
+        } else {
+            "flatpak app (self-contained)".to_string()
+        }
+    } else {
+        match p.reason {
+            InstallReason::Explicit => "explicitly installed".to_string(),
+            InstallReason::Dependency => match p.depth_from_explicit {
+                Some(d) => format!(
+                    "installed as a dependency ({d} hop{} from an explicit install)",
+                    if d == 1 { "" } else { "s" }
+                ),
+                None => "installed as a dependency (nothing explicit reaches it)".to_string(),
+            },
+            InstallReason::Unknown => "unknown".to_string(),
+        }
     };
     out.push_str(&field(s, "reason", &reason));
+    if !is_pacman && !p.runtime {
+        out.push_str(&field(
+            s,
+            "removal",
+            &format!("flatpak uninstall {}", p.package),
+        ));
+    }
 
     out.push_str(&field(s, "required by", &name_list(&p.required_by, s)));
     if show_transitive && !p.tree.is_empty() {
@@ -175,9 +170,11 @@ mod tests {
         Styles::resolve(false, ColorTheme::Dark, false)
     }
 
-    fn base() -> PacmanWhy {
-        PacmanWhy {
+    fn base() -> WhyDetail {
+        WhyDetail {
             package: "firefox".to_string(),
+            source_id: SourceId::pacman(),
+            runtime: false,
             reason: InstallReason::Explicit,
             required_by: Vec::new(),
             transitive_required_by: Vec::new(),
@@ -191,7 +188,7 @@ mod tests {
 
     #[test]
     fn explicit_safe_report_matches_the_spec_shape() {
-        let text = render_report(&WhyReport::Pacman(base()), true, &plain());
+        let text = render_report(&WhyReport::Found(base()), true, &plain());
         assert!(text.starts_with("firefox\n"), "{text}");
         assert!(text.contains("source:"), "{text}");
         assert!(text.contains("explicitly installed"), "{text}");
@@ -203,7 +200,7 @@ mod tests {
 
     #[test]
     fn dependency_report_shows_depth_breakage_and_yellow_verdict() {
-        let p = PacmanWhy {
+        let p = WhyDetail {
             package: "glibc".to_string(),
             reason: InstallReason::Dependency,
             required_by: vec!["firefox".to_string(), "readline".to_string()],
@@ -235,8 +232,9 @@ mod tests {
             ],
             verdict: Verdict::IsADependency,
             confidence: Confidence::Confirmed,
+            ..base()
         };
-        let text = render_report(&WhyReport::Pacman(p), true, &plain());
+        let text = render_report(&WhyReport::Found(p), true, &plain());
         assert!(
             text.contains("installed as a dependency (1 hop from an explicit install)"),
             "{text}"
@@ -259,7 +257,7 @@ mod tests {
 
     #[test]
     fn chain_respects_the_config_toggle() {
-        let p = PacmanWhy {
+        let p = WhyDetail {
             required_by: vec!["a".to_string()],
             transitive_required_by: vec!["a".to_string(), "b".to_string()],
             tree: vec![TreeNode {
@@ -271,21 +269,21 @@ mod tests {
             verdict: Verdict::IsADependency,
             ..base()
         };
-        let on = render_report(&WhyReport::Pacman(p.clone()), true, &plain());
-        let off = render_report(&WhyReport::Pacman(p), false, &plain());
+        let on = render_report(&WhyReport::Found(p.clone()), true, &plain());
+        let off = render_report(&WhyReport::Found(p), false, &plain());
         assert!(on.contains("chain:"), "{on}");
         assert!(!off.contains("chain:"), "{off}");
     }
 
     #[test]
     fn unclear_report_wears_the_unknown_label() {
-        let p = PacmanWhy {
+        let p = WhyDetail {
             reason: InstallReason::Unknown,
             verdict: Verdict::Unclear,
             confidence: Confidence::Unknown,
             ..base()
         };
-        let text = render_report(&WhyReport::Pacman(p), true, &plain());
+        let text = render_report(&WhyReport::Found(p), true, &plain());
         assert!(
             text.contains("unclear — check manually [unknown]"),
             "{text}"
@@ -302,17 +300,53 @@ mod tests {
     }
 
     #[test]
-    fn flatpak_report_says_self_contained() {
-        let r = WhyReport::Flatpak {
+    fn flatpak_app_report_says_self_contained_with_uninstall_hint() {
+        let p = WhyDetail {
             package: "org.gnome.Calculator".to_string(),
             source_id: SourceId::flatpak_user(),
+            reason: InstallReason::Unknown,
+            would_remove: vec!["org.gnome.Platform".to_string()],
+            ..base()
         };
-        let text = render_report(&r, true, &plain());
-        assert!(text.contains("self-contained"), "{text}");
+        let text = render_report(&WhyReport::Found(p), true, &plain());
+        assert!(text.contains("flatpak app (self-contained)"), "{text}");
         assert!(
             text.contains("flatpak uninstall org.gnome.Calculator"),
             "{text}"
         );
         assert!(text.contains("flatpak-user"), "{text}");
+        assert!(text.contains("org.gnome.Platform"), "{text}");
+        assert!(!text.contains("unknown"), "no unclear leak: {text}");
+    }
+
+    #[test]
+    fn flatpak_runtime_report_shows_inferred_dependents() {
+        let p = WhyDetail {
+            package: "org.gnome.Platform".to_string(),
+            source_id: SourceId::flatpak_user(),
+            runtime: true,
+            reason: InstallReason::Unknown,
+            required_by: vec!["org.gnome.Calculator".to_string()],
+            tree: vec![TreeNode {
+                name: "org.gnome.Calculator".to_string(),
+                confidence: Confidence::Inferred,
+                children: Vec::new(),
+                truncated: 0,
+            }],
+            verdict: Verdict::IsADependency,
+            confidence: Confidence::Inferred,
+            ..base()
+        };
+        let text = render_report(&WhyReport::Found(p), true, &plain());
+        assert!(text.contains("flatpak runtime"), "{text}");
+        assert!(
+            text.contains("org.gnome.Calculator [inferred]"),
+            "tree edge label missing: {text}"
+        );
+        assert!(text.contains("is a dependency [inferred]"), "{text}");
+        assert!(
+            !text.contains("flatpak uninstall"),
+            "no hint for runtimes: {text}"
+        );
     }
 }

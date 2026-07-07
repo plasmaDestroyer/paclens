@@ -901,7 +901,7 @@ fn render_why_pane(frame: &mut Frame, area: Rect, app: &App) {
 
 fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Line<'static>> {
     use crate::analyzer::{Verdict, WhyReport};
-    use crate::model::InstallReason;
+    use crate::model::{InstallReason, SourceId};
 
     let kv = |label: &str, value: String, style| {
         Line::from(vec![
@@ -920,18 +920,26 @@ fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Lin
     };
 
     match report {
-        WhyReport::Pacman(p) => {
+        WhyReport::Found(p) => {
             let mut lines = vec![
                 Line::from(Span::styled(format!("why · {}", p.package), theme.title)),
                 Line::default(),
             ];
-            let reason = match p.reason {
-                InstallReason::Explicit => "explicit".to_string(),
-                InstallReason::Dependency => match p.depth_from_explicit {
-                    Some(d) => format!("dependency · {d} hop{}", plural(d)),
-                    None => "dependency".to_string(),
-                },
-                InstallReason::Unknown => "unknown".to_string(),
+            let reason = if p.source_id != SourceId::pacman() {
+                if p.runtime {
+                    "flatpak runtime".to_string()
+                } else {
+                    "flatpak app · self-contained".to_string()
+                }
+            } else {
+                match p.reason {
+                    InstallReason::Explicit => "explicit".to_string(),
+                    InstallReason::Dependency => match p.depth_from_explicit {
+                        Some(d) => format!("dependency · {d} hop{}", plural(d)),
+                        None => "dependency".to_string(),
+                    },
+                    InstallReason::Unknown => "unknown".to_string(),
+                }
             };
             lines.push(kv("reason", reason, theme.primary));
             // "needed by" doubles as the breakage list — removing this
@@ -981,23 +989,6 @@ fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Lin
             ]));
             lines
         }
-        WhyReport::Flatpak { package, source_id } => vec![
-            Line::from(Span::styled(format!("why · {package}"), theme.title)),
-            Line::default(),
-            Line::from(Span::styled(
-                format!("{source_id} app — self-contained,"),
-                theme.primary,
-            )),
-            Line::from(Span::styled(
-                "not part of the pacman dep graph",
-                theme.primary,
-            )),
-            Line::default(),
-            Line::from(vec![
-                Span::styled("likely safe".to_string(), theme.success),
-                Span::styled("  [confirmed]", theme.dim),
-            ]),
-        ],
         WhyReport::NotFound { .. } => {
             vec![Line::from(Span::styled("no data for this row", theme.dim))]
         }
@@ -1837,6 +1828,45 @@ mod tests {
             text.contains("`- bash [confirmed]"),
             "nested edge missing:\n{text}"
         );
+    }
+
+    #[test]
+    fn why_pane_labels_flatpak_runtime_edges_inferred() {
+        let mut s = scan_with(Vec::new());
+        let mut app_pkg = pkg("org.x.App", SourceId::flatpak_user());
+        app_pkg.depends_on = vec!["org.gnome.Platform".to_string()];
+        let mut runtime = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        runtime.runtime = true;
+        s.packages = vec![app_pkg, runtime];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.on_next(); // select the flatpak-user source
+        app.open_packages();
+        // name-sorted: org.gnome.Platform is row 0.
+        app.toggle_why();
+        let text = render(&app, 100, 22);
+        assert!(text.contains("why · org.gnome.Platform"), "{text}");
+        assert!(text.contains("flatpak runtime"), "{text}");
+        assert!(
+            text.contains("org.x.App [inferred]"),
+            "inferred edge label missing:\n{text}"
+        );
+        assert!(text.contains("is a dependency"), "{text}");
+        assert!(text.contains("[inferred]"), "{text}");
+    }
+
+    #[test]
+    fn why_pane_calls_a_flatpak_app_self_contained() {
+        let mut s = scan_with(Vec::new());
+        s.packages = vec![pkg("org.x.App", SourceId::flatpak_user())];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.on_next(); // select the flatpak-user source
+        app.open_packages();
+        app.toggle_why();
+        let text = render(&app, 100, 22);
+        assert!(text.contains("why · org.x.App"), "{text}");
+        assert!(text.contains("self-contained"), "{text}");
+        assert!(text.contains("likely safe"), "{text}");
+        assert!(text.contains("[confirmed]"), "{text}");
     }
 
     #[test]

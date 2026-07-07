@@ -1055,7 +1055,7 @@ mod tests {
         app.open_packages();
         let report = app.why_report().expect("selected row has a report");
         match report {
-            crate::analyzer::WhyReport::Pacman(p) => assert_eq!(p.package, "a"),
+            crate::analyzer::WhyReport::Found(p) => assert_eq!(p.package, "a"),
             other => panic!("expected pacman report, got {other:?}"),
         }
     }

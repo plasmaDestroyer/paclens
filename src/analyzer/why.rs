@@ -28,15 +28,11 @@ impl std::fmt::Display for Verdict {
     }
 }
 
-/// The three shapes a `why` answer takes. Flatpak apps are self-contained and
-/// carry no fabricated graph data; an unknown name gets a fuzzy suggestion.
+/// The two shapes a `why` answer takes (unified across sources in v0.1.3);
+/// an unknown name gets a fuzzy suggestion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WhyReport {
-    Pacman(PacmanWhy),
-    Flatpak {
-        package: String,
-        source_id: SourceId,
-    },
+    Found(WhyDetail),
     NotFound {
         package: String,
         suggestion: Option<String>,
@@ -44,8 +40,11 @@ pub enum WhyReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PacmanWhy {
+pub struct WhyDetail {
     pub package: String,
+    pub source_id: SourceId,
+    /// Flatpak runtime (never true for pacman or flatpak apps).
+    pub runtime: bool,
     pub reason: InstallReason,
     /// Direct reverse deps — removing the package breaks these.
     pub required_by: Vec<String>,
@@ -63,9 +62,9 @@ pub struct PacmanWhy {
 }
 
 /// One node of the reverse-dependency tree. `confidence` labels the edge from
-/// the parent (all pacman edges are Confirmed today; Inferred edges arrive
-/// with the v0.1.3 relationship model). `truncated` counts children hidden by
-/// the branch cap — shown as "… n more", never silently dropped (P3).
+/// the parent (pacman edges Confirmed, flatpak app → runtime edges Inferred).
+/// `truncated` counts children hidden by the branch cap — shown as
+/// "… n more", never silently dropped (P3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeNode {
     pub name: String,
@@ -84,11 +83,11 @@ fn reverse_tree(graph: &DepGraph, name: &str, depth: u32, path: &mut Vec<String>
     if depth == 0 {
         return Vec::new();
     }
-    let requirers = graph.required_by(name);
+    let requirers = graph.required_by_edges(name);
     let total = requirers.len();
     path.push(name.to_string());
     let mut nodes: Vec<TreeNode> = Vec::new();
-    for r in requirers {
+    for (r, confidence) in requirers {
         if nodes.len() == TREE_BRANCH {
             break;
         }
@@ -98,7 +97,7 @@ fn reverse_tree(graph: &DepGraph, name: &str, depth: u32, path: &mut Vec<String>
         let children = reverse_tree(graph, &r, depth - 1, path);
         nodes.push(TreeNode {
             name: r,
-            confidence: Confidence::Confirmed,
+            confidence,
             children,
             truncated: 0,
         });
@@ -160,37 +159,48 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         };
     };
 
-    if pkg.source_id != SourceId::pacman() {
-        return WhyReport::Flatpak {
-            package: pkg.name.clone(),
-            source_id: pkg.source_id.clone(),
-        };
-    }
-
-    let required_by = graph.required_by(name);
+    let is_pacman = pkg.source_id == SourceId::pacman();
+    let edges = graph.required_by_edges(name);
+    let required_by: Vec<String> = edges.iter().map(|(n, _)| n.clone()).collect();
     let would_remove: Vec<String> = graph
         .requires(name)
         .into_iter()
         .filter(|dep| {
-            let dep_is_dependency = scan
-                .packages
-                .iter()
-                .any(|p| &p.name == dep && p.install_reason == InstallReason::Dependency);
-            dep_is_dependency && graph.required_by(dep) == vec![name.to_string()]
+            // Orphanable: pacman dependency-installed, or a flatpak runtime.
+            let dep_orphanable = scan.packages.iter().any(|p| {
+                &p.name == dep && (p.install_reason == InstallReason::Dependency || p.runtime)
+            });
+            dep_orphanable && graph.required_by(dep) == vec![name.to_string()]
         })
         .collect();
 
-    // Conservative verdict (P2): unknown install reason means incomplete data.
-    let (verdict, confidence) = if pkg.install_reason == InstallReason::Unknown {
+    // Conservative verdicts (P2). pacman with an unknown install reason means
+    // incomplete data → Unclear (flatpaks always scan as Unknown reason — the
+    // graph, not libalpm reasons, decides for them). A verdict resting on
+    // graph edges wears the worst edge label; a runtime leaf is still only
+    // Inferred-safe because the grouping data itself is inferred.
+    let worst_edge = edges
+        .iter()
+        .map(|(_, c)| *c)
+        .max()
+        .unwrap_or(Confidence::Confirmed);
+    let (verdict, confidence) = if is_pacman && pkg.install_reason == InstallReason::Unknown {
         (Verdict::Unclear, Confidence::Unknown)
     } else if required_by.is_empty() {
-        (Verdict::LikelySafe, Confidence::Confirmed)
+        let conf = if pkg.runtime {
+            Confidence::Inferred
+        } else {
+            Confidence::Confirmed
+        };
+        (Verdict::LikelySafe, conf)
     } else {
-        (Verdict::IsADependency, Confidence::Confirmed)
+        (Verdict::IsADependency, worst_edge)
     };
 
-    WhyReport::Pacman(PacmanWhy {
+    WhyReport::Found(WhyDetail {
         package: pkg.name.clone(),
+        source_id: pkg.source_id.clone(),
+        runtime: pkg.runtime,
         reason: pkg.install_reason,
         transitive_required_by: graph.transitive_required_by(name, max_depth),
         depth_from_explicit: graph.depth_from_explicit(scan, name),
@@ -226,10 +236,22 @@ mod tests {
 
     /// firefox(E)→{glibc, onlyffdep}; bash(E, provides sh)→readline(D)→glibc(D);
     /// scripter(D)→virtual sh; onlyffdep(D) required only by firefox;
-    /// mystery(?) reason unknown; one flatpak app.
+    /// mystery(?) reason unknown; flatpak app → runtime, plus an unused
+    /// runtime leaf.
     fn scan() -> ScanResult {
-        let mut flatpak = pkg("org.gnome.Calculator", InstallReason::Unknown, &[], &[]);
-        flatpak.source_id = SourceId::flatpak_user();
+        let mut app = pkg(
+            "org.gnome.Calculator",
+            InstallReason::Unknown,
+            &["org.gnome.Platform"],
+            &[],
+        );
+        app.source_id = SourceId::flatpak_user();
+        let mut runtime = pkg("org.gnome.Platform", InstallReason::Unknown, &[], &[]);
+        runtime.source_id = SourceId::flatpak_user();
+        runtime.runtime = true;
+        let mut unused_runtime = pkg("org.kde.Platform", InstallReason::Unknown, &[], &[]);
+        unused_runtime.source_id = SourceId::flatpak_user();
+        unused_runtime.runtime = true;
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
@@ -247,7 +269,9 @@ mod tests {
                 pkg("onlyffdep", InstallReason::Dependency, &[], &[]),
                 pkg("scripter", InstallReason::Dependency, &["sh"], &[]),
                 pkg("mystery", InstallReason::Unknown, &[], &[]),
-                flatpak,
+                app,
+                runtime,
+                unused_runtime,
             ],
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
@@ -260,16 +284,16 @@ mod tests {
         why(&s, &g, name, 20)
     }
 
-    fn pacman(name: &str) -> PacmanWhy {
+    fn detail(name: &str) -> WhyDetail {
         match report(name) {
-            WhyReport::Pacman(p) => p,
-            other => panic!("expected pacman report, got {other:?}"),
+            WhyReport::Found(p) => p,
+            other => panic!("expected found report, got {other:?}"),
         }
     }
 
     #[test]
     fn explicit_leaf_is_likely_safe_and_confirmed() {
-        let p = pacman("firefox");
+        let p = detail("firefox");
         assert_eq!(p.reason, InstallReason::Explicit);
         assert!(p.required_by.is_empty());
         assert_eq!(p.verdict, Verdict::LikelySafe);
@@ -282,7 +306,7 @@ mod tests {
 
     #[test]
     fn required_package_is_a_dependency_with_breakage_list() {
-        let p = pacman("glibc");
+        let p = detail("glibc");
         assert_eq!(p.verdict, Verdict::IsADependency);
         assert_eq!(p.required_by, vec!["firefox", "readline"]);
         assert!(
@@ -296,14 +320,14 @@ mod tests {
     #[test]
     fn virtual_provider_sees_its_consumer() {
         // scripter depends on virtual "sh" → bash must list it.
-        let p = pacman("bash");
+        let p = detail("bash");
         assert_eq!(p.required_by, vec!["scripter"]);
         assert_eq!(p.verdict, Verdict::IsADependency);
     }
 
     #[test]
     fn unknown_install_reason_is_unclear_and_unknown() {
-        let p = pacman("mystery");
+        let p = detail("mystery");
         assert_eq!(p.verdict, Verdict::Unclear);
         assert_eq!(p.confidence, Confidence::Unknown);
     }
@@ -311,20 +335,51 @@ mod tests {
     #[test]
     fn orphaned_dependency_is_likely_safe() {
         // scripter: dependency-installed, nothing requires it.
-        let p = pacman("scripter");
+        let p = detail("scripter");
         assert_eq!(p.reason, InstallReason::Dependency);
         assert_eq!(p.verdict, Verdict::LikelySafe);
     }
 
+    // --- flatpak (v0.1.3 relationship model) ---
     #[test]
-    fn flatpak_app_gets_the_flatpak_report_not_graph_data() {
-        assert_eq!(
-            report("org.gnome.Calculator"),
-            WhyReport::Flatpak {
-                package: "org.gnome.Calculator".to_string(),
-                source_id: SourceId::flatpak_user(),
-            }
-        );
+    fn flatpak_app_is_a_confirmed_safe_leaf_that_orphans_its_runtime() {
+        let p = detail("org.gnome.Calculator");
+        assert_eq!(p.source_id, SourceId::flatpak_user());
+        assert!(!p.runtime);
+        assert!(p.required_by.is_empty());
+        assert_eq!(p.verdict, Verdict::LikelySafe);
+        assert_eq!(p.confidence, Confidence::Confirmed);
+        // Its runtime's only user is this app → would be left unused.
+        assert_eq!(p.would_remove, vec!["org.gnome.Platform"]);
+    }
+
+    #[test]
+    fn used_runtime_is_a_dependency_with_inferred_confidence() {
+        let p = detail("org.gnome.Platform");
+        assert!(p.runtime);
+        assert_eq!(p.required_by, vec!["org.gnome.Calculator"]);
+        assert_eq!(p.verdict, Verdict::IsADependency);
+        assert_eq!(p.confidence, Confidence::Inferred, "worst edge label wins");
+        // The tree wears the same inferred edge label.
+        assert_eq!(p.tree.len(), 1);
+        assert_eq!(p.tree[0].name, "org.gnome.Calculator");
+        assert_eq!(p.tree[0].confidence, Confidence::Inferred);
+    }
+
+    #[test]
+    fn unused_runtime_is_only_inferred_safe() {
+        // The grouping data is inferred, so "nothing uses it" is too.
+        let p = detail("org.kde.Platform");
+        assert_eq!(p.verdict, Verdict::LikelySafe);
+        assert_eq!(p.confidence, Confidence::Inferred);
+    }
+
+    #[test]
+    fn flatpak_unknown_reason_never_triggers_unclear() {
+        // Flatpaks always scan with an Unknown install reason; the pacman
+        // Unclear rule must not fire for them.
+        assert_ne!(detail("org.gnome.Calculator").verdict, Verdict::Unclear);
+        assert_ne!(detail("org.gnome.Platform").verdict, Verdict::Unclear);
     }
 
     #[test]
@@ -352,7 +407,7 @@ mod tests {
     // --- reverse-dep tree ---
     #[test]
     fn tree_nests_requirers_with_confirmed_edges() {
-        let p = pacman("glibc");
+        let p = detail("glibc");
         // Direct requirers as roots (sorted): firefox, readline.
         let names: Vec<&str> = p.tree.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, vec!["firefox", "readline"]);
@@ -365,7 +420,7 @@ mod tests {
 
     #[test]
     fn tree_is_empty_for_a_leaf() {
-        assert!(pacman("firefox").tree.is_empty());
+        assert!(detail("firefox").tree.is_empty());
     }
 
     #[test]
@@ -377,8 +432,8 @@ mod tests {
             .push(pkg("b", InstallReason::Dependency, &["a"], &[]));
         let g = DepGraph::build(&s);
         let report = why(&s, &g, "a", 20);
-        let WhyReport::Pacman(p) = report else {
-            panic!("expected pacman")
+        let WhyReport::Found(p) = report else {
+            panic!("expected found")
         };
         // b requires a; a requires b would loop — cut as a back-edge.
         assert_eq!(p.tree.len(), 1);
@@ -398,8 +453,8 @@ mod tests {
             ));
         }
         let g = DepGraph::build(&s);
-        let WhyReport::Pacman(p) = why(&s, &g, "glibc", 20) else {
-            panic!("expected pacman")
+        let WhyReport::Found(p) = why(&s, &g, "glibc", 20) else {
+            panic!("expected found")
         };
         assert_eq!(p.tree.len(), 5, "branch cap");
         let hidden: usize = p.tree.iter().map(|n| n.truncated).sum();
@@ -409,7 +464,7 @@ mod tests {
 
     #[test]
     fn tree_lines_flatten_with_correct_prefixes() {
-        let p = pacman("glibc");
+        let p = detail("glibc");
         let rows = tree_lines(&p.tree, ("|- ", "`- ", "|  ", "   "));
         let drawn: Vec<String> = rows
             .iter()
