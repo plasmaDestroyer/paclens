@@ -11,7 +11,7 @@ use super::{CommandRunner, Provider, ProviderError};
 
 pub const FLATPAK_BIN: &str = "flatpak";
 
-const LIST_COLUMNS: &str = "--columns=application,name,version,origin,installation";
+const LIST_COLUMNS: &str = "--columns=application,name,version,origin,installation,runtime";
 const UPDATE_COLUMNS: &str = "--columns=application,version";
 
 /// The argv for a scoped Flatpak update (spec §5.3, §13.3). `--noninteractive`
@@ -131,6 +131,17 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
             let version = cols.next().unwrap_or_default().trim();
             let _origin = cols.next().unwrap_or_default().trim();
             let installation = cols.next().unwrap_or_default();
+            // Apps carry their runtime as "org.gnome.Platform/x86_64/50" —
+            // the app's one real dependency (rendered as an Inferred edge,
+            // spec §7.4). Runtime rows leave the column empty.
+            let runtime_dep = cols
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .split('/')
+                .next()
+                .filter(|r| !r.is_empty())
+                .map(|r| r.to_string());
             Some(Package {
                 name: app_id.to_string(),
                 version: version.to_string(),
@@ -138,7 +149,7 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
                 install_reason: InstallReason::Unknown,
                 size_bytes: None,
                 description: (!display_name.is_empty()).then(|| display_name.to_string()),
-                depends_on: Vec::new(),
+                depends_on: runtime_dep.into_iter().collect(),
                 required_by: Vec::new(),
                 optional_deps: Vec::new(),
                 provides: Vec::new(),
@@ -180,9 +191,9 @@ mod tests {
     use crate::providers::test_support::MockRunner;
 
     const LIST_KEY: &str =
-        "flatpak list --app --columns=application,name,version,origin,installation";
+        "flatpak list --app --columns=application,name,version,origin,installation,runtime";
     const RUNTIME_KEY: &str =
-        "flatpak list --runtime --columns=application,name,version,origin,installation";
+        "flatpak list --runtime --columns=application,name,version,origin,installation,runtime";
     const UPDATES_KEY: &str = "flatpak remote-ls --updates --columns=application,version";
 
     const LIST_FIXTURE: &str = include_str!("../../tests/fixtures/flatpak/list_apps.txt");

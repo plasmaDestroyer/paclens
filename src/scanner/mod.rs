@@ -271,9 +271,9 @@ mod tests {
     const FP_LIST: &str = include_str!("../../tests/fixtures/flatpak/list_apps.txt");
     const FP_UPDATES: &str = include_str!("../../tests/fixtures/flatpak/remote_ls_updates.txt");
     const FP_LIST_KEY: &str =
-        "flatpak list --app --columns=application,name,version,origin,installation";
+        "flatpak list --app --columns=application,name,version,origin,installation,runtime";
     const FP_RUNTIME_KEY: &str =
-        "flatpak list --runtime --columns=application,name,version,origin,installation";
+        "flatpak list --runtime --columns=application,name,version,origin,installation,runtime";
     const FP_UPDATES_KEY: &str = "flatpak remote-ls --updates --columns=application,version";
     const DU_KEY: &str = "du -sb /var/cache/pacman/pkg/";
 
