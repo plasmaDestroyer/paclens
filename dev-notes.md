@@ -449,6 +449,30 @@ YYYY-MM-DD | no --noconfirm for pacman
            | [inferred] (absence of inferred edges is itself inferred). The
            | Unknown-install-reason ⇒ Unclear rule is pacman-only — flatpaks
            | always scan with an Unknown reason and the graph decides.
+
+2026-07-08 | exec console is a real pty (exact passthrough; user request)
+           | portable-pty + vt100: the child sees a genuine terminal, so
+           | sudo/doas/pkexec/pacman prompt, color and redraw natively; every
+           | key (Ctrl-C included) passes through to the child. Replaces the
+           | piped-stdio console AND the doas/pkexec suspend path. Logs keep
+           | commands + exit codes only — the byte stream is terminal noise.
+           | Ceiling: pty size fixed at spawn (no mid-run resize).
+
+2026-07-08 | in-TUI confirm modal removed (user decision)
+           | the update screen already shows the plan and exact commands, and
+           | pacman/sudo ask their own questions in the pty — a second modal
+           | was double-confirmation. Enter on the plan view runs. P1/P4
+           | still hold: explain-then-confirm happens on the plan screen plus
+           | the tool's own prompt. The CLI keeps its y/N prompt.
+
+2026-07-08 | console dismissal returns to the dashboard (user decision)
+           | the result view died with the modal: any key after "done" lands
+           | on a refreshing dashboard with a one-line summary flash riding
+           | the bottom border (L there opens the full log inline).
+
+2026-07-08 | update screen lists only sources that have updates
+           | a clean source has nothing to toggle or run — showing it was
+           | noise (user decision; dashboard sources pane still shows all).
 ```
 
 ---
