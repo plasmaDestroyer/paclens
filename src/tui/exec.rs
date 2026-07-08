@@ -1,19 +1,19 @@
 //! The inline execution console's engine: runs a plan on a worker thread with
-//! piped stdio, streaming every output line to the TUI and forwarding typed
-//! keys to the running command's stdin — no terminal suspend (user request,
-//! deviating from spec §13.2's suspend flow; recorded in dev-notes §7).
+//! a **pty**, streaming the raw byte stream to the TUI (which feeds a vt100
+//! screen) and forwarding typed keys verbatim — exact passthrough, no
+//! terminal suspend (user decision 2026-07-08, dev-notes §7).
 //!
-//! sudo runs as `sudo -S`, which prompts on stderr and reads the password
-//! from stdin — the prompt appears in the console and the typed password is
-//! forwarded (never echoed, never stored, spec §13.5). pacman's own prompts
-//! read stdin the same way. doas/pkexec cannot read a pipe, so callers keep
-//! the suspend path for them.
+//! A pty means sudo, doas, pkexec and pacman all see a real terminal: their
+//! own prompts, echo control, colors and progress bars work untouched. The
+//! password is handled by the child's echo-off, never stored (spec §13.5).
 //!
-//! Logging matches `executor::execute` line-for-line (spec §14.4).
+//! Logging records commands and exit codes (spec §14.4); the output stream
+//! itself is terminal noise (escape codes, progress redraws) and stays out.
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::io::{Read, Write};
 use std::sync::mpsc;
+
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::executor::{
     self, ExecutionReport, StepReport, StepStatus, UpdateLog, skip_reason, target_noun,
@@ -22,63 +22,42 @@ use crate::model::ActionPlan;
 
 /// What the worker streams back to the event loop.
 pub enum ExecEvent {
-    /// One line of command output (stdout and stderr interleaved).
-    Line(String),
+    /// A chunk of raw pty output (escape codes included — vt100 renders it).
+    Bytes(Vec<u8>),
     /// The whole session finished; the report is final.
     Done(ExecutionReport),
     /// The session could not even start (e.g. the update log failed to open).
     Failed(String),
 }
 
-/// Handles to a running session: events out, forwarded stdin bytes in.
+/// Handles to a running session: events out, forwarded key bytes in.
 pub struct ExecSession {
     pub events: mpsc::Receiver<ExecEvent>,
     input: mpsc::Sender<Vec<u8>>,
 }
 
 impl ExecSession {
-    /// Forward raw bytes (typed keys) to the running command's stdin.
+    /// Forward raw bytes (typed keys) to the running command's pty.
     /// Best-effort: after the command exits there is nobody to receive them.
     pub fn forward(&self, bytes: Vec<u8>) {
         let _ = self.input.send(bytes);
     }
 }
 
-/// Adapt an effective command for pipe-driven execution: `sudo` becomes
-/// `sudo -S -p <prompt>` so the password prompt lands on stderr (visible in
-/// the console) and the password is read from the forwarded stdin.
-pub fn pipe_command(effective: &[String]) -> Vec<String> {
-    let mut argv = effective.to_vec();
-    if argv.first().map(String::as_str) == Some("sudo") {
-        argv.splice(
-            1..1,
-            [
-                "-S".to_string(),
-                "-p".to_string(),
-                "[sudo] password (typed keys go to the command): ".to_string(),
-            ],
-        );
-    }
-    argv
-}
-
-/// Can the inline console drive this tool? Only sudo reads a piped stdin;
-/// doas and pkexec need the real terminal (suspend path).
-pub fn tool_supports_pipe(tool: Option<&str>) -> bool {
-    matches!(tool, None | Some("sudo"))
-}
-
-/// Start the session on a worker thread. `log_dir` overrides the default
-/// update-log location (the hermetic seam for tests).
+/// Start the session on a worker thread. `size` is the console viewport in
+/// (rows, cols) — the pty is created to match so full-screen output wraps
+/// correctly. `log_dir` overrides the default update-log location (the
+/// hermetic seam for tests).
 pub fn start(
     plan: ActionPlan,
     tool: Option<String>,
+    size: (u16, u16),
     log_dir: Option<std::path::PathBuf>,
 ) -> ExecSession {
     let (event_tx, events) = mpsc::channel();
     let (input, input_rx) = mpsc::channel::<Vec<u8>>();
 
-    std::thread::spawn(move || run_session(plan, tool, log_dir, event_tx, input_rx));
+    std::thread::spawn(move || run_session(plan, tool, size, log_dir, event_tx, input_rx));
 
     ExecSession { events, input }
 }
@@ -86,6 +65,7 @@ pub fn start(
 fn run_session(
     plan: ActionPlan,
     tool: Option<String>,
+    size: (u16, u16),
     log_dir: Option<std::path::PathBuf>,
     events: mpsc::Sender<ExecEvent>,
     input: mpsc::Receiver<Vec<u8>>,
@@ -117,10 +97,9 @@ fn run_session(
         let targets = step.targets.len();
         if let Some(reason) = skip_reason(step, tool) {
             log.line(&format!("{}: skipped — {reason}", step.source_id));
-            let _ = events.send(ExecEvent::Line(format!(
-                ":: {} skipped — {reason}",
-                step.source_id
-            )));
+            let _ = events.send(ExecEvent::Bytes(
+                format!("\x1b[2m:: {} skipped — {reason}\x1b[0m\r\n", step.source_id).into_bytes(),
+            ));
             steps.push(StepReport {
                 source_id: step.source_id.clone(),
                 targets,
@@ -131,17 +110,19 @@ fn run_session(
             continue;
         }
 
-        let argv = pipe_command(&executor::effective_command(step, tool));
+        let argv = executor::effective_command(step, tool);
         let cmd = argv.join(" ");
         log.line(&format!(
             "{}: running update ({})",
             step.source_id,
             target_noun(&step.source_id, targets)
         ));
-        tracing::info!(source = %step.source_id, command = %cmd, "executing update step (inline)");
-        let _ = events.send(ExecEvent::Line(format!(":: {cmd}")));
+        tracing::info!(source = %step.source_id, command = %cmd, "executing update step (pty)");
+        let _ = events.send(ExecEvent::Bytes(
+            format!("\x1b[1m:: {cmd}\x1b[0m\r\n").into_bytes(),
+        ));
 
-        let status = run_step(&argv, &events, &input);
+        let status = run_step(&argv, size, &events, &input);
         match &status {
             StepStatus::Succeeded => log.line(&format!("{}: completed, exit 0", step.source_id)),
             StepStatus::Failed { detail } => {
@@ -176,10 +157,13 @@ fn run_session(
     let _ = events.send(ExecEvent::Done(report));
 }
 
-/// Spawn one command with piped stdio; pump stdout+stderr lines to `events`
-/// and forwarded bytes from `input` to its stdin until it exits.
+/// Spawn one command on a fresh pty; pump its output bytes to `events` and
+/// forwarded key bytes from `input` into it until it exits.
+/// ponytail: pty size is fixed at spawn — a mid-run terminal resize keeps the
+/// old wrap width. Resize plumbing is the upgrade path if it ever bites.
 fn run_step(
     argv: &[String],
+    (rows, cols): (u16, u16),
     events: &mpsc::Sender<ExecEvent>,
     input: &mpsc::Receiver<Vec<u8>>,
 ) -> StepStatus {
@@ -188,13 +172,24 @@ fn run_step(
             detail: "empty command".to_string(),
         };
     };
-    let mut child = match Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+
+    let pty = match native_pty_system().openpty(PtySize {
+        rows: rows.max(2),
+        cols: cols.max(20),
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(pty) => pty,
+        Err(err) => {
+            return StepStatus::Failed {
+                detail: format!("failed to open a pty: {err}"),
+            };
+        }
+    };
+
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(args);
+    let mut child = match pty.slave.spawn_command(cmd) {
         Ok(child) => child,
         Err(err) => {
             return StepStatus::Failed {
@@ -202,17 +197,21 @@ fn run_step(
             };
         }
     };
+    // The child holds the slave; dropping ours lets the reader see EOF.
+    drop(pty.slave);
 
-    let mut pumps = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        pumps.push(spawn_pump(stdout, events.clone()));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        pumps.push(spawn_pump(stderr, events.clone()));
-    }
-    let mut stdin = child.stdin.take();
+    let reader = match pty.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(err) => {
+            return StepStatus::Failed {
+                detail: format!("failed to read the pty: {err}"),
+            };
+        }
+    };
+    let mut writer = pty.master.take_writer().ok();
+    let pump = spawn_pump(reader, events.clone());
 
-    // Drain forwarded keys into the child while it runs.
+    // Drain forwarded keys into the pty while the child runs.
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -221,30 +220,31 @@ fn run_step(
         }
         match input.recv_timeout(std::time::Duration::from_millis(60)) {
             Ok(bytes) => {
-                if let Some(pipe) = &mut stdin {
-                    let _ = pipe.write_all(&bytes);
-                    let _ = pipe.flush();
+                if let Some(w) = &mut writer {
+                    let _ = w.write_all(&bytes);
+                    let _ = w.flush();
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break child.wait(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break child.wait().map_err(std::io::Error::other);
+            }
         }
     };
-    drop(stdin);
-    for pump in pumps {
-        let _ = pump.join();
-    }
+    drop(writer);
+    drop(pty.master); // closes the pty — unblocks the pump on EOF/EIO
+    let _ = pump.join();
 
     match status {
-        Ok(status) => match status.code() {
-            Some(0) => StepStatus::Succeeded,
-            Some(code) => StepStatus::Failed {
-                detail: format!("exit {code}"),
-            },
-            None => StepStatus::Failed {
-                detail: "terminated by signal".to_string(),
-            },
-        },
+        Ok(status) => {
+            if status.success() {
+                StepStatus::Succeeded
+            } else {
+                StepStatus::Failed {
+                    detail: format!("exit {}", status.exit_code()),
+                }
+            }
+        }
         Err(err) => StepStatus::Failed {
             detail: format!("wait failed: {err}"),
         },
@@ -252,18 +252,20 @@ fn run_step(
 }
 
 fn spawn_pump(
-    reader: impl std::io::Read + Send + 'static,
+    mut reader: Box<dyn Read + Send>,
     events: mpsc::Sender<ExecEvent>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines() {
-            match line {
-                Ok(line) => {
-                    if events.send(ExecEvent::Line(line)).is_err() {
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                // 0 = EOF; Err = pty closed (EIO on Linux) — both are done.
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    if events.send(ExecEvent::Bytes(buf[..n].to_vec())).is_err() {
                         return;
                     }
                 }
-                Err(_) => return,
             }
         }
     })
@@ -276,107 +278,89 @@ mod tests {
     use crate::model::{ActionKind, ActionStep, SourceId};
     use chrono::Utc;
 
-    #[test]
-    fn pipe_command_adapts_sudo_to_stdin_password() {
-        let argv = vec!["sudo".to_string(), "pacman".to_string(), "-Syu".to_string()];
-        let piped = pipe_command(&argv);
-        assert_eq!(piped[0], "sudo");
-        assert_eq!(piped[1], "-S");
-        assert_eq!(piped[2], "-p");
-        assert_eq!(piped[4], "pacman");
-        // Non-sudo commands pass through untouched.
-        let plain = vec!["flatpak".to_string(), "update".to_string()];
-        assert_eq!(pipe_command(&plain), plain);
-    }
-
-    #[test]
-    fn only_sudo_or_no_tool_supports_the_pipe() {
-        assert!(tool_supports_pipe(Some("sudo")));
-        assert!(tool_supports_pipe(None));
-        assert!(!tool_supports_pipe(Some("doas")));
-        assert!(!tool_supports_pipe(Some("pkexec")));
-    }
-
-    /// End-to-end through a real child process: `sh` echoes, reads forwarded
-    /// stdin, and exits 0 — output lines and the final report both arrive.
-    #[test]
-    fn session_streams_output_and_forwards_stdin() {
-        let plan = ActionPlan {
+    fn plan_for(script: &str) -> ActionPlan {
+        ActionPlan {
             created_at: Utc::now(),
             steps: vec![ActionStep {
                 source_id: SourceId::flatpak_user(),
                 kind: ActionKind::Update,
                 targets: vec!["x".to_string()],
-                command: vec![
-                    "sh".to_string(),
-                    "-c".to_string(),
-                    "echo hello; read answer; echo got:$answer".to_string(),
-                ],
+                command: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
             }],
             requires_sudo: false,
-        };
-        let dir = std::env::temp_dir().join(format!("paclens-exec-tui-{}", std::process::id()));
-        let session = start(plan, None, Some(dir.clone()));
+        }
+    }
 
-        // Wait for the first output line, then answer the `read`.
-        let mut lines = Vec::new();
+    fn drain(session: &ExecSession, answer: Option<(&str, &[u8])>) -> (String, ExecutionReport) {
+        let mut text = String::new();
+        let mut answered = false;
         loop {
             match session
                 .events
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(std::time::Duration::from_secs(10))
             {
-                Ok(ExecEvent::Line(line)) => {
-                    if line == "hello" {
-                        session.forward(b"world\n".to_vec());
+                Ok(ExecEvent::Bytes(bytes)) => {
+                    text.push_str(&String::from_utf8_lossy(&bytes));
+                    if let Some((trigger, reply)) = answer
+                        && !answered
+                        && text.contains(trigger)
+                    {
+                        session.forward(reply.to_vec());
+                        answered = true;
                     }
-                    lines.push(line);
                 }
-                Ok(ExecEvent::Done(report)) => {
-                    assert_eq!(report.succeeded(), 1);
-                    break;
-                }
+                Ok(ExecEvent::Done(report)) => return (text, report),
                 Ok(ExecEvent::Failed(err)) => panic!("session failed: {err}"),
-                Err(err) => panic!("timed out: {err}; lines so far: {lines:?}"),
+                Err(err) => panic!("timed out: {err}; output so far: {text:?}"),
             }
         }
-        assert!(lines.contains(&"hello".to_string()), "{lines:?}");
-        assert!(lines.contains(&"got:world".to_string()), "{lines:?}");
+    }
+
+    /// End-to-end through a real pty: `sh` echoes, reads forwarded input
+    /// (which the pty echoes back — a real terminal), and exits 0.
+    #[test]
+    fn session_streams_pty_output_and_forwards_keys() {
+        let dir = std::env::temp_dir().join(format!("paclens-exec-tui-{}", std::process::id()));
+        let session = start(
+            plan_for("echo hello; read answer; echo got:$answer"),
+            None,
+            (24, 80),
+            Some(dir.clone()),
+        );
+        let (text, report) = drain(&session, Some(("hello", b"world\r")));
+        assert!(text.contains("hello"), "{text:?}");
+        assert!(text.contains("got:world"), "{text:?}");
+        assert_eq!(report.succeeded(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commands_see_a_real_terminal() {
+        let dir = std::env::temp_dir().join(format!("paclens-exec-tty-{}", std::process::id()));
+        let session = start(
+            plan_for("if [ -t 0 ] && [ -t 1 ]; then echo IS_A_TTY; fi"),
+            None,
+            (24, 80),
+            Some(dir.clone()),
+        );
+        let (text, report) = drain(&session, None);
+        assert!(text.contains("IS_A_TTY"), "{text:?}");
+        assert_eq!(report.succeeded(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn failing_step_reports_its_exit_code() {
-        let plan = ActionPlan {
-            created_at: Utc::now(),
-            steps: vec![ActionStep {
-                source_id: SourceId::flatpak_user(),
-                kind: ActionKind::Update,
-                targets: vec!["x".to_string()],
-                command: vec!["sh".to_string(), "-c".to_string(), "exit 3".to_string()],
-            }],
-            requires_sudo: false,
-        };
         let dir = std::env::temp_dir().join(format!("paclens-exec-fail-{}", std::process::id()));
-        let session = start(plan, None, Some(dir.clone()));
-        loop {
-            match session
-                .events
-                .recv_timeout(std::time::Duration::from_secs(5))
-            {
-                Ok(ExecEvent::Done(report)) => {
-                    assert_eq!(report.failed(), 1);
-                    assert_eq!(
-                        report.steps[0].status,
-                        StepStatus::Failed {
-                            detail: "exit 3".to_string()
-                        }
-                    );
-                    break;
-                }
-                Ok(_) => {}
-                Err(err) => panic!("timed out: {err}"),
+        let session = start(plan_for("exit 3"), None, (24, 80), Some(dir.clone()));
+        let (_, report) = drain(&session, None);
+        assert_eq!(report.failed(), 1);
+        assert_eq!(
+            report.steps[0].status,
+            StepStatus::Failed {
+                detail: "exit 3".to_string()
             }
-        }
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -19,15 +19,10 @@ pub enum Action {
     Back,
     /// Update screen → toggle the selected source.
     Toggle,
-    /// Update screen → confirm the plan (opens the confirm modal).
-    Confirm,
-    /// Confirm modal → run the plan.
+    /// Update screen → run the plan (the plan view IS the confirmation;
+    /// pacman/sudo ask their own questions in the console).
     Execute,
-    /// Confirm modal → close it without running anything.
-    CloseConfirm,
-    /// Result view → back to the (refreshed) plan view.
-    DismissResult,
-    /// Update screen / result view → open the newest update log in $PAGER.
+    /// Update screen / dashboard → open the newest update log inline.
     OpenLog,
     /// Dashboard → focus the sources pane (←/h).
     FocusLeft,
@@ -35,9 +30,9 @@ pub enum Action {
     FocusRight,
     /// Log viewer → close it.
     CloseLog,
-    /// Execution console → forward these bytes to the running command.
-    ExecInput(char),
-    /// Execution console, finished → hand off to the result view.
+    /// Execution console → pass this key through to the running command.
+    ExecKey(KeyEvent),
+    /// Execution console, finished → back to the dashboard.
     ExecDismiss,
     /// Dashboard → open the selected source's package list.
     OpenPackages,
@@ -75,6 +70,7 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Right | KeyCode::Char('l') => Action::FocusRight,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('u') => Action::OpenUpdates,
+        KeyCode::Char('L') => Action::OpenLog,
         KeyCode::Enter => Action::OpenPackages,
         _ => Action::Ignore,
     }
@@ -112,7 +108,9 @@ pub fn map_filter_key(key: KeyEvent) -> Action {
     }
 }
 
-/// Update screen key map: nav, toggle, confirm, back, quit.
+/// Update screen key map: nav, toggle, Enter runs (no second confirmation —
+/// the plan view already shows exactly what will run, and pacman asks its
+/// own questions; user decision 2026-07-08), back, quit.
 pub fn map_update_key(key: KeyEvent) -> Action {
     if is_quit(&key) {
         return Action::Quit;
@@ -121,26 +119,9 @@ pub fn map_update_key(key: KeyEvent) -> Action {
         KeyCode::Down | KeyCode::Char('j') => Action::Next,
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
         KeyCode::Char(' ') => Action::Toggle,
-        KeyCode::Enter => Action::Confirm,
+        KeyCode::Enter => Action::Execute,
         KeyCode::Esc => Action::Back,
         KeyCode::Char('l') | KeyCode::Char('L') => Action::OpenLog,
-        _ => Action::Ignore,
-    }
-}
-
-/// Confirm modal key map: only an explicit `y` runs the plan; everything that
-/// reads as "no" (`n`, `Esc`, even `q`) just closes the modal — a quit-key
-/// slip while a sudo-free update is one keypress away should never exit the
-/// app. Ctrl-C still quits.
-pub fn map_confirm_key(key: KeyEvent) -> Action {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
-        return Action::Quit;
-    }
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => Action::Execute,
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
-            Action::CloseConfirm
-        }
         _ => Action::Ignore,
     }
 }
@@ -161,32 +142,52 @@ pub fn map_log_key(key: KeyEvent) -> Action {
     }
 }
 
-/// Execution console key map. While the command runs, printable keys and
-/// Enter are forwarded to its stdin (sudo password, pacman prompts); when
-/// `done`, any key hands off to the result view. Ctrl-C still quits.
+/// Execution console key map. While the command runs, EVERY key passes
+/// through to the pty — Ctrl-C included (it interrupts the child, exactly
+/// like a terminal; quitting the TUI mid-update is not on offer). When
+/// `done`, any key returns to the dashboard; Ctrl-C quits again.
 pub fn map_exec_key(key: KeyEvent, done: bool) -> Action {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
-        return Action::Quit;
-    }
     if done {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+            return Action::Quit;
+        }
         return Action::ExecDismiss;
     }
-    match key.code {
-        KeyCode::Char(c) => Action::ExecInput(c),
-        KeyCode::Enter => Action::ExecInput('\n'),
-        _ => Action::Ignore,
-    }
+    Action::ExecKey(key)
 }
 
-/// Result view key map: any key dismisses ("press any key to continue");
-/// Ctrl-C still quits.
-pub fn map_result_key(key: KeyEvent) -> Action {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
-        return Action::Quit;
+/// Encode a key press as the bytes a terminal would send — the passthrough
+/// half of the console. Returns `None` for keys with no byte encoding.
+pub fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Ctrl-A..Ctrl-Z → 0x01..0x1a (Ctrl-C = 0x03 interrupts the child).
+        if let KeyCode::Char(c) = key.code {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() {
+                return Some(vec![c as u8 - b'a' + 1]);
+            }
+        }
+        return None;
     }
     match key.code {
-        KeyCode::Char('l') | KeyCode::Char('L') => Action::OpenLog,
-        _ => Action::DismissResult,
+        KeyCode::Char(c) => {
+            let mut buf = [0u8; 4];
+            Some(c.encode_utf8(&mut buf).as_bytes().to_vec())
+        }
+        KeyCode::Enter => Some(b"\r".to_vec()),
+        KeyCode::Backspace => Some(vec![0x7f]),
+        KeyCode::Tab => Some(b"\t".to_vec()),
+        KeyCode::Esc => Some(vec![0x1b]),
+        KeyCode::Up => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down => Some(b"\x1b[B".to_vec()),
+        KeyCode::Right => Some(b"\x1b[C".to_vec()),
+        KeyCode::Left => Some(b"\x1b[D".to_vec()),
+        KeyCode::Home => Some(b"\x1b[H".to_vec()),
+        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
+        _ => None,
     }
 }
 
@@ -299,7 +300,8 @@ mod tests {
     #[test]
     fn update_specific_keys() {
         assert_eq!(map_update_key(plain(KeyCode::Char(' '))), Action::Toggle);
-        assert_eq!(map_update_key(plain(KeyCode::Enter)), Action::Confirm);
+        // Enter runs directly — the plan view is the confirmation.
+        assert_eq!(map_update_key(plain(KeyCode::Enter)), Action::Execute);
         assert_eq!(map_update_key(plain(KeyCode::Esc)), Action::Back);
         // Dashboard-only keys are ignored on the update screen.
         assert_eq!(map_update_key(plain(KeyCode::Char('u'))), Action::Ignore);
@@ -313,50 +315,19 @@ mod tests {
     }
 
     #[test]
-    fn confirm_modal_runs_only_on_an_explicit_y() {
-        assert_eq!(map_confirm_key(plain(KeyCode::Char('y'))), Action::Execute);
-        assert_eq!(map_confirm_key(plain(KeyCode::Char('Y'))), Action::Execute);
-        // Enter must NOT execute — it is what opened the modal.
-        assert_eq!(map_confirm_key(plain(KeyCode::Enter)), Action::Ignore);
-        assert_eq!(map_confirm_key(plain(KeyCode::Char('x'))), Action::Ignore);
-    }
-
-    #[test]
-    fn confirm_modal_closes_on_anything_that_reads_as_no() {
-        for no in [
-            KeyCode::Char('n'),
-            KeyCode::Char('N'),
-            KeyCode::Esc,
-            KeyCode::Char('q'),
-        ] {
-            assert_eq!(map_confirm_key(plain(no)), Action::CloseConfirm);
-        }
-    }
-
-    #[test]
-    fn result_view_dismisses_on_any_key_except_log() {
-        for any in [KeyCode::Enter, KeyCode::Esc, KeyCode::Char('q')] {
-            assert_eq!(map_result_key(plain(any)), Action::DismissResult);
-        }
-        assert_eq!(map_result_key(plain(KeyCode::Char('l'))), Action::OpenLog);
-    }
-
-    #[test]
     fn update_screen_opens_the_log_on_l() {
         assert_eq!(map_update_key(plain(KeyCode::Char('l'))), Action::OpenLog);
         assert_eq!(map_update_key(plain(KeyCode::Char('L'))), Action::OpenLog);
     }
 
     #[test]
-    fn ctrl_c_quits_from_modal_and_result_too() {
-        for map in [map_confirm_key, map_result_key, map_log_key] {
-            assert_eq!(
-                map(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-                Action::Quit
-            );
-        }
+    fn ctrl_c_quits_from_the_log_viewer_and_the_finished_console() {
         assert_eq!(
-            map_exec_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL), false),
+            map_log_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Action::Quit
+        );
+        assert_eq!(
+            map_exec_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL), true),
             Action::Quit
         );
     }
@@ -370,21 +341,22 @@ mod tests {
     }
 
     #[test]
-    fn exec_console_forwards_keys_while_running_and_dismisses_when_done() {
-        assert_eq!(
-            map_exec_key(plain(KeyCode::Char('y')), false),
-            Action::ExecInput('y')
-        );
-        assert_eq!(
-            map_exec_key(plain(KeyCode::Enter), false),
-            Action::ExecInput('\n')
-        );
-        // q while running is INPUT, not quit — it may be part of a password.
-        assert_eq!(
-            map_exec_key(plain(KeyCode::Char('q')), false),
-            Action::ExecInput('q')
-        );
-        assert_eq!(map_exec_key(plain(KeyCode::Esc), false), Action::Ignore);
+    fn exec_console_passes_every_key_through_while_running() {
+        for code in [
+            KeyCode::Char('y'),
+            KeyCode::Char('q'), // may be part of a password — never quits
+            KeyCode::Enter,
+            KeyCode::Esc,
+        ] {
+            assert_eq!(
+                map_exec_key(plain(code), false),
+                Action::ExecKey(plain(code))
+            );
+        }
+        // Ctrl-C too: it must interrupt the CHILD, not the TUI.
+        let ctrl_c = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(map_exec_key(ctrl_c, false), Action::ExecKey(ctrl_c));
+        // Done: any key returns to the dashboard.
         assert_eq!(
             map_exec_key(plain(KeyCode::Char('x')), true),
             Action::ExecDismiss
@@ -393,5 +365,27 @@ mod tests {
             map_exec_key(plain(KeyCode::Enter), true),
             Action::ExecDismiss
         );
+    }
+
+    #[test]
+    fn encode_key_speaks_terminal() {
+        assert_eq!(encode_key(plain(KeyCode::Char('a'))), Some(b"a".to_vec()));
+        assert_eq!(
+            encode_key(plain(KeyCode::Char('ß'))),
+            Some("ß".as_bytes().to_vec())
+        );
+        assert_eq!(encode_key(plain(KeyCode::Enter)), Some(b"\r".to_vec()));
+        assert_eq!(encode_key(plain(KeyCode::Backspace)), Some(vec![0x7f]));
+        assert_eq!(encode_key(plain(KeyCode::Esc)), Some(vec![0x1b]));
+        assert_eq!(encode_key(plain(KeyCode::Up)), Some(b"\x1b[A".to_vec()));
+        assert_eq!(
+            encode_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(vec![0x03])
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Some(vec![0x04])
+        );
+        assert_eq!(encode_key(plain(KeyCode::F(5))), None);
     }
 }

@@ -19,20 +19,17 @@ use std::time::Duration;
 use anyhow::Context;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 
 use crate::config::Config;
-use crate::executor::{self, InteractiveRunner, UpdateLog};
-use crate::model::{ActionPlan, ScanResult};
+use crate::executor::{self, UpdateLog};
+use crate::model::ScanResult;
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
 use app::{App, InputMode};
 use input::{
-    Action, map_confirm_key, map_dashboard_key, map_exec_key, map_filter_key, map_log_key,
-    map_packages_key, map_result_key, map_update_key,
+    Action, map_dashboard_key, map_exec_key, map_filter_key, map_log_key, map_packages_key,
+    map_update_key,
 };
 use theme::Theme;
 
@@ -83,7 +80,7 @@ pub fn run(
             app.set_scanning(true);
             job = Some(spawn_scan(config.clone()));
         }
-        run_loop(&mut terminal, &mut app, job, config, config_path)
+        run_loop(&mut terminal, &mut app, job, config)
     })();
     ratatui::restore();
     result
@@ -94,7 +91,6 @@ fn run_loop(
     app: &mut App,
     mut job: Option<ScanJob>,
     config: &Config,
-    config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let mut exec_session: Option<exec::ExecSession> = None;
     loop {
@@ -132,10 +128,9 @@ fn run_loop(
         if let Some(session) = &exec_session {
             loop {
                 match session.events.try_recv() {
-                    Ok(exec::ExecEvent::Line(line)) => app.exec_push_line(line),
+                    Ok(exec::ExecEvent::Bytes(bytes)) => app.exec_feed(&bytes),
                     Ok(exec::ExecEvent::Done(report)) => {
-                        app.exec_push_line(String::new());
-                        app.exec_push_line("done — press any key to continue".to_string());
+                        app.exec_feed(b"\r\n\x1b[2mdone - press any key to continue\x1b[0m\r\n");
                         app.exec_finish(report);
                         exec_session = None;
                         break;
@@ -161,7 +156,7 @@ fn run_loop(
             continue;
         }
         let action = read_action(app.input_mode(), app.exec_is_done())?;
-        // A key press dismisses any flash; `Confirm` sets a fresh one below.
+        // A key press dismisses any flash; handlers set fresh ones below.
         app.clear_flash();
 
         match action {
@@ -215,59 +210,46 @@ fn run_loop(
             Action::FilterAccept => app.filter_accept(),
             Action::FilterCancel => app.filter_cancel(),
             Action::Toggle => app.toggle_selected(),
-            Action::Confirm => {
-                // Open the modal only when something would actually run; the
-                // pipeline's confirm step (P4) is never a no-op.
-                let plan = app.update_plan();
-                if plan.is_empty() {
-                    app.set_flash("nothing selected to update");
-                } else if executor::executable_steps(&plan, app.privilege_tool()) == 0 {
-                    app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot update");
-                } else {
-                    app.open_confirm();
-                }
-            }
-            Action::CloseConfirm => app.close_confirm(),
             Action::Execute => {
-                app.close_confirm();
+                // Enter runs directly — the plan view is the confirmation
+                // (user decision 2026-07-08); pacman/sudo prompt for
+                // themselves inside the pty console.
                 let plan = app.update_plan();
                 let tool = app.privilege_tool();
-                if exec::tool_supports_pipe(tool) {
-                    // Inline console: output streams into the update window;
-                    // typed keys (sudo password, pacman prompts) forward to
-                    // the running command. No terminal suspend.
-                    app.start_exec();
-                    exec_session = Some(exec::start(plan, tool.map(String::from), None));
+                if plan.is_empty() {
+                    app.set_flash("nothing selected to update");
+                } else if executor::executable_steps(&plan, tool) == 0 {
+                    app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot update");
                 } else {
-                    // doas/pkexec cannot read a piped stdin — suspend for them.
-                    match run_plan_suspended(terminal, &plan, tool) {
-                        Ok(report) => {
-                            let runner = SystemCommandRunner;
-                            let scan = scanner::load_or_scan(&runner, config, true, config_path)?;
-                            app.replace_scan(scan);
-                            app.set_report(report);
-                        }
-                        Err(err) => app.set_flash(format!("update failed: {err:#}")),
-                    }
+                    let (rows, cols) = terminal
+                        .size()
+                        .map(|s| draw::exec_pty_size(s.width, s.height))
+                        .unwrap_or((24, 80));
+                    app.start_exec(rows, cols);
+                    exec_session = Some(exec::start(
+                        plan,
+                        tool.map(String::from),
+                        (rows, cols),
+                        None,
+                    ));
                 }
             }
-            Action::DismissResult => app.dismiss_report(),
             Action::FocusLeft => app.focus_sources(),
             Action::FocusRight => app.focus_updates(),
-            Action::ExecInput(c) => {
-                if let Some(session) = &exec_session {
-                    let mut buf = [0u8; 4];
-                    session.forward(c.encode_utf8(&mut buf).as_bytes().to_vec());
+            Action::ExecKey(key) => {
+                if let (Some(session), Some(bytes)) = (&exec_session, input::encode_key(key)) {
+                    session.forward(bytes);
                 }
             }
             Action::ExecDismiss => {
                 if let Some(report) = app.take_exec_report() {
-                    // Refresh in the background; the result view shows now.
+                    // Straight back to a refreshing dashboard with a summary
+                    // flash — no result modal (user decision 2026-07-08).
                     if job.is_none() {
                         app.set_scanning(true);
                         job = Some(spawn_scan(config.clone()));
                     }
-                    app.set_report(report);
+                    app.finish_update(&report);
                 }
             }
             Action::CloseLog => app.close_log(),
@@ -283,48 +265,12 @@ fn run_loop(
     }
 }
 
-/// Suspend the TUI (raw mode off, main screen back), run `f` in the raw
-/// terminal, then restore. Restore always runs, even when `f` failed.
-fn with_suspended<T>(
-    terminal: &mut DefaultTerminal,
-    f: impl FnOnce() -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    disable_raw_mode().context("failed to disable raw mode")?;
-    ratatui::crossterm::execute!(std::io::stdout(), LeaveAlternateScreen)
-        .context("failed to leave the alternate screen")?;
-
-    let result = f();
-
-    enable_raw_mode().context("failed to re-enable raw mode")?;
-    ratatui::crossterm::execute!(std::io::stdout(), EnterAlternateScreen)
-        .context("failed to re-enter the alternate screen")?;
-    terminal
-        .clear()
-        .context("failed to clear the restored terminal")?;
-    result
-}
-
-/// Run the plan in the raw terminal (the user sees flatpak/pacman output and
-/// the sudo prompt directly — spec §13.2), then restore the TUI.
-fn run_plan_suspended(
-    terminal: &mut DefaultTerminal,
-    plan: &ActionPlan,
-    tool: Option<&str>,
-) -> anyhow::Result<executor::ExecutionReport> {
-    with_suspended(terminal, || {
-        let mut log = UpdateLog::open_default()?;
-        Ok(executor::execute(plan, &InteractiveRunner, &mut log, tool))
-    })
-}
-
 /// Read the pending key press and map it with the active mode's key map.
 fn read_action(mode: InputMode, exec_done: bool) -> anyhow::Result<Action> {
     match event::read().context("failed to read a terminal event")? {
         Event::Key(key) if key.kind == KeyEventKind::Press => Ok(match mode {
             InputMode::Dashboard => map_dashboard_key(key),
             InputMode::Updates => map_update_key(key),
-            InputMode::Confirm => map_confirm_key(key),
-            InputMode::Result => map_result_key(key),
             InputMode::Packages => map_packages_key(key),
             InputMode::PackageFilter => map_filter_key(key),
             InputMode::LogView => map_log_key(key),

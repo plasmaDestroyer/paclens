@@ -9,10 +9,10 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
-use crate::executor::{self, ExecutionReport, StepStatus};
 use crate::format::relative_time;
 use crate::model::{ActionPlan, Source};
 use crate::tui::app::{App, Screen};
@@ -40,8 +40,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 draw_exec(frame, area, app, view);
             } else if let Some(view) = app.log_view() {
                 draw_log(frame, area, app, view);
-            } else if let Some(report) = app.report() {
-                draw_result(frame, area, app, report);
             } else {
                 draw_update(frame, area, app);
             }
@@ -50,8 +48,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-/// The inline execution console: streamed command output in the update
-/// window, tail-following; typed keys go to the running command.
+/// The pty size the console gets for a `width` × `height` terminal — mirrors
+/// `draw_exec`'s layout: borders (2) + footer (1) vertically, borders (2) +
+/// horizontal padding (2) across.
+pub fn exec_pty_size(width: u16, height: u16) -> (u16, u16) {
+    (
+        height.saturating_sub(3).max(2),
+        width.saturating_sub(4).max(20),
+    )
+}
+
+/// The inline execution console: the vt100 screen fed by the pty, rendered
+/// cell-for-cell with its own colors — a terminal inside the panel. Typed
+/// keys pass through to the running command.
 fn draw_exec(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::ExecView) {
     let theme = &app.theme;
     let running = view.done.is_none();
@@ -75,31 +84,94 @@ fn draw_exec(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::E
 
     let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(inner);
 
-    let lines: Vec<Line> = view
-        .lines
-        .iter()
-        .map(|l| {
-            if l.starts_with("::") {
-                Line::from(Span::styled(l.clone(), theme.accent))
-            } else {
-                Line::from(Span::styled(l.clone(), theme.primary))
-            }
-        })
-        .collect();
-    // Tail-follow: keep the newest lines in view.
-    let viewport = chunks[0].height as usize;
-    let scroll = lines.len().saturating_sub(viewport);
-    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), chunks[0]);
+    let screen = view.parser.screen();
+    let cursor = (running && !screen.hide_cursor()).then(|| screen.cursor_position());
+    frame.render_widget(Paragraph::new(screen_lines(screen, cursor)), chunks[0]);
 
     let footer = if running {
-        keys_line(
-            theme,
-            &[("typed keys", "answer prompts (sudo password, pacman y/n)")],
-        )
+        keys_line(theme, &[("keys", "pass through"), ("ctrl+c", "interrupt")])
     } else {
-        keys_line(theme, &[("any key", "continue to the result")])
+        keys_line(theme, &[("any key", "back to the dashboard")])
     };
     frame.render_widget(Paragraph::new(footer), chunks[1]);
+}
+
+/// Flatten a vt100 screen into styled lines, grouping same-style runs. The
+/// cursor cell renders reversed so prompts (sudo password) show where they
+/// are.
+fn screen_lines(screen: &vt100::Screen, cursor: Option<(u16, u16)>) -> Vec<Line<'static>> {
+    let (rows, cols) = screen.size();
+    let mut lines = Vec::with_capacity(rows as usize);
+    for r in 0..rows {
+        let mut spans: Vec<Span> = Vec::new();
+        let mut run = String::new();
+        let mut run_style = Style::default();
+        for c in 0..cols {
+            let (mut style, text) = match screen.cell(r, c) {
+                Some(cell) => {
+                    let s = cell.contents();
+                    (
+                        vt_style(cell),
+                        if s.is_empty() {
+                            " ".to_string()
+                        } else {
+                            s.to_string()
+                        },
+                    )
+                }
+                None => (Style::default(), " ".to_string()),
+            };
+            if cursor == Some((r, c)) {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            if style == run_style {
+                run.push_str(&text);
+            } else {
+                if !run.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut run), run_style));
+                }
+                run_style = style;
+                run = text;
+            }
+        }
+        if !run.is_empty() {
+            spans.push(Span::styled(run, run_style));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// vt100 cell attributes → ratatui style (exact passthrough of the child's
+/// own colors; the theme only owns the chrome around the screen).
+fn vt_style(cell: &vt100::Cell) -> Style {
+    fn color(c: vt100::Color) -> Option<ratatui::style::Color> {
+        match c {
+            vt100::Color::Default => None,
+            vt100::Color::Idx(i) => Some(ratatui::style::Color::Indexed(i)),
+            vt100::Color::Rgb(r, g, b) => Some(ratatui::style::Color::Rgb(r, g, b)),
+        }
+    }
+    let mut style = Style::default();
+    if let Some(fg) = color(cell.fgcolor()) {
+        style = style.fg(fg);
+    }
+    if let Some(bg) = color(cell.bgcolor()) {
+        style = style.bg(bg);
+    }
+    if cell.bold() {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.italic() {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if cell.underline() {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if cell.inverse() {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
 }
 
 /// The inline log viewer: the newest update log, scrollable like a pager.
@@ -155,6 +227,23 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(theme, " paclens · dashboard ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // A flash (post-update summary, scan failure) rides the bottom border so
+    // no layout shifts; the next key press clears it.
+    if let Some(flash) = app.flash() {
+        let hint = format!(" {flash} ");
+        let w = (hint.chars().count() as u16).min(area.width.saturating_sub(4));
+        let rect = Rect {
+            x: area.x + 2,
+            y: area.bottom().saturating_sub(1),
+            width: w,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(hint, theme.accent))),
+            rect,
+        );
+    }
 
     if inner.width < 56 || inner.height < 14 {
         draw_dashboard_flat(frame, inner, app);
@@ -515,7 +604,7 @@ fn draw_update(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let plan = app.update_plan();
-    let sources = app.available_sources();
+    let sources = app.update_sources();
 
     let chunks = Layout::vertical([
         Constraint::Length(1), // summary
@@ -534,10 +623,6 @@ fn draw_update(frame: &mut Frame, area: Rect, app: &App) {
 
     render_confirm(frame, chunks[3], app, &plan);
     render_update_footer(frame, chunks[4], theme, true);
-
-    if app.is_confirming() {
-        render_confirm_modal(frame, inner, app, &plan);
-    }
 }
 
 /// The update screen's key hints. `esc back` is always present; the plan-only
@@ -549,6 +634,7 @@ fn render_update_footer(frame: &mut Frame, area: Rect, theme: &Theme, has_plan: 
         keys_line(
             theme,
             &[
+                ("enter", "run"),
                 ("space", "toggle"),
                 (&updown, "source"),
                 ("l", "log"),
@@ -678,9 +764,9 @@ fn render_confirm(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
     } else {
         Line::from(vec![
             Span::styled("[Enter]", theme.accent),
-            Span::styled(" update everything    ", theme.primary),
+            Span::styled(" run the update    ", theme.primary),
             Span::styled("[Esc]", theme.dim),
-            Span::styled(" cancel", theme.dim),
+            Span::styled(" back", theme.dim),
         ])
     };
     frame.render_widget(Paragraph::new(line), area);
@@ -1014,73 +1100,6 @@ fn plural(n: u32) -> &'static str {
 // Confirm modal
 // ---------------------------------------------------------------------------
 
-/// The centered confirmation overlay (chosen with the user): the question, the
-/// exact command(s) that will run (P1), what will be skipped and why, and the
-/// y/n key hints. Rendered on top of the update screen.
-fn render_confirm_modal(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
-    let theme = &app.theme;
-    let tool = app.privilege_tool();
-    let total = executor::executable_targets(plan, tool);
-    let sources = executor::executable_steps(plan, tool);
-
-    let mut body: Vec<Line> = vec![Line::from(Span::styled(
-        format!(
-            "Update {total} package{} across {sources} source{}?",
-            if total == 1 { "" } else { "s" },
-            if sources == 1 { "" } else { "s" },
-        ),
-        theme.accent,
-    ))];
-    body.push(Line::default());
-    for step in &plan.steps {
-        if executor::skip_reason(step, tool).is_none() {
-            body.push(Line::from(Span::styled(
-                executor::effective_command(step, tool).join(" "),
-                theme.primary,
-            )));
-        }
-    }
-    let skipped: Vec<Line> = plan
-        .steps
-        .iter()
-        .filter_map(|step| {
-            executor::skip_reason(step, tool).map(|reason| {
-                Line::from(Span::styled(
-                    format!("{} will be skipped — {reason}", step.source_id),
-                    theme.dim,
-                ))
-            })
-        })
-        .collect();
-    if !skipped.is_empty() {
-        body.push(Line::default());
-        body.extend(skipped);
-    }
-    body.push(Line::default());
-    body.push(Line::from(vec![
-        Span::styled("[y]", theme.success),
-        Span::styled(" update", theme.primary),
-        Span::raw("      "),
-        Span::styled("[n]", theme.error),
-        Span::styled(" cancel", theme.dim),
-    ]));
-
-    let width = body.iter().map(Line::width).max().unwrap_or(0) as u16 + 6;
-    let height = body.len() as u16 + 2;
-    let rect = centered(area, width, height);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(theme.border_set)
-        .border_style(theme.border)
-        .title(Span::styled(" confirm ", theme.title))
-        .padding(Padding::horizontal(2));
-    frame.render_widget(Clear, rect);
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-    frame.render_widget(Paragraph::new(body), inner);
-}
-
 /// Center a `width` × `height` box inside `area`, clamped to fit.
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(area.width);
@@ -1090,105 +1109,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         y: area.y + (area.height - h) / 2,
         width: w,
         height: h,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Result view
-// ---------------------------------------------------------------------------
-
-/// Post-execution result (chosen with the user): one line per step with
-/// ✓ / ✗ / · marks, the log path, and a "press any key" footer. The roadmap
-/// rule in force: show what succeeded, what failed, never hide it.
-fn draw_result(frame: &mut Frame, area: Rect, app: &App, report: &ExecutionReport) {
-    let theme = &app.theme;
-    let block = panel(theme, " paclens · update result ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let chunks = Layout::vertical([
-        Constraint::Length(1), // headline
-        Constraint::Length(1), // spacer
-        Constraint::Min(3),    // per-step lines
-        Constraint::Length(1), // log path
-        Constraint::Length(1), // footer
-    ])
-    .split(inner);
-
-    frame.render_widget(Paragraph::new(result_headline(report, theme)), chunks[0]);
-
-    let name_w = report
-        .steps
-        .iter()
-        .map(|s| s.source_id.as_str().len())
-        .max()
-        .unwrap_or(0);
-    let lines: Vec<Line> = report
-        .steps
-        .iter()
-        .map(|s| result_line(s, name_w, theme))
-        .collect();
-    frame.render_widget(Paragraph::new(lines), chunks[2]);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("log: {}", report.log_path.display()),
-            theme.dim,
-        ))),
-        chunks[3],
-    );
-    frame.render_widget(
-        Paragraph::new(keys_line(
-            theme,
-            &[("l", "view log"), ("any other key", "continues")],
-        )),
-        chunks[4],
-    );
-}
-
-fn result_headline(report: &ExecutionReport, theme: &Theme) -> Line<'static> {
-    let executed = report.executed();
-    let src_word = if executed == 1 { "source" } else { "sources" };
-    let sep = format!(" {} ", theme.glyphs.bullet);
-    let mut spans = vec![
-        Span::styled(executed.to_string(), theme.accent),
-        Span::styled(format!(" {src_word} ran"), theme.primary),
-        Span::styled(sep.clone(), theme.dim),
-        Span::styled(report.succeeded().to_string(), theme.success),
-        Span::styled(" succeeded", theme.primary),
-    ];
-    if report.failed() > 0 {
-        spans.push(Span::styled(sep, theme.dim));
-        spans.push(Span::styled(report.failed().to_string(), theme.error));
-        spans.push(Span::styled(" failed", theme.primary));
-    }
-    Line::from(spans)
-}
-
-fn result_line(step: &executor::StepReport, name_w: usize, theme: &Theme) -> Line<'static> {
-    let g = theme.glyphs;
-    let name = format!("{:name_w$}", step.source_id.as_str());
-    match &step.status {
-        StepStatus::Succeeded => Line::from(vec![
-            Span::styled(format!(" {} ", g.check), theme.success),
-            Span::styled(name, theme.title),
-            Span::styled(
-                format!(
-                    "  {} updated",
-                    executor::target_noun(&step.source_id, step.targets)
-                ),
-                theme.primary,
-            ),
-        ]),
-        StepStatus::Failed { detail } => Line::from(vec![
-            Span::styled(format!(" {} ", g.cross), theme.error),
-            Span::styled(name, theme.title),
-            Span::styled(format!("  failed ({detail})"), theme.error),
-        ]),
-        StepStatus::Skipped { reason } => Line::from(Span::styled(
-            format!(" {} {name}  skipped — {reason}", g.bullet),
-            theme.dim,
-        )),
     }
 }
 
@@ -1642,145 +1562,58 @@ mod tests {
         assert!(text.contains("nothing selected to update"), "{text}");
     }
 
-    // --- confirm modal ---
+    // --- update screen behavior (no confirm modal — Enter runs) ---
     #[test]
-    fn confirm_modal_shows_both_effective_commands_with_a_tool() {
+    fn update_screen_hides_sources_without_updates() {
         let mut app = App::new(
-            scan_with(vec![
-                upd("linux", "1", "2", SourceId::pacman()),
-                upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
-            ]),
+            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
             AppOptions::test(),
         );
         app.goto_updates();
-        app.open_confirm();
         let text = render(&app, 80, 20);
-        assert!(text.contains("confirm"), "modal title missing:\n{text}");
+        assert!(text.contains("pacman"), "{text}");
+        // flatpak-user is clean, flatpak-system unavailable — neither shows.
         assert!(
-            text.contains("Update 2 packages across 2 sources?"),
-            "question missing:\n{text}"
+            !text.contains("flatpak-user"),
+            "clean source leaked:\n{text}"
         );
+        assert!(!text.contains("flatpak-system"), "{text}");
         assert!(
-            text.contains("sudo pacman -Syu"),
-            "privileged command missing:\n{text}"
+            text.contains("[Enter] run the update"),
+            "run hint missing:\n{text}"
         );
-        assert!(
-            text.contains("flatpak update --user --noninteractive"),
-            "exact command missing:\n{text}"
-        );
-        assert!(!text.contains("will be skipped"), "{text}");
-        assert!(text.contains("[y] update"), "y hint missing:\n{text}");
-        assert!(text.contains("[n] cancel"), "n hint missing:\n{text}");
     }
 
-    #[test]
-    fn confirm_modal_skips_privileged_steps_without_a_tool() {
-        let mut app = App::new(
-            scan_with(vec![
-                upd("linux", "1", "2", SourceId::pacman()),
-                upd("org.gimp.GIMP", "2.10", "2.12", SourceId::flatpak_user()),
-            ]),
-            Theme::none(),
-            AppOptions {
-                privilege_tool: None, // no sudo/doas/pkexec on PATH
-                ..AppOptions::test()
-            },
-        );
-        app.goto_updates();
-        app.open_confirm();
-        let text = render(&app, 80, 20);
-        assert!(
-            text.contains("Update 1 package across 1 source?"),
-            "question missing:\n{text}"
-        );
-        assert!(
-            text.contains("pacman will be skipped — no privilege tool"),
-            "skip note missing:\n{text}"
-        );
-        assert!(!text.contains("sudo pacman"), "{text}");
-    }
-
-    // --- result view ---
     use crate::executor::{ExecutionReport, StepReport, StepStatus};
     use std::path::PathBuf;
 
     fn report() -> ExecutionReport {
         ExecutionReport {
-            steps: vec![
-                StepReport {
-                    source_id: SourceId::flatpak_user(),
-                    targets: 2,
-                    status: StepStatus::Succeeded,
-                },
-                StepReport {
-                    source_id: SourceId::flatpak_system(),
-                    targets: 1,
-                    status: StepStatus::Failed {
-                        detail: "exit 1".to_string(),
-                    },
-                },
-                StepReport {
-                    source_id: SourceId::pacman(),
-                    targets: 3,
-                    status: StepStatus::Skipped {
-                        reason: "execution arrives in v0.1".to_string(),
-                    },
-                },
-            ],
+            steps: vec![StepReport {
+                source_id: SourceId::flatpak_user(),
+                targets: 2,
+                status: StepStatus::Succeeded,
+            }],
             log_path: PathBuf::from("/tmp/paclens/2026-06-12.log"),
         }
     }
 
     #[test]
-    fn result_view_shows_every_outcome_and_the_log_path() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+    fn finished_update_flashes_its_summary_on_the_dashboard() {
+        let mut app = App::new(
+            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
+            Theme::none(),
+            AppOptions::test(),
+        );
         app.goto_updates();
-        app.set_report(report());
-        let text = render(&app, 76, 18);
-        assert!(text.contains("update result"), "title missing:\n{text}");
-        assert!(text.contains("2 sources ran"), "headline missing:\n{text}");
-        assert!(text.contains("1 succeeded"), "{text}");
-        assert!(text.contains("1 failed"), "{text}");
+        app.finish_update(&report());
+        let text = render(&app, 96, 24);
+        assert!(text.contains("paclens · dashboard"), "{text}");
         assert!(
-            text.contains("x flatpak-user"), // ascii check in the none theme
-            "success mark missing:\n{text}"
+            text.contains("update finished — 1 source succeeded"),
+            "summary flash missing:\n{text}"
         );
-        assert!(text.contains("2 flatpaks updated"), "{text}");
-        assert!(
-            text.contains("! flatpak-system"), // ascii cross
-            "failure mark missing:\n{text}"
-        );
-        assert!(text.contains("failed (exit 1)"), "{text}");
-        assert!(
-            text.contains("pacman          skipped - execution arrives in v0.1")
-                || text.contains("skipped"),
-            "skip line missing:\n{text}"
-        );
-        assert!(
-            text.contains("log: /tmp/paclens/2026-06-12.log"),
-            "log path missing:\n{text}"
-        );
-        assert!(text.contains("l view log"), "{text}");
-    }
-
-    #[test]
-    fn all_green_result_has_no_failed_segment() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        app.goto_updates();
-        app.set_report(ExecutionReport {
-            steps: vec![StepReport {
-                source_id: SourceId::flatpak_user(),
-                targets: 1,
-                status: StepStatus::Succeeded,
-            }],
-            log_path: PathBuf::from("/tmp/x.log"),
-        });
-        let text = render(&app, 76, 16);
-        assert!(text.contains("1 source ran"), "{text}");
-        assert!(text.contains("1 succeeded"), "{text}");
-        assert!(!text.contains("failed"), "{text}");
-        assert!(text.contains("1 flatpak updated"), "{text}");
     }
 
     // --- package list ---
@@ -1971,16 +1804,18 @@ mod tests {
 
     // --- inline exec console + log viewer ---
     #[test]
-    fn exec_console_tails_output_and_swaps_footer_when_done() {
+    fn exec_console_renders_the_vt100_screen_and_swaps_footer_when_done() {
         let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         app.goto_updates();
-        app.start_exec();
-        app.exec_push_line(":: sudo pacman -Syu".to_string());
+        let (rows, cols) = exec_pty_size(90, 20);
+        app.start_exec(rows, cols);
+        app.exec_feed(b"\x1b[1m:: sudo pacman -Syu\x1b[0m\r\n");
         for i in 0..40 {
-            app.exec_push_line(format!("downloading package {i}"));
+            app.exec_feed(format!("downloading package {i}\r\n").as_bytes());
         }
         let text = render(&app, 90, 20);
         assert!(text.contains("updating"), "title missing:\n{text}");
+        // The vt100 screen keeps only what a terminal would: the tail.
         assert!(
             text.contains("downloading package 39"),
             "not tailing:\n{text}"
@@ -1990,7 +1825,7 @@ mod tests {
             "old lines should scroll away"
         );
         assert!(
-            text.contains("answer prompts"),
+            text.contains("pass through"),
             "running footer missing:\n{text}"
         );
 
@@ -2000,7 +1835,30 @@ mod tests {
         });
         let text = render(&app, 90, 20);
         assert!(text.contains("update finished"), "{text}");
-        assert!(text.contains("continue to the result"), "{text}");
+        assert!(text.contains("back to the dashboard"), "{text}");
+    }
+
+    #[test]
+    fn exec_console_honors_carriage_return_progress_lines() {
+        // pacman redraws progress with bare \r — a real terminal overwrites
+        // the line, and so must the console.
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.goto_updates();
+        app.start_exec(10, 40);
+        app.exec_feed(b"progress:  10%\rprogress: 100%\r\n");
+        let text = render(&app, 60, 14);
+        assert!(text.contains("progress: 100%"), "{text}");
+        assert!(
+            !text.contains("10%"),
+            "stale progress not overwritten:\n{text}"
+        );
+    }
+
+    #[test]
+    fn exec_pty_size_mirrors_the_console_layout() {
+        assert_eq!(exec_pty_size(90, 20), (17, 86));
+        // Degenerate terminals clamp instead of underflowing.
+        assert_eq!(exec_pty_size(4, 2), (2, 20));
     }
 
     #[test]

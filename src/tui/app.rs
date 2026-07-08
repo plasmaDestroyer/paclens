@@ -71,13 +71,11 @@ pub enum Screen {
 pub enum InputMode {
     Dashboard,
     Updates,
-    Confirm,
-    Result,
     Packages,
     PackageFilter,
-    /// Inline log viewer (over the update screen or result view).
+    /// Inline log viewer (over the update screen).
     LogView,
-    /// Inline execution console: keys are forwarded to the running command.
+    /// Inline execution console: keys pass through to the running command.
     Exec,
 }
 
@@ -87,10 +85,10 @@ pub struct LogView {
     pub scroll: usize,
 }
 
-/// The inline execution console: streamed output; `done` set when the
-/// session finished and the report is ready to hand to the result view.
+/// The inline execution console: a vt100 screen fed by the pty's raw output
+/// (exact passthrough); `done` set when the session finished.
 pub struct ExecView {
-    pub lines: Vec<String>,
+    pub parser: vt100::Parser,
     pub done: Option<ExecutionReport>,
 }
 
@@ -114,12 +112,8 @@ pub struct App {
     dash_selected: Option<usize>,
     /// Update screen: per-source toggle (true = included in the plan).
     enabled: HashMap<SourceId, bool>,
-    /// Update screen: cursor over `available_sources()`.
+    /// Update screen: cursor over `update_sources()`.
     update_cursor: usize,
-    /// Update screen: the confirm modal is open.
-    confirming: bool,
-    /// Update screen: the last execution's outcome, shown until dismissed.
-    report: Option<ExecutionReport>,
     /// Transient status line, cleared on the next key.
     flash: Option<String>,
     /// A blocking re-scan is about to run; the dashboard shows it instead of
@@ -178,8 +172,6 @@ impl App {
             dash_selected,
             enabled,
             update_cursor: 0,
-            confirming: false,
-            report: None,
             flash: None,
             scanning: false,
             pkg_source: None,
@@ -215,10 +207,6 @@ impl App {
         };
         self.enabled = default_toggles(&self.scan);
         self.clamp_update_cursor();
-        // A fresh scan invalidates an open confirm (the plan may have changed);
-        // an existing report stays — the loop sets it *after* the refresh.
-        self.confirming = false;
-        self.flash = None;
         self.scanning = false;
         self.updates_scroll = 0;
         self.clamp_pkg_cursor();
@@ -237,8 +225,6 @@ impl App {
             Screen::Dashboard => InputMode::Dashboard,
             Screen::Updates if self.exec.is_some() => InputMode::Exec,
             Screen::Updates if self.log_view.is_some() => InputMode::LogView,
-            Screen::Updates if self.report.is_some() => InputMode::Result,
-            Screen::Updates if self.confirming => InputMode::Confirm,
             Screen::Updates => InputMode::Updates,
             Screen::Packages if self.filter_active => InputMode::PackageFilter,
             Screen::Packages => InputMode::Packages,
@@ -381,9 +367,15 @@ impl App {
     }
 
     // --- update screen ---
-    /// Available sources, in scan order — the toggle/cursor list.
-    pub fn available_sources(&self) -> Vec<&Source> {
-        self.scan.sources.iter().filter(|s| s.available).collect()
+    /// The toggle/cursor list: available sources that actually have pending
+    /// updates, in scan order (a clean source has nothing to offer here —
+    /// user decision 2026-07-08).
+    pub fn update_sources(&self) -> Vec<&Source> {
+        self.scan
+            .sources
+            .iter()
+            .filter(|s| s.available && self.scan.updates.iter().any(|u| u.source_id == s.id))
+            .collect()
     }
 
     pub fn update_cursor(&self) -> usize {
@@ -429,7 +421,7 @@ impl App {
 
     pub fn toggle_selected(&mut self) {
         let id = {
-            let sources = self.available_sources();
+            let sources = self.update_sources();
             match sources.get(self.update_cursor) {
                 Some(s) => s.id.clone(),
                 None => return,
@@ -463,15 +455,17 @@ impl App {
     pub fn exec(&self) -> Option<&ExecView> {
         self.exec.as_ref()
     }
-    pub fn start_exec(&mut self) {
+    /// Open the console with a vt100 screen matching the pty size.
+    pub fn start_exec(&mut self, rows: u16, cols: u16) {
         self.exec = Some(ExecView {
-            lines: Vec::new(),
+            parser: vt100::Parser::new(rows.max(2), cols.max(20), 0),
             done: None,
         });
     }
-    pub fn exec_push_line(&mut self, line: String) {
+    /// Feed a chunk of raw pty output into the console's screen.
+    pub fn exec_feed(&mut self, bytes: &[u8]) {
         if let Some(view) = &mut self.exec {
-            view.lines.push(line);
+            view.parser.process(bytes);
         }
     }
     pub fn exec_finish(&mut self, report: ExecutionReport) {
@@ -482,35 +476,31 @@ impl App {
     pub fn exec_is_done(&self) -> bool {
         self.exec.as_ref().is_some_and(|v| v.done.is_some())
     }
-    /// Close the console; hand back the report for the result view.
+    /// Close the console; hand back the final report.
     pub fn take_exec_report(&mut self) -> Option<ExecutionReport> {
         self.exec.take().and_then(|v| v.done)
     }
-
-    // --- confirm modal + execution result ---
-    pub fn is_confirming(&self) -> bool {
-        self.confirming
-    }
-    pub fn open_confirm(&mut self) {
-        self.confirming = true;
-    }
-    pub fn close_confirm(&mut self) {
-        self.confirming = false;
-    }
-
-    pub fn report(&self) -> Option<&ExecutionReport> {
-        self.report.as_ref()
-    }
-    pub fn set_report(&mut self, report: ExecutionReport) {
-        self.confirming = false;
-        self.report = Some(report);
-    }
-    pub fn dismiss_report(&mut self) {
-        self.report = None;
+    /// After the console is dismissed: back to the dashboard with a one-line
+    /// summary flash (the result view died with the confirm modal — user
+    /// decision 2026-07-08).
+    pub fn finish_update(&mut self, report: &ExecutionReport) {
+        self.screen = Screen::Dashboard;
+        let failed = report.failed();
+        let executed = report.executed();
+        self.flash = Some(if executed == 0 {
+            "nothing was executed".to_string()
+        } else if failed == 0 {
+            format!(
+                "update finished — {executed} source{} succeeded (l for the log)",
+                if executed == 1 { "" } else { "s" }
+            )
+        } else {
+            format!("update finished — {failed} of {executed} sources FAILED (l for the log)")
+        });
     }
 
     fn update_next(&mut self) {
-        let len = self.available_sources().len();
+        let len = self.update_sources().len();
         if self.update_cursor + 1 < len {
             self.update_cursor += 1;
         }
@@ -520,7 +510,7 @@ impl App {
     }
 
     fn clamp_update_cursor(&mut self) {
-        let len = self.available_sources().len();
+        let len = self.update_sources().len();
         self.update_cursor = self.update_cursor.min(len.saturating_sub(1));
     }
 
@@ -866,23 +856,23 @@ mod tests {
 
     // --- update screen ---
     #[test]
-    fn available_sources_excludes_unavailable() {
+    fn update_sources_lists_only_available_sources_with_updates() {
+        // pacman has the one update; flatpak-user is clean; flatpak-system
+        // is unavailable — only pacman belongs on the update screen.
         let app = app();
-        let names: Vec<&str> = app
-            .available_sources()
-            .iter()
-            .map(|s| s.id.as_str())
-            .collect();
-        assert_eq!(names, vec!["pacman", "flatpak-user"]); // flatpak-system is unavailable
+        let names: Vec<&str> = app.update_sources().iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(names, vec!["pacman"]);
     }
 
     #[test]
-    fn update_cursor_clamps_within_available_sources() {
-        let mut app = app();
+    fn update_cursor_clamps_within_update_sources() {
+        let mut s = scan_with_sources(three_sources());
+        s.updates.push(upd("org.x.App", SourceId::flatpak_user()));
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.goto_updates();
         app.on_next(); // 0 -> 1
         assert_eq!(app.update_cursor(), 1);
-        app.on_next(); // clamped at 1 (only 2 available)
+        app.on_next(); // clamped at 1 (two sources have updates)
         assert_eq!(app.update_cursor(), 1);
         app.on_prev();
         app.on_prev(); // clamped at 0
@@ -950,7 +940,7 @@ mod tests {
         assert!(app.flash().is_none());
     }
 
-    // --- confirm modal + result ---
+    // --- post-update handoff ---
     fn sample_report() -> ExecutionReport {
         use crate::executor::{StepReport, StepStatus};
         ExecutionReport {
@@ -964,52 +954,49 @@ mod tests {
     }
 
     #[test]
-    fn input_mode_tracks_screen_modal_and_result() {
+    fn input_mode_tracks_the_screen() {
         let mut app = app();
         assert_eq!(app.input_mode(), InputMode::Dashboard);
         app.goto_updates();
         assert_eq!(app.input_mode(), InputMode::Updates);
-        app.open_confirm();
-        assert_eq!(app.input_mode(), InputMode::Confirm);
-        app.set_report(sample_report());
-        // A report outranks the (now closed) modal.
-        assert_eq!(app.input_mode(), InputMode::Result);
-        app.dismiss_report();
-        assert_eq!(app.input_mode(), InputMode::Updates);
+        app.back_to_dashboard();
+        assert_eq!(app.input_mode(), InputMode::Dashboard);
     }
 
     #[test]
-    fn set_report_closes_the_confirm_modal() {
+    fn finish_update_lands_on_the_dashboard_with_a_summary_flash() {
         let mut app = app();
         app.goto_updates();
-        app.open_confirm();
-        assert!(app.is_confirming());
-        app.set_report(sample_report());
-        assert!(!app.is_confirming());
-        assert!(app.report().is_some());
+        app.finish_update(&sample_report());
+        assert_eq!(app.screen(), Screen::Dashboard);
+        let flash = app.flash().expect("summary flash");
+        assert!(flash.contains("1 source succeeded"), "{flash}");
     }
 
     #[test]
-    fn close_confirm_returns_to_the_plan_view() {
+    fn finish_update_calls_out_failures() {
+        use crate::executor::{StepReport, StepStatus};
         let mut app = app();
-        app.goto_updates();
-        app.open_confirm();
-        app.close_confirm();
-        assert_eq!(app.input_mode(), InputMode::Updates);
-        assert!(app.report().is_none());
-    }
-
-    #[test]
-    fn replace_scan_closes_an_open_confirm_but_keeps_the_report() {
-        let mut app = app();
-        app.goto_updates();
-        app.open_confirm();
-        app.replace_scan(scan_with_sources(three_sources()));
-        assert!(!app.is_confirming());
-
-        app.set_report(sample_report());
-        app.replace_scan(scan_with_sources(three_sources()));
-        assert!(app.report().is_some()); // the loop refreshes, then shows it
+        let report = ExecutionReport {
+            steps: vec![
+                StepReport {
+                    source_id: SourceId::pacman(),
+                    targets: 3,
+                    status: StepStatus::Failed {
+                        detail: "exit 1".to_string(),
+                    },
+                },
+                StepReport {
+                    source_id: SourceId::flatpak_user(),
+                    targets: 1,
+                    status: StepStatus::Succeeded,
+                },
+            ],
+            log_path: std::path::PathBuf::from("/tmp/x.log"),
+        };
+        app.finish_update(&report);
+        let flash = app.flash().expect("summary flash");
+        assert!(flash.contains("1 of 2 sources FAILED"), "{flash}");
     }
 
     // --- package list ---
@@ -1193,10 +1180,15 @@ mod tests {
         app.close_log();
         assert_eq!(app.input_mode(), InputMode::Updates);
 
-        app.start_exec();
+        app.start_exec(10, 40);
         assert_eq!(app.input_mode(), InputMode::Exec);
         assert!(!app.exec_is_done());
-        app.exec_push_line("out".to_string());
+        app.exec_feed(b"out\r\n");
+        let screen = app.exec().expect("console open").parser.screen();
+        assert!(
+            screen.contents().contains("out"),
+            "vt100 did not take the feed"
+        );
         app.exec_finish(sample_report());
         assert!(app.exec_is_done());
         let report = app.take_exec_report().expect("report");
