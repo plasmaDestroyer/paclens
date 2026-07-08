@@ -98,6 +98,11 @@ fn run_loop(
 ) -> anyhow::Result<()> {
     let mut exec_session: Option<exec::ExecSession> = None;
     loop {
+        // The scrolloff math needs the package table's viewport; only the
+        // loop may mutate, so it feeds the size in before every draw.
+        if let Ok(size) = terminal.size() {
+            app.set_pkg_viewport(draw::pkg_body_rows(size.height));
+        }
         terminal
             .draw(|frame| draw::draw(frame, app))
             .context("failed to draw the terminal frame")?;

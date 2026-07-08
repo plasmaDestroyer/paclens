@@ -145,6 +145,12 @@ pub struct App {
     dash_focus: DashPane,
     /// Dashboard: scroll offset of the pending-updates pane.
     updates_scroll: usize,
+    /// Package list: first visible row (scrolloff keeps the cursor away from
+    /// the viewport edges).
+    pkg_offset: usize,
+    /// Package list: table body rows currently on screen (set by the event
+    /// loop from the terminal size — the render side never mutates).
+    pkg_viewport: usize,
     /// Dashboard system pane: orphan candidates in the current scan.
     orphan_count: usize,
     /// Dashboard system pane: detected overlaps in the current scan.
@@ -186,6 +192,8 @@ impl App {
             exec: None,
             dash_focus: DashPane::Sources,
             updates_scroll: 0,
+            pkg_offset: 0,
+            pkg_viewport: 0,
             orphan_count,
             overlap_count,
         }
@@ -313,24 +321,13 @@ impl App {
         self.updates_scroll
     }
 
-    /// Total renderable rows of the pending-updates pane (group headers +
-    /// update rows + blank separators) — the scroll clamp.
+    /// Renderable rows of the pending-updates pane — the scroll clamp. The
+    /// pane shows only the selected source's updates (one row each).
     fn updates_pane_rows(&self) -> usize {
-        let mut rows = 0;
-        let mut groups = 0;
-        for source in &self.scan.sources {
-            let n = self
-                .scan
-                .updates
-                .iter()
-                .filter(|u| u.source_id == source.id)
-                .count();
-            if n > 0 {
-                groups += 1;
-                rows += 1 + n; // header + rows
-            }
+        match self.dash_source() {
+            Some(source) => self.updates_for(&source.id).len(),
+            None => 0,
         }
-        rows + groups.max(1) - 1 // blank line between groups
     }
 
     // --- dashboard ---
@@ -364,6 +361,8 @@ impl App {
             Some(i) => i,
             None => 0,
         });
+        // The updates pane shows the selected source — restart its scroll.
+        self.updates_scroll = 0;
     }
     fn select_prev(&mut self) {
         if self.scan.sources.is_empty() {
@@ -373,6 +372,12 @@ impl App {
             Some(0) | None => 0,
             Some(i) => i - 1,
         });
+        self.updates_scroll = 0;
+    }
+
+    /// The source selected on the dashboard (drives the updates pane).
+    pub fn dash_source(&self) -> Option<&Source> {
+        self.scan.sources.get(self.dash_selected?)
     }
 
     // --- update screen ---
@@ -528,6 +533,7 @@ impl App {
         };
         self.pkg_source = Some(source.id.clone());
         self.pkg_cursor = 0;
+        self.pkg_offset = 0;
         self.pkg_filter.clear();
         self.filter_active = false;
         self.why_open = false;
@@ -631,10 +637,34 @@ impl App {
         let len = self.visible_packages().len();
         if len == 0 {
             self.pkg_cursor = 0;
+            self.pkg_offset = 0;
             return;
         }
         let next = self.pkg_cursor as i64 + delta as i64;
         self.pkg_cursor = next.clamp(0, len as i64 - 1) as usize;
+        self.sync_pkg_offset();
+    }
+
+    /// Told by the event loop how many table body rows fit — the offset math
+    /// needs the viewport, and render fns never mutate.
+    pub fn set_pkg_viewport(&mut self, rows: usize) {
+        if self.pkg_viewport != rows {
+            self.pkg_viewport = rows;
+            self.sync_pkg_offset();
+        }
+    }
+
+    pub fn pkg_offset(&self) -> usize {
+        self.pkg_offset
+    }
+
+    fn sync_pkg_offset(&mut self) {
+        self.pkg_offset = scrolloff(
+            self.pkg_offset,
+            self.pkg_cursor,
+            self.visible_packages().len(),
+            self.pkg_viewport,
+        );
     }
 
     pub fn start_filter(&mut self) {
@@ -643,6 +673,7 @@ impl App {
     pub fn filter_push(&mut self, c: char) {
         self.pkg_filter.push(c);
         self.pkg_cursor = 0; // results reorder; snap to the best hit
+        self.pkg_offset = 0;
     }
     pub fn filter_pop(&mut self) {
         self.pkg_filter.pop();
@@ -678,7 +709,28 @@ impl App {
     fn clamp_pkg_cursor(&mut self) {
         let len = self.visible_packages().len();
         self.pkg_cursor = self.pkg_cursor.min(len.saturating_sub(1));
+        self.sync_pkg_offset();
     }
+}
+
+/// Rows the cursor keeps between itself and the viewport edges (vim
+/// `scrolloff`): scrolling down parks it MARGIN rows above the bottom, and
+/// reversing walks it up through the view before the list scrolls again.
+const SCROLL_MARGIN: usize = 4;
+
+/// Next scroll offset for a cursor list with a scroll margin. Pure: previous
+/// offset in, new offset out; clamps to the list bounds so short lists and
+/// tiny viewports degrade to no scrolling.
+fn scrolloff(offset: usize, cursor: usize, len: usize, viewport: usize) -> usize {
+    if viewport == 0 || len <= viewport {
+        return 0;
+    }
+    // A viewport shorter than 2×margin+1 can't honor the full margin; shrink
+    // it so the clamp bounds never cross.
+    let margin = SCROLL_MARGIN.min(viewport.saturating_sub(1) / 2);
+    let min = (cursor + margin + 1).saturating_sub(viewport); // cursor ≥ margin from the bottom
+    let max = cursor.saturating_sub(margin); // cursor ≥ margin from the top
+    offset.clamp(min, max).min(len - viewport)
 }
 
 fn default_toggles(scan: &ScanResult) -> HashMap<SourceId, bool> {
@@ -994,6 +1046,74 @@ mod tests {
         app.pkg_move(-10);
         assert_eq!(app.pkg_cursor(), 0);
         assert_eq!(app.pkg_total(), 2);
+    }
+
+    // --- scrolloff ---
+    #[test]
+    fn scrolloff_is_inert_when_everything_fits() {
+        assert_eq!(scrolloff(0, 3, 5, 10), 0);
+        assert_eq!(scrolloff(7, 3, 5, 10), 0, "stale offset resets");
+        assert_eq!(scrolloff(0, 3, 5, 0), 0, "zero viewport");
+    }
+
+    #[test]
+    fn scrolloff_keeps_a_margin_from_the_bottom_going_down() {
+        // 100 rows, 20 visible. Walking down from the top: no scroll until
+        // the cursor would come within 4 rows of the bottom edge.
+        let mut offset = 0;
+        for cursor in 0..=15 {
+            offset = scrolloff(offset, cursor, 100, 20);
+            assert_eq!(offset, 0, "cursor {cursor} scrolled too early");
+        }
+        offset = scrolloff(offset, 16, 100, 20);
+        assert_eq!(offset, 1, "margin row reached — start scrolling");
+        offset = scrolloff(offset, 40, 100, 20);
+        assert_eq!(offset, 25, "cursor sits 4 rows above the bottom");
+    }
+
+    #[test]
+    fn scrolloff_reversing_walks_up_before_scrolling() {
+        // Deep in the list, cursor 4 from the bottom (offset 25, cursor 40).
+        // Moving up: the view holds still until the cursor is 4 from the top.
+        let mut offset = 25;
+        for cursor in (30..40).rev() {
+            offset = scrolloff(offset, cursor, 100, 20);
+            assert_eq!(offset, 25, "cursor {cursor} scrolled too early");
+        }
+        offset = scrolloff(offset, 28, 100, 20); // 4 from the top → scroll
+        assert_eq!(offset, 24);
+        offset = scrolloff(offset, 10, 100, 20);
+        assert_eq!(offset, 6, "cursor stays 4 rows below the top");
+    }
+
+    #[test]
+    fn scrolloff_clamps_at_the_list_edges() {
+        assert_eq!(scrolloff(0, 99, 100, 20), 80, "end of list");
+        assert_eq!(scrolloff(80, 0, 100, 20), 0, "back to the top");
+        // Tiny viewport: margin shrinks instead of the bounds crossing.
+        assert_eq!(scrolloff(0, 50, 100, 3), 49);
+    }
+
+    #[test]
+    fn pkg_move_applies_scrolloff_through_the_viewport() {
+        let mut s = scan_with_sources(three_sources());
+        s.packages = (0..50)
+            .map(|i| pkg(&format!("p{i:02}"), SourceId::pacman()))
+            .collect();
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        app.set_pkg_viewport(10);
+        assert_eq!(app.pkg_offset(), 0);
+        app.pkg_move(20);
+        // Cursor 20, viewport 10 → cursor 4 rows above the bottom edge.
+        assert_eq!(app.pkg_offset(), 15);
+        app.pkg_move(-1);
+        assert_eq!(app.pkg_offset(), 15, "walks up inside the view first");
+        app.pkg_move(-11);
+        // Cursor 8 → must sit 4 below the top → offset 4.
+        assert_eq!(app.pkg_offset(), 4);
+        app.filter_push('p');
+        assert_eq!(app.pkg_offset(), 0, "filter snaps the window home");
     }
 
     #[test]

@@ -308,10 +308,14 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
 fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let total = app.total_updates();
-    let title = if total == 0 {
-        " pending updates ".to_string()
-    } else {
-        format!(" pending updates ({total}) ")
+    // The pane follows the sources cursor: only the selected source's
+    // updates show (user decision 2026-07-08).
+    let source = app.dash_source();
+    let ups = source.map(|s| app.updates_for(&s.id)).unwrap_or_default();
+    let title = match source {
+        Some(s) if !ups.is_empty() => format!(" pending updates · {} ({}) ", s.id, ups.len()),
+        Some(s) => format!(" pending updates · {} ", s.id),
+        None => " pending updates ".to_string(),
     };
     let focused = app.dash_focus() == crate::tui::app::DashPane::Updates;
     let pane = Block::default()
@@ -334,36 +338,33 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
+    if ups.is_empty() {
+        // Other sources have updates; this one is clean.
+        let name = source.map(|s| s.id.to_string()).unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!("{name} is up to date"), theme.dim))
+                .alignment(Alignment::Center),
+            centered(inner, inner.width, 1),
+        );
+        return;
+    }
 
     // The full list — ↑/↓ (j/k) scroll it while the pane has focus.
     let mut lines: Vec<Line> = Vec::new();
-    for source in &app.scan().sources {
-        let ups = app.updates_for(&source.id);
-        if ups.is_empty() {
-            continue;
-        }
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
+    let name_w = ups.iter().map(|u| u.package_name.len()).max().unwrap_or(0);
+    for u in &ups {
+        let new_version = if u.available_version.is_empty() {
+            Span::styled("?", theme.dim)
+        } else {
+            Span::styled(u.available_version.clone(), theme.accent)
+        };
         lines.push(Line::from(vec![
-            Span::styled(source.id.to_string(), theme.title),
-            Span::styled(format!("  ({})", ups.len()), theme.dim),
+            Span::styled(format!("{:name_w$}", u.package_name), theme.primary),
+            Span::raw("  "),
+            Span::styled(u.current_version.clone(), theme.dim),
+            Span::styled(format!(" {} ", theme.glyphs.arrow), theme.dim),
+            new_version,
         ]));
-        let name_w = ups.iter().map(|u| u.package_name.len()).max().unwrap_or(0);
-        for u in &ups {
-            let new_version = if u.available_version.is_empty() {
-                Span::styled("?", theme.dim)
-            } else {
-                Span::styled(u.available_version.clone(), theme.accent)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {:name_w$}", u.package_name), theme.primary),
-                Span::raw("  "),
-                Span::styled(u.current_version.clone(), theme.dim),
-                Span::styled(format!(" {} ", theme.glyphs.arrow), theme.dim),
-                new_version,
-            ]));
-        }
     }
     let below = lines
         .len()
@@ -689,6 +690,14 @@ fn render_confirm(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
 // Package list (spec §10.3) + why side pane
 // ---------------------------------------------------------------------------
 
+/// Table body rows of the packages screen for a terminal `height` — mirrors
+/// `draw_packages`' layout: borders (2) + summary (1) + table header (1) +
+/// filter line (1) + footer (1). The event loop feeds this to
+/// `App::set_pkg_viewport` so the scrolloff math knows the viewport.
+pub fn pkg_body_rows(height: u16) -> usize {
+    (height as usize).saturating_sub(6)
+}
+
 fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let source = app.pkg_source().map(|s| s.to_string()).unwrap_or_default();
@@ -860,7 +869,9 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
         .row_highlight_style(theme.selected)
         .highlight_symbol(theme.glyphs.pointer);
 
-    let mut state = TableState::default();
+    // Offset comes from the app's scrolloff math; the cursor is always inside
+    // the window it computes, so ratatui keeps the offset as-is.
+    let mut state = TableState::default().with_offset(app.pkg_offset());
     state.select(Some(app.pkg_cursor()));
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -1358,7 +1369,7 @@ mod tests {
             AppOptions::test(),
         );
         let text = render(&app, 96, 24);
-        for pane in ["sources", "pending updates (2)", "system", "keys"] {
+        for pane in ["sources", "pending updates · pacman (2)", "system", "keys"] {
             assert!(text.contains(pane), "pane {pane} missing:\n{text}");
         }
         assert!(text.contains("orphans"), "{text}");
@@ -1376,7 +1387,7 @@ mod tests {
             .collect();
         let mut app = App::new(scan_with(ups), Theme::none(), AppOptions::test());
         let text = render(&app, 96, 24);
-        assert!(text.contains("pending updates (30)"), "{text}");
+        assert!(text.contains("pending updates · pacman (30)"), "{text}");
         assert!(text.contains("pkg00"), "{text}");
         assert!(!text.contains("pkg29"), "everything fit?!\n{text}");
         assert!(text.contains("more "), "scroll indicator missing:\n{text}");
@@ -1392,6 +1403,82 @@ mod tests {
     }
 
     #[test]
+    fn updates_pane_follows_the_selected_source() {
+        let mut app = App::new(
+            scan_with(vec![
+                upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
+                upd("org.x.App", "1.0", "1.1", SourceId::flatpak_user()),
+            ]),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        // Row 0 = pacman: only its update shows.
+        let text = render(&app, 96, 24);
+        assert!(text.contains("pending updates · pacman (1)"), "{text}");
+        assert!(text.contains("linux"), "{text}");
+        assert!(!text.contains("org.x.App"), "other source leaked:\n{text}");
+
+        // Row 1 = flatpak-user: swaps over.
+        app.on_next();
+        let text = render(&app, 96, 24);
+        assert!(
+            text.contains("pending updates · flatpak-user (1)"),
+            "{text}"
+        );
+        assert!(text.contains("org.x.App"), "{text}");
+        assert!(!text.contains("linux"), "{text}");
+
+        // Row 2 = flatpak-system: nothing pending for it.
+        app.on_next();
+        let text = render(&app, 96, 24);
+        assert!(
+            text.contains("flatpak-system is up to date"),
+            "clean-source message missing:\n{text}"
+        );
+        assert!(!text.contains("org.x.App"), "{text}");
+    }
+
+    #[test]
+    fn switching_sources_resets_the_updates_scroll() {
+        let ups: Vec<PendingUpdate> = (0..30)
+            .map(|i| upd(&format!("pkg{i:02}"), "1", "2", SourceId::pacman()))
+            .collect();
+        let mut app = App::new(scan_with(ups), Theme::none(), AppOptions::test());
+        app.focus_updates();
+        for _ in 0..10 {
+            app.on_next();
+        }
+        assert_eq!(app.updates_scroll(), 10);
+        app.focus_sources();
+        app.on_next(); // different source selected
+        assert_eq!(app.updates_scroll(), 0, "stale scroll survived");
+    }
+
+    #[test]
+    fn package_list_scrolls_with_a_margin_not_pinned_to_the_bottom() {
+        let mut s = scan_with(Vec::new());
+        s.packages = (0..60)
+            .map(|i| rich_pkg(&format!("pkg{i:02}"), InstallReason::Explicit, None, &[]))
+            .collect();
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        app.set_pkg_viewport(pkg_body_rows(20)); // 14 body rows
+        app.pkg_move(30);
+        let text = render(&app, 96, 20);
+        // Cursor row 30 sits 4 rows above the bottom: 31..=34 still visible.
+        assert!(text.contains("pkg30"), "{text}");
+        assert!(text.contains("pkg34"), "margin rows missing:\n{text}");
+        assert!(!text.contains("pkg35"), "{text}");
+
+        // Reverse: the cursor walks up through the view before it scrolls,
+        // so the same window still shows (top row unchanged).
+        app.pkg_move(-5);
+        let text = render(&app, 96, 20);
+        assert!(text.contains("pkg21"), "window moved too early:\n{text}");
+        assert!(text.contains("pkg34"), "{text}");
+    }
+
+    #[test]
     fn dashboard_arrows_follow_the_focused_pane() {
         let ups: Vec<PendingUpdate> = (0..5)
             .map(|i| upd(&format!("pkg{i}"), "1", "2", SourceId::pacman()))
@@ -1401,10 +1488,12 @@ mod tests {
         app.on_next();
         assert_eq!(app.selected(), Some(1));
         assert_eq!(app.updates_scroll(), 0);
+        app.on_prev(); // back to pacman — the pane shows its 5 updates
+        assert_eq!(app.selected(), Some(0));
         // Updates focus: ↓ scrolls, cursor stays.
         app.focus_updates();
         app.on_next();
-        assert_eq!(app.selected(), Some(1));
+        assert_eq!(app.selected(), Some(0));
         assert_eq!(app.updates_scroll(), 1);
         app.on_prev();
         app.on_prev(); // clamped at 0
@@ -1412,7 +1501,7 @@ mod tests {
         // Back to sources.
         app.focus_sources();
         app.on_next();
-        assert_eq!(app.selected(), Some(2));
+        assert_eq!(app.selected(), Some(1));
     }
 
     #[test]
