@@ -1,9 +1,9 @@
-org.freedesktop.Platform.GL.default	Mesa	26.0.8	flathub	user
-org.freedesktop.Platform.GL.default	Mesa (Extra)	26.0.8	flathub	user
-org.freedesktop.Platform.GL.nvidia-610-43-02	nvidia-610-43-02		flathub	user
-org.freedesktop.Platform.VAAPI.Intel	Intel VAAPI driver		flathub	user
-org.freedesktop.Platform.VAAPI.nvidia	Nvidia VAAPI driver		flathub	user
-org.freedesktop.Platform.codecs-extra	Codecs Extra Extension		flathub	user
-org.gnome.Platform	GNOME Application Platform version 49		flathub	user
-org.gnome.Platform	GNOME Application Platform version 50		flathub	user
-org.gtk.Gtk3theme.Breeze	Breeze GTK theme	6.7.1	flathub	user
+org.freedesktop.Platform.GL.default	Mesa	26.0.8	flathub	user		658.5 MB
+org.freedesktop.Platform.GL.default	Mesa (Extra)	26.0.8	flathub	user		457.0 MB
+org.freedesktop.Platform.GL.nvidia-610-43-02	nvidia-610-43-02		flathub	user		895.5 MB
+org.freedesktop.Platform.VAAPI.Intel	Intel VAAPI driver		flathub	user		120.0 MB
+org.freedesktop.Platform.VAAPI.nvidia	Nvidia VAAPI driver		flathub	user		80.0 MB
+org.freedesktop.Platform.codecs-extra	Codecs Extra Extension		flathub	user		60.0 MB
+org.gnome.Platform	GNOME Application Platform version 49		flathub	user		658.5 MB
+org.gnome.Platform	GNOME Application Platform version 50		flathub	user		457.0 MB
+org.gtk.Gtk3theme.Breeze	Breeze GTK theme	6.7.1	flathub	user		895.5 MB

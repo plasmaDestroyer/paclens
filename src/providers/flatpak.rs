@@ -11,7 +11,7 @@ use super::{CommandRunner, Provider, ProviderError};
 
 pub const FLATPAK_BIN: &str = "flatpak";
 
-const LIST_COLUMNS: &str = "--columns=application,name,version,origin,installation,runtime";
+const LIST_COLUMNS: &str = "--columns=application,name,version,origin,installation,runtime,size";
 const UPDATE_COLUMNS: &str = "--columns=application,version";
 
 /// The argv for a scoped Flatpak update (spec §5.3, §13.3). `--noninteractive`
@@ -142,12 +142,13 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
                 .next()
                 .filter(|r| !r.is_empty())
                 .map(|r| r.to_string());
+            let size_bytes = parse_flatpak_size(cols.next().unwrap_or_default().trim());
             Some(Package {
                 name: app_id.to_string(),
                 version: version.to_string(),
                 source_id: scope_source_id(installation),
                 install_reason: InstallReason::Unknown,
-                size_bytes: None,
+                size_bytes,
                 description: (!display_name.is_empty()).then(|| display_name.to_string()),
                 depends_on: runtime_dep.into_iter().collect(),
                 required_by: Vec::new(),
@@ -157,6 +158,23 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
             })
         })
         .collect()
+}
+
+/// Parse flatpak's human size column ("12.7 MB", "658.5 MB", "45 kB") into
+/// bytes. Flatpak formats with g_format_size — decimal (1000-based) units.
+fn parse_flatpak_size(text: &str) -> Option<u64> {
+    let mut parts = text.split_whitespace();
+    let number: f64 = parts.next()?.parse().ok()?;
+    let unit = parts.next().unwrap_or("bytes");
+    let factor: f64 = match unit {
+        "bytes" | "byte" | "B" => 1.0,
+        "kB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        _ => return None,
+    };
+    Some((number * factor) as u64)
 }
 
 /// Parse `flatpak remote-ls --updates --columns=application,version`.
@@ -191,9 +209,8 @@ mod tests {
     use crate::providers::test_support::MockRunner;
 
     const LIST_KEY: &str =
-        "flatpak list --app --columns=application,name,version,origin,installation,runtime";
-    const RUNTIME_KEY: &str =
-        "flatpak list --runtime --columns=application,name,version,origin,installation,runtime";
+        "flatpak list --app --columns=application,name,version,origin,installation,runtime,size";
+    const RUNTIME_KEY: &str = "flatpak list --runtime --columns=application,name,version,origin,installation,runtime,size";
     const UPDATES_KEY: &str = "flatpak remote-ls --updates --columns=application,version";
 
     const LIST_FIXTURE: &str = include_str!("../../tests/fixtures/flatpak/list_apps.txt");
@@ -206,6 +223,34 @@ mod tests {
         MockRunner::new()
             .with(LIST_KEY, apps, 0)
             .with(RUNTIME_KEY, runtimes, 0)
+    }
+
+    #[test]
+    fn parse_flatpak_size_reads_decimal_units() {
+        assert_eq!(parse_flatpak_size("12.7 MB"), Some(12_700_000));
+        assert_eq!(parse_flatpak_size("1.2 GB"), Some(1_200_000_000));
+        assert_eq!(parse_flatpak_size("45 kB"), Some(45_000));
+        assert_eq!(parse_flatpak_size("512 bytes"), Some(512));
+        assert_eq!(parse_flatpak_size(""), None);
+        assert_eq!(parse_flatpak_size("weird"), None);
+    }
+
+    #[test]
+    fn installed_lists_carry_sizes() {
+        let runner = runner_with_lists(LIST_FIXTURE, RUNTIME_FIXTURE);
+        let provider = FlatpakProvider::new(&runner);
+        let pkgs = provider.scan_installed().unwrap();
+        let firefox = pkgs
+            .iter()
+            .find(|p| p.name == "org.mozilla.firefox")
+            .unwrap();
+        assert_eq!(firefox.size_bytes, Some(241_700_000));
+        let gl = pkgs
+            .iter()
+            .find(|p| p.name == "org.freedesktop.Platform.GL.default")
+            .unwrap();
+        assert!(gl.runtime);
+        assert_eq!(gl.size_bytes, Some(658_500_000));
     }
 
     #[test]

@@ -14,7 +14,9 @@ use super::{Package, PendingUpdate, Source};
 /// version is discarded and re-scanned (spec §6.5).
 /// v2: `Source.accurate_updates` + `Package.runtime` (v0.1.1).
 /// v3: `flatpak_profile_sizes` (v0.1.4).
-pub const SCHEMA_VERSION: u32 = 3;
+/// v4: flatpak `Package.size_bytes` populated (v0.1.5) — data enrichment;
+/// bumped so stale caches rescan instead of showing unknown sizes.
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
