@@ -505,6 +505,21 @@ YYYY-MM-DD | no --noconfirm for pacman
            | bottom pane fits it better than a why-style side pane. o (not
            | just spec's O) opens it from the dashboard. Advisory only —
            | no action keys in v0.1.4 by design.
+
+2026-07-11 | cleanup data comes from the graph, not new subprocess calls
+           | (v0.1.5) orphans = DepGraph::orphans (no pacman -Qtd); unused
+           | runtimes = runtime packages with no reverse deps over the
+           | v0.1.3 app→runtime edges — name-level, conservative. Flatpak
+           | sizes ride the list's size column (decimal g_format_size
+           | units; SCHEMA_VERSION 4). CacheSizes.flatpak_unused_* stays
+           | None — the analyzer/App derives those live instead of the
+           | scanner caching a graph-derived number (one source of truth).
+
+2026-07-11 | cleanup screen: why-before-suggestion, commands as text
+           | Enter swaps the cache pane for the selected orphan's why
+           | report (roadmap rule). Suggestions are copiable text
+           | (paccache -rk2, flatpak uninstall --unused, pacman -Rns with
+           | real names) — no action keys until the v0.5 trust ladder.
 ```
 
 ---
