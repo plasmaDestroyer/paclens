@@ -1,9 +1,9 @@
 //! Application state for the multi-screen TUI.
 //!
 //! `App` owns everything the screens draw (dev-notes §5): the `ScanResult`, the
-//! resolved `Theme`, which `Screen` is active, the dashboard cursor, the update
-//! screen's per-source toggles + cursor, and a transient flash message. Rendering
-//! borrows `&App` and never mutates; the event loop is the only mutator.
+//! resolved `Theme`, which `Screen` is active, the dashboard cursor + update
+//! toggles, and a transient flash message. Rendering borrows `&App` and never
+//! mutates; the event loop is the only mutator.
 
 use std::collections::HashMap;
 
@@ -59,21 +59,19 @@ pub enum DashPane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Dashboard,
-    Updates,
     /// Per-source package list (spec §10.3), entered with Enter on a dashboard row.
     Packages,
 }
 
-/// Which key map is active. The update screen has three: the plan view, the
-/// confirm modal on top of it, and the post-execution result view. The package
+/// Which key map is active. The exec console and log viewer are overlays
+/// that outrank the screen (they can cover the dashboard). The package
 /// list has two: the list itself and the fuzzy-filter input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Dashboard,
-    Updates,
     Packages,
     PackageFilter,
-    /// Inline log viewer (over the update screen).
+    /// Inline log viewer overlay.
     LogView,
     /// Inline execution console: keys pass through to the running command.
     Exec,
@@ -99,6 +97,8 @@ pub struct SourceRow {
     pub installed: usize,
     pub updates: usize,
     pub available: bool,
+    /// Included in the update plan (Space toggles; None = nothing to update).
+    pub enabled: Option<bool>,
 }
 
 pub struct App {
@@ -110,10 +110,8 @@ pub struct App {
     pub theme: Theme,
     screen: Screen,
     dash_selected: Option<usize>,
-    /// Update screen: per-source toggle (true = included in the plan).
+    /// Dashboard: per-source update toggle (true = included in the plan).
     enabled: HashMap<SourceId, bool>,
-    /// Update screen: cursor over `update_sources()`.
-    update_cursor: usize,
     /// Transient status line, cleared on the next key.
     flash: Option<String>,
     /// A blocking re-scan is about to run; the dashboard shows it instead of
@@ -131,9 +129,9 @@ pub struct App {
     why_open: bool,
     /// Spinner animation frame, advanced by the loop's poll tick.
     spinner_frame: usize,
-    /// Inline log viewer, over the update screen.
+    /// Inline log viewer overlay (any screen).
     log_view: Option<LogView>,
-    /// Inline execution console, over the update screen.
+    /// Inline execution console overlay (any screen).
     exec: Option<ExecView>,
     /// Dashboard: which pane has focus (←/→ or h/l switches).
     dash_focus: DashPane,
@@ -171,7 +169,6 @@ impl App {
             screen: Screen::Dashboard,
             dash_selected,
             enabled,
-            update_cursor: 0,
             flash: None,
             scanning: false,
             pkg_source: None,
@@ -206,7 +203,6 @@ impl App {
             (n, Some(i)) => Some(i.min(n - 1)),
         };
         self.enabled = default_toggles(&self.scan);
-        self.clamp_update_cursor();
         self.scanning = false;
         self.updates_scroll = 0;
         self.clamp_pkg_cursor();
@@ -219,13 +215,18 @@ impl App {
     pub fn screen(&self) -> Screen {
         self.screen
     }
-    /// The active key map, derived from screen + modal/result state.
+    /// The active key map: overlays first, then the screen.
     pub fn input_mode(&self) -> InputMode {
+        // Overlays outrank the screen: the console and the log viewer can
+        // cover any screen (the dashboard owns the update flow now).
+        if self.exec.is_some() {
+            return InputMode::Exec;
+        }
+        if self.log_view.is_some() {
+            return InputMode::LogView;
+        }
         match self.screen {
             Screen::Dashboard => InputMode::Dashboard,
-            Screen::Updates if self.exec.is_some() => InputMode::Exec,
-            Screen::Updates if self.log_view.is_some() => InputMode::LogView,
-            Screen::Updates => InputMode::Updates,
             Screen::Packages if self.filter_active => InputMode::PackageFilter,
             Screen::Packages => InputMode::Packages,
         }
@@ -261,13 +262,6 @@ impl App {
     }
 
     // --- screen navigation ---
-    pub fn goto_updates(&mut self) {
-        self.screen = Screen::Updates;
-        self.clamp_update_cursor();
-    }
-    pub fn back_to_dashboard(&mut self) {
-        self.screen = Screen::Dashboard;
-    }
 
     /// Move the active screen's cursor forward / back. On the dashboard the
     /// focused pane decides: sources cursor vs updates-pane scroll.
@@ -278,7 +272,6 @@ impl App {
                 let max = self.updates_pane_rows().saturating_sub(1);
                 self.updates_scroll = (self.updates_scroll + 1).min(max);
             }
-            (Screen::Updates, _) => self.update_next(),
             (Screen::Packages, _) => self.pkg_move(1),
         }
     }
@@ -288,7 +281,6 @@ impl App {
             (Screen::Dashboard, DashPane::Updates) => {
                 self.updates_scroll = self.updates_scroll.saturating_sub(1);
             }
-            (Screen::Updates, _) => self.update_prev(),
             (Screen::Packages, _) => self.pkg_move(-1),
         }
     }
@@ -327,11 +319,13 @@ impl App {
             .iter()
             .map(|s| {
                 let summary = summarize(&self.scan, |id| id == &s.id);
+                let enabled = (s.available && summary.updates > 0).then(|| self.is_enabled(&s.id));
                 SourceRow {
                     id: s.id.to_string(),
                     installed: summary.installed,
                     updates: summary.updates,
                     available: s.available,
+                    enabled,
                 }
             })
             .collect()
@@ -366,22 +360,7 @@ impl App {
         self.scan.sources.get(self.dash_selected?)
     }
 
-    // --- update screen ---
-    /// The toggle/cursor list: available sources that actually have pending
-    /// updates, in scan order (a clean source has nothing to offer here —
-    /// user decision 2026-07-08).
-    pub fn update_sources(&self) -> Vec<&Source> {
-        self.scan
-            .sources
-            .iter()
-            .filter(|s| s.available && self.scan.updates.iter().any(|u| u.source_id == s.id))
-            .collect()
-    }
-
-    pub fn update_cursor(&self) -> usize {
-        self.update_cursor
-    }
-
+    // --- update toggles (dashboard-owned) ---
     pub fn is_enabled(&self, id: &SourceId) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
     }
@@ -419,14 +398,17 @@ impl App {
             .any(|s| s.available && !s.accurate_updates)
     }
 
+    /// Space on the dashboard: toggle the selected source in/out of the
+    /// update plan. Only sources with something to update toggle.
     pub fn toggle_selected(&mut self) {
-        let id = {
-            let sources = self.update_sources();
-            match sources.get(self.update_cursor) {
-                Some(s) => s.id.clone(),
-                None => return,
-            }
+        let Some(source) = self.dash_source() else {
+            return;
         };
+        let id = source.id.clone();
+        if !source.available || self.updates_for(&id).is_empty() {
+            self.set_flash(format!("{id} has nothing to update"));
+            return;
+        }
         let now = !self.is_enabled(&id);
         self.enabled.insert(id, now);
     }
@@ -497,21 +479,6 @@ impl App {
         } else {
             format!("update finished — {failed} of {executed} sources FAILED (l for the log)")
         });
-    }
-
-    fn update_next(&mut self) {
-        let len = self.update_sources().len();
-        if self.update_cursor + 1 < len {
-            self.update_cursor += 1;
-        }
-    }
-    fn update_prev(&mut self) {
-        self.update_cursor = self.update_cursor.saturating_sub(1);
-    }
-
-    fn clamp_update_cursor(&mut self) {
-        let len = self.update_sources().len();
-        self.update_cursor = self.update_cursor.min(len.saturating_sub(1));
     }
 
     // --- package list ---
@@ -844,39 +811,15 @@ mod tests {
         assert_eq!(app.selected(), Some(1));
     }
 
-    // --- screen navigation ---
+    // --- dashboard update toggles ---
     #[test]
-    fn goto_and_back_switch_screens() {
-        let mut app = app();
-        app.goto_updates();
-        assert_eq!(app.screen(), Screen::Updates);
-        app.back_to_dashboard();
-        assert_eq!(app.screen(), Screen::Dashboard);
-    }
-
-    // --- update screen ---
-    #[test]
-    fn update_sources_lists_only_available_sources_with_updates() {
-        // pacman has the one update; flatpak-user is clean; flatpak-system
-        // is unavailable — only pacman belongs on the update screen.
-        let app = app();
-        let names: Vec<&str> = app.update_sources().iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(names, vec!["pacman"]);
-    }
-
-    #[test]
-    fn update_cursor_clamps_within_update_sources() {
-        let mut s = scan_with_sources(three_sources());
-        s.updates.push(upd("org.x.App", SourceId::flatpak_user()));
-        let mut app = App::new(s, Theme::none(), AppOptions::test());
-        app.goto_updates();
-        app.on_next(); // 0 -> 1
-        assert_eq!(app.update_cursor(), 1);
-        app.on_next(); // clamped at 1 (two sources have updates)
-        assert_eq!(app.update_cursor(), 1);
-        app.on_prev();
-        app.on_prev(); // clamped at 0
-        assert_eq!(app.update_cursor(), 0);
+    fn source_rows_carry_the_toggle_state() {
+        // pacman has the one update → toggled on; flatpak-user is clean and
+        // flatpak-system unavailable → nothing to toggle (None).
+        let rows = app().rows();
+        assert_eq!(rows[0].enabled, Some(true));
+        assert_eq!(rows[1].enabled, None);
+        assert_eq!(rows[2].enabled, None);
     }
 
     #[test]
@@ -889,15 +832,31 @@ mod tests {
     }
 
     #[test]
-    fn toggling_a_source_off_removes_it_from_the_plan() {
+    fn toggling_the_selected_source_removes_it_from_the_plan() {
         let mut app = app();
-        app.goto_updates(); // cursor 0 = pacman
+        // Dashboard cursor row 0 = pacman (the source with updates).
         app.toggle_selected();
         assert!(!app.is_enabled(&SourceId::pacman()));
         assert!(app.update_plan().is_empty()); // flatpak-user has no updates
         app.toggle_selected();
         assert!(app.is_enabled(&SourceId::pacman()));
         assert_eq!(app.update_plan().source_count(), 1);
+    }
+
+    #[test]
+    fn toggling_a_clean_source_flashes_instead() {
+        let mut app = app();
+        app.on_next(); // row 1 = flatpak-user, no updates
+        app.toggle_selected();
+        assert!(
+            app.is_enabled(&SourceId::flatpak_user()),
+            "toggle must not flip"
+        );
+        let flash = app.flash().expect("explanatory flash");
+        assert!(
+            flash.contains("flatpak-user has nothing to update"),
+            "{flash}"
+        );
     }
 
     #[test]
@@ -957,16 +916,15 @@ mod tests {
     fn input_mode_tracks_the_screen() {
         let mut app = app();
         assert_eq!(app.input_mode(), InputMode::Dashboard);
-        app.goto_updates();
-        assert_eq!(app.input_mode(), InputMode::Updates);
-        app.back_to_dashboard();
+        app.open_packages();
+        assert_eq!(app.input_mode(), InputMode::Packages);
+        app.back_packages();
         assert_eq!(app.input_mode(), InputMode::Dashboard);
     }
 
     #[test]
     fn finish_update_lands_on_the_dashboard_with_a_summary_flash() {
         let mut app = app();
-        app.goto_updates();
         app.finish_update(&sample_report());
         assert_eq!(app.screen(), Screen::Dashboard);
         let flash = app.flash().expect("summary flash");
@@ -1168,9 +1126,9 @@ mod tests {
     }
 
     #[test]
-    fn exec_and_log_states_drive_the_input_mode() {
+    fn exec_and_log_overlays_outrank_the_screen() {
+        // Both overlays fire from the dashboard now.
         let mut app = app();
-        app.goto_updates();
         app.open_log("a\nb\nc".to_string());
         assert_eq!(app.input_mode(), InputMode::LogView);
         app.log_scroll(5);
@@ -1178,7 +1136,7 @@ mod tests {
         app.log_scroll(-10);
         assert_eq!(app.log_view().unwrap().scroll, 0);
         app.close_log();
-        assert_eq!(app.input_mode(), InputMode::Updates);
+        assert_eq!(app.input_mode(), InputMode::Dashboard);
 
         app.start_exec(10, 40);
         assert_eq!(app.input_mode(), InputMode::Exec);
@@ -1194,15 +1152,14 @@ mod tests {
         let report = app.take_exec_report().expect("report");
         assert_eq!(report.succeeded(), 1);
         assert!(app.exec().is_none());
-        assert_eq!(app.input_mode(), InputMode::Updates);
+        assert_eq!(app.input_mode(), InputMode::Dashboard);
     }
 
     #[test]
-    fn replace_scan_reinitializes_toggles_and_clamps() {
+    fn replace_scan_reinitializes_toggles() {
         let mut app = app();
-        app.goto_updates();
-        app.on_next(); // cursor 1
-        app.toggle_selected();
+        app.toggle_selected(); // pacman off
+        assert!(!app.is_enabled(&SourceId::pacman()));
         app.replace_scan(scan_with_sources(vec![Source {
             id: SourceId::pacman(),
             kind: SourceKind::Pacman,
@@ -1210,7 +1167,6 @@ mod tests {
             last_scanned: None,
             accurate_updates: true,
         }]));
-        assert_eq!(app.update_cursor(), 0);
         assert!(app.is_enabled(&SourceId::pacman())); // toggles reset to on
     }
 }

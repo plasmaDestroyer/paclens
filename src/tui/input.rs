@@ -13,14 +13,12 @@ pub enum Action {
     /// Move the active screen's cursor back.
     Prev,
     Refresh,
-    /// Dashboard → open the update screen.
-    OpenUpdates,
-    /// Update screen → return to the dashboard.
+    /// Package list → return to the dashboard (unwinds why/filter first).
     Back,
-    /// Update screen → toggle the selected source.
+    /// Dashboard → toggle the selected source in/out of the update plan.
     Toggle,
-    /// Update screen → run the plan (the plan view IS the confirmation;
-    /// pacman/sudo ask their own questions in the console).
+    /// Dashboard → run the plan in the pty console (the dashboard IS the
+    /// plan view; pacman/sudo ask their own questions in the console).
     Execute,
     /// Update screen / dashboard → open the newest update log inline.
     OpenLog,
@@ -58,7 +56,8 @@ fn is_quit(key: &KeyEvent) -> bool {
         || (key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')))
 }
 
-/// Dashboard key map: nav, refresh, open updates, quit.
+/// Dashboard key map: nav, toggle, run, refresh, quit. The dashboard owns
+/// the update flow — Space toggles the selected source, `u` runs the plan.
 pub fn map_dashboard_key(key: KeyEvent) -> Action {
     if is_quit(&key) {
         return Action::Quit;
@@ -68,8 +67,9 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
         KeyCode::Left | KeyCode::Char('h') => Action::FocusLeft,
         KeyCode::Right | KeyCode::Char('l') => Action::FocusRight,
+        KeyCode::Char(' ') => Action::Toggle,
         KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Char('u') => Action::OpenUpdates,
+        KeyCode::Char('u') => Action::Execute,
         KeyCode::Char('L') => Action::OpenLog,
         KeyCode::Enter => Action::OpenPackages,
         _ => Action::Ignore,
@@ -104,24 +104,6 @@ pub fn map_filter_key(key: KeyEvent) -> Action {
         KeyCode::Enter => Action::FilterAccept,
         KeyCode::Backspace => Action::FilterBackspace,
         KeyCode::Char(c) => Action::FilterChar(c),
-        _ => Action::Ignore,
-    }
-}
-
-/// Update screen key map: nav, toggle, Enter runs (no second confirmation —
-/// the plan view already shows exactly what will run, and pacman asks its
-/// own questions; user decision 2026-07-08), back, quit.
-pub fn map_update_key(key: KeyEvent) -> Action {
-    if is_quit(&key) {
-        return Action::Quit;
-    }
-    match key.code {
-        KeyCode::Down | KeyCode::Char('j') => Action::Next,
-        KeyCode::Up | KeyCode::Char('k') => Action::Prev,
-        KeyCode::Char(' ') => Action::Toggle,
-        KeyCode::Enter => Action::Execute,
-        KeyCode::Esc => Action::Back,
-        KeyCode::Char('l') | KeyCode::Char('L') => Action::OpenLog,
         _ => Action::Ignore,
     }
 }
@@ -204,24 +186,20 @@ mod tests {
     }
 
     #[test]
-    fn both_screens_quit_on_q_and_ctrl_c() {
-        for map in [map_dashboard_key, map_update_key] {
-            assert_eq!(map(plain(KeyCode::Char('q'))), Action::Quit);
-            assert_eq!(
-                map(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-                Action::Quit
-            );
-        }
+    fn dashboard_quits_on_q_and_ctrl_c() {
+        assert_eq!(map_dashboard_key(plain(KeyCode::Char('q'))), Action::Quit);
+        assert_eq!(
+            map_dashboard_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Action::Quit
+        );
     }
 
     #[test]
-    fn both_screens_navigate_with_arrows_and_jk() {
-        for map in [map_dashboard_key, map_update_key] {
-            assert_eq!(map(plain(KeyCode::Down)), Action::Next);
-            assert_eq!(map(plain(KeyCode::Char('j'))), Action::Next);
-            assert_eq!(map(plain(KeyCode::Up)), Action::Prev);
-            assert_eq!(map(plain(KeyCode::Char('k'))), Action::Prev);
-        }
+    fn dashboard_navigates_with_arrows_and_jk() {
+        assert_eq!(map_dashboard_key(plain(KeyCode::Down)), Action::Next);
+        assert_eq!(map_dashboard_key(plain(KeyCode::Char('j'))), Action::Next);
+        assert_eq!(map_dashboard_key(plain(KeyCode::Up)), Action::Prev);
+        assert_eq!(map_dashboard_key(plain(KeyCode::Char('k'))), Action::Prev);
     }
 
     #[test]
@@ -230,16 +208,20 @@ mod tests {
             map_dashboard_key(plain(KeyCode::Char('r'))),
             Action::Refresh
         );
+        // The dashboard owns the update flow: space toggles, u runs.
+        assert_eq!(map_dashboard_key(plain(KeyCode::Char(' '))), Action::Toggle);
         assert_eq!(
             map_dashboard_key(plain(KeyCode::Char('u'))),
-            Action::OpenUpdates
+            Action::Execute
         );
         assert_eq!(
             map_dashboard_key(plain(KeyCode::Enter)),
             Action::OpenPackages
         );
-        // Update-only keys are ignored on the dashboard.
-        assert_eq!(map_dashboard_key(plain(KeyCode::Char(' '))), Action::Ignore);
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('L'))),
+            Action::OpenLog
+        );
         assert_eq!(map_dashboard_key(plain(KeyCode::Esc)), Action::Ignore);
     }
 
@@ -298,26 +280,8 @@ mod tests {
     }
 
     #[test]
-    fn update_specific_keys() {
-        assert_eq!(map_update_key(plain(KeyCode::Char(' '))), Action::Toggle);
-        // Enter runs directly — the plan view is the confirmation.
-        assert_eq!(map_update_key(plain(KeyCode::Enter)), Action::Execute);
-        assert_eq!(map_update_key(plain(KeyCode::Esc)), Action::Back);
-        // Dashboard-only keys are ignored on the update screen.
-        assert_eq!(map_update_key(plain(KeyCode::Char('u'))), Action::Ignore);
-        assert_eq!(map_update_key(plain(KeyCode::Char('r'))), Action::Ignore);
-    }
-
-    #[test]
     fn unmapped_keys_are_ignored() {
         assert_eq!(map_dashboard_key(plain(KeyCode::Char('x'))), Action::Ignore);
-        assert_eq!(map_update_key(plain(KeyCode::Char('x'))), Action::Ignore);
-    }
-
-    #[test]
-    fn update_screen_opens_the_log_on_l() {
-        assert_eq!(map_update_key(plain(KeyCode::Char('l'))), Action::OpenLog);
-        assert_eq!(map_update_key(plain(KeyCode::Char('L'))), Action::OpenLog);
     }
 
     #[test]

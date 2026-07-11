@@ -29,7 +29,6 @@ use crate::scanner;
 use app::{App, InputMode};
 use input::{
     Action, map_dashboard_key, map_exec_key, map_filter_key, map_log_key, map_packages_key,
-    map_update_key,
 };
 use theme::Theme;
 
@@ -183,12 +182,8 @@ fn run_loop(
                     job = Some(spawn_scan(config.clone()));
                 }
             }
-            Action::OpenUpdates => app.goto_updates(),
             Action::OpenPackages => app.open_packages(),
-            Action::Back => match app.screen() {
-                app::Screen::Packages => app.back_packages(),
-                _ => app.back_to_dashboard(),
-            },
+            Action::Back => app.back_packages(),
             Action::NextPage => {
                 if app.log_view().is_some() {
                     app.log_scroll(20);
@@ -217,7 +212,11 @@ fn run_loop(
                 let plan = app.update_plan();
                 let tool = app.privilege_tool();
                 if plan.is_empty() {
-                    app.set_flash("nothing selected to update");
+                    app.set_flash(if app.total_updates() == 0 {
+                        "you're up to date"
+                    } else {
+                        "nothing selected to update"
+                    });
                 } else if executor::executable_steps(&plan, tool) == 0 {
                     app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot update");
                 } else {
@@ -270,7 +269,6 @@ fn read_action(mode: InputMode, exec_done: bool) -> anyhow::Result<Action> {
     match event::read().context("failed to read a terminal event")? {
         Event::Key(key) if key.kind == KeyEventKind::Press => Ok(match mode {
             InputMode::Dashboard => map_dashboard_key(key),
-            InputMode::Updates => map_update_key(key),
             InputMode::Packages => map_packages_key(key),
             InputMode::PackageFilter => map_filter_key(key),
             InputMode::LogView => map_log_key(key),

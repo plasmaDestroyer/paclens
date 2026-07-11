@@ -1,11 +1,12 @@
 //! Immediate-mode rendering. Every function here takes `&App` and never mutates
 //! it (dev-notes §5): each frame rebuilds the whole UI from current state.
 //!
-//! `draw` dispatches on the active screen. The dashboard is a bordered panel with
-//! a summary line, the per-source table, and a footer. The update screen is a
-//! two-pane bordered panel: a left source list with `[✓]`/`[ ]` toggles and a
-//! right pane of the highlighted source's pending updates. Below a minimum size
-//! the panel is replaced by a terse notice so the frame never renders broken.
+//! `draw` dispatches on the active screen after the overlays (exec console,
+//! log viewer). The dashboard owns the update flow: quadrant panes with
+//! `[✓]`/`[ ]` per-source toggles in the sources table, the selected
+//! source's pending updates on the right, and `u` running the plan in the
+//! pty console. Below a minimum size the panel is replaced by a terse
+//! notice so the frame never renders broken.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -14,7 +15,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
 use crate::format::relative_time;
-use crate::model::{ActionPlan, Source};
 use crate::tui::app::{App, Screen};
 use crate::tui::theme::Theme;
 
@@ -33,17 +33,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_splash(frame, &app.theme, Some(app.spinner()));
         return;
     }
+    // Overlays cover whatever screen is active (the dashboard owns the
+    // update flow — the console and log viewer draw on top of it).
+    if let Some(view) = app.exec() {
+        draw_exec(frame, area, app, view);
+        return;
+    }
+    if let Some(view) = app.log_view() {
+        draw_log(frame, area, app, view);
+        return;
+    }
     match app.screen() {
         Screen::Dashboard => draw_dashboard(frame, area, app),
-        Screen::Updates => {
-            if let Some(view) = app.exec() {
-                draw_exec(frame, area, app, view);
-            } else if let Some(view) = app.log_view() {
-                draw_log(frame, area, app, view);
-            } else {
-                draw_update(frame, area, app);
-            }
-        }
         Screen::Packages => draw_packages(frame, area, app),
     }
 }
@@ -253,7 +254,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let cols =
         Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).split(inner);
     let left = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(cols[0]);
-    let right = Layout::vertical([Constraint::Min(5), Constraint::Length(4)]).split(cols[1]);
+    let right = Layout::vertical([Constraint::Min(5), Constraint::Length(5)]).split(cols[1]);
 
     let sources_focused = app.dash_focus() == crate::tui::app::DashPane::Sources;
     let sources_pane = subpane(theme, " sources ").border_style(if sources_focused {
@@ -337,7 +338,11 @@ fn dashboard_key_rows(theme: &Theme) -> Vec<Line<'static>> {
             theme,
             &[(&updown, "move"), ("←/→", "pane"), ("enter", "packages")],
         ),
-        keys_line(theme, &[("u", "update"), ("r", "refresh"), ("q", "quit")]),
+        keys_line(
+            theme,
+            &[("space", "toggle"), ("u", "update"), ("r", "refresh")],
+        ),
+        keys_line(theme, &[("L", "log"), ("q", "quit")]),
     ]
 }
 
@@ -378,7 +383,23 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
         None => Span::styled("—".to_string(), theme.dim),
     };
+    // What `u` will run right now — the plan-level summary (P1: what will
+    // happen is always visible before the key is pressed).
+    let plan = app.update_plan();
+    let plan_span = if plan.is_empty() {
+        Span::styled("nothing to run".to_string(), theme.dim)
+    } else {
+        Span::styled(
+            format!(
+                "{} packages / {} sources",
+                plan.total_targets(),
+                plan.source_count()
+            ),
+            theme.accent,
+        )
+    };
     let mut lines = vec![
+        kv("plan", plan_span),
         kv("pacman cache", cache),
         kv("orphans", count(app.orphan_count())),
         kv("overlaps", count(app.overlap_count())),
@@ -528,6 +549,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let header = Row::new(vec![
+        Cell::from(""),
         Cell::from("SOURCE"),
         Cell::from(Line::from("INST").alignment(Alignment::Right)),
         Cell::from(Line::from("UPD").alignment(Alignment::Right)),
@@ -553,7 +575,15 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Span::styled(r.updates.to_string(), theme.dim)
             };
+            // Space toggles the source in/out of the plan; a clean source
+            // has nothing to toggle and shows a dim dash.
+            let toggle = match r.enabled {
+                Some(true) => Span::styled(format!("[{}]", theme.glyphs.check), theme.success),
+                Some(false) => Span::styled("[ ]".to_string(), theme.dim),
+                None => Span::styled(" - ".to_string(), theme.dim),
+            };
             Row::new(vec![
+                Cell::from(toggle),
                 Cell::from(r.id.clone()),
                 Cell::from(Line::from(r.installed.to_string()).alignment(Alignment::Right)),
                 Cell::from(Line::from(updates).alignment(Alignment::Right)),
@@ -563,6 +593,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     let widths = [
+        Constraint::Length(3),
         Constraint::Min(13),
         Constraint::Length(5),
         Constraint::Length(4),
@@ -580,74 +611,6 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
-// ---------------------------------------------------------------------------
-// Update screen (two-pane)
-// ---------------------------------------------------------------------------
-
-fn draw_update(frame: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    let block = panel(theme, " paclens · update plan ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if app.total_updates() == 0 {
-        // Vertically centered message, but keep the key hints visible — an
-        // empty screen must never look like a dead end.
-        frame.render_widget(
-            Paragraph::new("Nothing to update — you're up to date")
-                .style(theme.success)
-                .alignment(Alignment::Center),
-            centered(inner, inner.width, 1),
-        );
-        render_update_footer(frame, bottom_line(inner), theme, false);
-        return;
-    }
-
-    let plan = app.update_plan();
-    let sources = app.update_sources();
-
-    let chunks = Layout::vertical([
-        Constraint::Length(1), // summary
-        Constraint::Length(1), // spacer
-        Constraint::Min(3),    // two-pane body
-        Constraint::Length(1), // confirm / flash
-        Constraint::Length(1), // footer
-    ])
-    .split(inner);
-
-    frame.render_widget(Paragraph::new(update_summary_line(&plan, theme)), chunks[0]);
-
-    let panes = Layout::horizontal([Constraint::Length(26), Constraint::Min(20)]).split(chunks[2]);
-    render_source_pane(frame, panes[0], app, &sources);
-    render_package_pane(frame, panes[1], app, &sources);
-
-    render_confirm(frame, chunks[3], app, &plan);
-    render_update_footer(frame, chunks[4], theme, true);
-}
-
-/// The update screen's key hints. `esc back` is always present; the plan-only
-/// keys are dropped in the empty state where there is nothing to toggle.
-fn render_update_footer(frame: &mut Frame, area: Rect, theme: &Theme, has_plan: bool) {
-    let g = theme.glyphs;
-    let updown = format!("{}/{}", g.up, g.down);
-    let line = if has_plan {
-        keys_line(
-            theme,
-            &[
-                ("enter", "run"),
-                ("space", "toggle"),
-                (&updown, "source"),
-                ("l", "log"),
-                ("esc", "back"),
-                ("q", "quit"),
-            ],
-        )
-    } else {
-        keys_line(theme, &[("l", "log"), ("esc", "back"), ("q", "quit")])
-    };
-    frame.render_widget(Paragraph::new(line), area);
-}
-
 /// The last row of `area` (for a footer outside a Layout split).
 fn bottom_line(area: Rect) -> Rect {
     Rect {
@@ -656,120 +619,6 @@ fn bottom_line(area: Rect) -> Rect {
         width: area.width,
         height: 1,
     }
-}
-
-fn update_summary_line(plan: &ActionPlan, theme: &Theme) -> Line<'static> {
-    let total = plan.total_targets();
-    if total == 0 {
-        return Line::from(Span::styled("nothing selected", theme.dim));
-    }
-    let srcs = plan.source_count();
-    let pkg_word = if total == 1 { "package" } else { "packages" };
-    let src_word = if srcs == 1 { "source" } else { "sources" };
-    Line::from(vec![
-        Span::styled(total.to_string(), theme.accent),
-        Span::styled(format!(" {pkg_word} will update across "), theme.primary),
-        Span::styled(srcs.to_string(), theme.accent),
-        Span::styled(format!(" {src_word}"), theme.primary),
-    ])
-}
-
-fn render_source_pane(frame: &mut Frame, area: Rect, app: &App, sources: &[&Source]) {
-    let theme = &app.theme;
-    let g = theme.glyphs;
-    let lines: Vec<Line> = sources
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let enabled = app.is_enabled(&s.id);
-            let count = app.updates_for(&s.id).len();
-            let selected = i == app.update_cursor();
-
-            let toggle = if enabled {
-                format!("[{}]", g.check)
-            } else {
-                "[ ]".to_string()
-            };
-            let count_span = if count > 0 {
-                Span::styled(format!("  {count}"), theme.accent)
-            } else {
-                Span::styled("  0".to_string(), theme.dim)
-            };
-            let mut line = Line::from(vec![
-                Span::raw(if selected { g.pointer } else { "  " }),
-                Span::styled(toggle, if enabled { theme.success } else { theme.dim }),
-                Span::raw(" "),
-                Span::styled(
-                    s.id.to_string(),
-                    if enabled { theme.title } else { theme.dim },
-                ),
-                count_span,
-            ]);
-            if selected {
-                line.style = theme.selected;
-            }
-            line
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_package_pane(frame: &mut Frame, area: Rect, app: &App, sources: &[&Source]) {
-    let theme = &app.theme;
-    let block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(theme.border)
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let Some(source) = sources.get(app.update_cursor()).copied() else {
-        return;
-    };
-    let ups = app.updates_for(&source.id);
-    if ups.is_empty() {
-        frame.render_widget(Paragraph::new("up to date").style(theme.success), inner);
-        return;
-    }
-
-    let name_w = ups.iter().map(|u| u.package_name.len()).max().unwrap_or(0);
-    let lines: Vec<Line> = ups
-        .iter()
-        .map(|u| {
-            // Same rule as the CLI plan: an unknown new version (stale flatpak
-            // appstream data) renders as a dim "?", never a dangling arrow.
-            let new_version = if u.available_version.is_empty() {
-                Span::styled("?", theme.dim)
-            } else {
-                Span::styled(u.available_version.clone(), theme.accent)
-            };
-            Line::from(vec![
-                Span::styled(format!("{:name_w$}", u.package_name), theme.primary),
-                Span::raw("  "),
-                Span::styled(u.current_version.clone(), theme.dim),
-                Span::styled(format!(" {} ", theme.glyphs.arrow), theme.dim),
-                new_version,
-            ])
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_confirm(frame: &mut Frame, area: Rect, app: &App, plan: &ActionPlan) {
-    let theme = &app.theme;
-    let line = if let Some(flash) = app.flash() {
-        Line::from(Span::styled(flash.to_string(), theme.accent))
-    } else if plan.is_empty() {
-        Line::from(Span::styled("nothing selected to update", theme.dim))
-    } else {
-        Line::from(vec![
-            Span::styled("[Enter]", theme.accent),
-            Span::styled(" run the update    ", theme.primary),
-            Span::styled("[Esc]", theme.dim),
-            Span::styled(" back", theme.dim),
-        ])
-    };
-    frame.render_widget(Paragraph::new(line), area);
 }
 
 // ---------------------------------------------------------------------------
@@ -1477,8 +1326,31 @@ mod tests {
     }
 
     #[test]
-    fn update_screen_shows_toggle_summary_and_versions() {
+    fn dashboard_sources_table_carries_the_toggles() {
         let mut app = App::new(
+            scan_with(vec![upd("linux", "6.9.1", "6.9.2", SourceId::pacman())]),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        let text = render(&app, 96, 24);
+        // pacman has updates → toggled on; the clean/unavailable sources
+        // have nothing to toggle and show a dash.
+        assert!(text.contains("[x] pacman"), "toggle missing:\n{text}");
+        assert!(text.contains("-  flatpak-user"), "dash missing:\n{text}");
+        assert!(text.contains("space toggle"), "footer missing:\n{text}");
+        assert!(text.contains("u update"), "{text}");
+
+        app.toggle_selected(); // pacman off
+        let text = render(&app, 96, 24);
+        assert!(
+            text.contains("[ ] pacman"),
+            "untoggled box missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn system_pane_shows_what_u_will_run() {
+        let app = App::new(
             scan_with(vec![
                 upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
                 upd("firefox", "127.0", "127.0.1", SourceId::pacman()),
@@ -1486,26 +1358,20 @@ mod tests {
             Theme::none(),
             AppOptions::test(),
         );
-        app.goto_updates();
-        let text = render(&app, 72, 16);
-        assert!(text.contains("update plan"), "title missing:\n{text}");
-        assert!(text.contains("[x] pacman"), "toggle missing:\n{text}"); // ascii check in none theme
+        let text = render(&app, 96, 24);
         assert!(
-            text.contains("2 packages will update"),
-            "summary missing:\n{text}"
+            text.contains("2 packages / 1 sources"),
+            "plan line missing:\n{text}"
         );
-        assert!(
-            text.contains("6.9.1 -> 6.9.2"),
-            "version transition missing:\n{text}"
-        );
-        assert!(text.contains("[Enter]"), "confirm missing:\n{text}");
-        assert!(text.contains("space toggle"), "footer missing:\n{text}");
-        assert!(text.contains("esc back"), "back hint missing:\n{text}");
+
+        let clean = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        let text = render(&clean, 96, 24);
+        assert!(text.contains("nothing to run"), "{text}");
     }
 
     #[test]
     fn unknown_new_version_renders_as_a_question_mark() {
-        let mut app = App::new(
+        let app = App::new(
             scan_with(vec![upd(
                 "org.gnome.Calculator",
                 "49.2",
@@ -1515,74 +1381,10 @@ mod tests {
             Theme::none(),
             AppOptions::test(),
         );
-        app.goto_updates();
-        let text = render(&app, 72, 16);
+        // The updates pane renders the transition with a dim ? for the
+        // unknown target version.
+        let text = render(&app, 96, 24);
         assert!(text.contains("49.2 -> ?"), "dangling arrow:\n{text}");
-    }
-
-    #[test]
-    fn toggling_off_empties_the_confirm() {
-        let mut app = App::new(
-            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
-            Theme::none(),
-            AppOptions::test(),
-        );
-        app.goto_updates();
-        app.toggle_selected(); // pacman off -> plan empty
-        let text = render(&app, 72, 16);
-        assert!(
-            text.contains("[ ] pacman"),
-            "untoggled box missing:\n{text}"
-        );
-        assert!(text.contains("nothing selected"), "{text}");
-    }
-
-    #[test]
-    fn update_screen_empty_state_still_shows_the_way_back() {
-        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        app.goto_updates();
-        let text = render(&app, 72, 16);
-        assert!(text.contains("Nothing to update"), "{text}");
-        assert!(text.contains("esc back"), "back hint missing:\n{text}");
-        assert!(text.contains("q quit"), "quit hint missing:\n{text}");
-        // The plan-only keys make no sense with nothing to toggle.
-        assert!(!text.contains("space toggle"), "{text}");
-    }
-
-    #[test]
-    fn confirm_line_shows_a_flash() {
-        let mut app = App::new(
-            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
-            Theme::none(),
-            AppOptions::test(),
-        );
-        app.goto_updates();
-        app.set_flash("nothing selected to update");
-        let text = render(&app, 72, 16);
-        assert!(text.contains("nothing selected to update"), "{text}");
-    }
-
-    // --- update screen behavior (no confirm modal — Enter runs) ---
-    #[test]
-    fn update_screen_hides_sources_without_updates() {
-        let mut app = App::new(
-            scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
-            Theme::none(),
-            AppOptions::test(),
-        );
-        app.goto_updates();
-        let text = render(&app, 80, 20);
-        assert!(text.contains("pacman"), "{text}");
-        // flatpak-user is clean, flatpak-system unavailable — neither shows.
-        assert!(
-            !text.contains("flatpak-user"),
-            "clean source leaked:\n{text}"
-        );
-        assert!(!text.contains("flatpak-system"), "{text}");
-        assert!(
-            text.contains("[Enter] run the update"),
-            "run hint missing:\n{text}"
-        );
     }
 
     use crate::executor::{ExecutionReport, StepReport, StepStatus};
@@ -1606,7 +1408,6 @@ mod tests {
             Theme::none(),
             AppOptions::test(),
         );
-        app.goto_updates();
         app.finish_update(&report());
         let text = render(&app, 96, 24);
         assert!(text.contains("paclens · dashboard"), "{text}");
@@ -1806,7 +1607,6 @@ mod tests {
     #[test]
     fn exec_console_renders_the_vt100_screen_and_swaps_footer_when_done() {
         let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        app.goto_updates();
         let (rows, cols) = exec_pty_size(90, 20);
         app.start_exec(rows, cols);
         app.exec_feed(b"\x1b[1m:: sudo pacman -Syu\x1b[0m\r\n");
@@ -1843,7 +1643,6 @@ mod tests {
         // pacman redraws progress with bare \r — a real terminal overwrites
         // the line, and so must the console.
         let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        app.goto_updates();
         app.start_exec(10, 40);
         app.exec_feed(b"progress:  10%\rprogress: 100%\r\n");
         let text = render(&app, 60, 14);
@@ -1864,7 +1663,6 @@ mod tests {
     #[test]
     fn log_viewer_scrolls_and_shows_position() {
         let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        app.goto_updates();
         let text: String = (0..60)
             .map(|i| format!("[2026-07-06 INFO] line {i}\n"))
             .collect();
