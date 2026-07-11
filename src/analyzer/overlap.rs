@@ -96,7 +96,8 @@ pub fn detect_overlaps(
             if ignored(&pacman_pkg.name) {
                 return None;
             }
-            Some(candidate(app, pacman_pkg, method, confidence))
+            let profile_size = scan.flatpak_profile_sizes.get(&app.name).copied();
+            Some(candidate(app, pacman_pkg, method, confidence, profile_size))
         })
         .collect();
     out.sort_by(|a, b| a.display_name.cmp(&b.display_name));
@@ -142,18 +143,25 @@ fn match_app<'a>(
     None
 }
 
+/// Spec §9.4 heuristic 2 threshold: a profile this big means user data.
+const PROFILE_DATA_THRESHOLD: u64 = 10 * 1024 * 1024;
+
 fn candidate(
     app: &Package,
     native: &Package,
     match_method: MatchMethod,
     confidence: Confidence,
+    profile_size: Option<u64>,
 ) -> OverlapCandidate {
-    // Spec §9.4 heuristic 1; the profile-size heuristic waits for the scanner
-    // to measure ~/.var/app (analyzer stays pure — no filesystem reads).
+    // Spec §9.4, in order: explicit native vs unknown flatpak → native;
+    // a >10 MiB flatpak profile → flatpak (user has data there); else
+    // unknown. Advisory only — never acted on.
     let likely_primary = if native.install_reason == InstallReason::Explicit
         && app.install_reason == InstallReason::Unknown
     {
         PrimaryHeuristic::Native
+    } else if profile_size.is_some_and(|b| b > PROFILE_DATA_THRESHOLD) {
+        PrimaryHeuristic::Flatpak
     } else {
         PrimaryHeuristic::Unknown
     };
@@ -172,6 +180,11 @@ fn candidate(
         tradeoff: Tradeoff {
             native_version: Some(native.version.clone()),
             flatpak_version: Some(app.version.clone()),
+            // Display-only path — built from the app id, never read from
+            // disk (the analyzer stays pure; the scanner measured the size).
+            flatpak_profile_path: profile_size
+                .map(|_| std::path::PathBuf::from(format!("~/.var/app/{}", app.name))),
+            flatpak_profile_size_bytes: profile_size,
             likely_primary,
             ..Tradeoff::default()
         },
@@ -232,6 +245,7 @@ mod tests {
             packages,
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
+            flatpak_profile_sizes: Default::default(),
         }
     }
 
@@ -326,6 +340,47 @@ mod tests {
         let found = detect_overlaps(&s, &[], &extra);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].match_method, MatchMethod::KnownMap);
+    }
+
+    #[test]
+    fn big_flatpak_profile_flips_the_primary_heuristic() {
+        // Rule 1 off (native is a dependency); >10 MiB profile → Flatpak.
+        let mut s = scan(vec![
+            pacman_pkg("firefox", InstallReason::Dependency),
+            flatpak_app("org.mozilla.firefox", Some("Firefox")),
+        ]);
+        s.flatpak_profile_sizes
+            .insert("org.mozilla.firefox".to_string(), 52_428_800);
+        let found = detect_overlaps(&s, &[], &[]);
+        assert_eq!(found[0].tradeoff.likely_primary, PrimaryHeuristic::Flatpak);
+        assert_eq!(
+            found[0].tradeoff.flatpak_profile_size_bytes,
+            Some(52_428_800)
+        );
+        assert_eq!(
+            found[0].tradeoff.flatpak_profile_path.as_deref(),
+            Some(std::path::Path::new("~/.var/app/org.mozilla.firefox"))
+        );
+
+        // Rule 1 outranks rule 2 (spec order).
+        let mut s = scan(vec![
+            pacman_pkg("firefox", InstallReason::Explicit),
+            flatpak_app("org.mozilla.firefox", Some("Firefox")),
+        ]);
+        s.flatpak_profile_sizes
+            .insert("org.mozilla.firefox".to_string(), 52_428_800);
+        let found = detect_overlaps(&s, &[], &[]);
+        assert_eq!(found[0].tradeoff.likely_primary, PrimaryHeuristic::Native);
+
+        // A tiny profile is not user data.
+        let mut s = scan(vec![
+            pacman_pkg("firefox", InstallReason::Dependency),
+            flatpak_app("org.mozilla.firefox", Some("Firefox")),
+        ]);
+        s.flatpak_profile_sizes
+            .insert("org.mozilla.firefox".to_string(), 1024);
+        let found = detect_overlaps(&s, &[], &[]);
+        assert_eq!(found[0].tradeoff.likely_primary, PrimaryHeuristic::Unknown);
     }
 
     #[test]

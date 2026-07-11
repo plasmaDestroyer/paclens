@@ -13,7 +13,8 @@ use super::{Package, PendingUpdate, Source};
 /// Bump on any breaking change to `ScanResult`. A cache with a mismatched
 /// version is discarded and re-scanned (spec §6.5).
 /// v2: `Source.accurate_updates` + `Package.runtime` (v0.1.1).
-pub const SCHEMA_VERSION: u32 = 2;
+/// v3: `flatpak_profile_sizes` (v0.1.4).
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -23,6 +24,11 @@ pub struct ScanResult {
     pub packages: Vec<Package>,
     pub updates: Vec<PendingUpdate>,
     pub cache_sizes: CacheSizes,
+    /// `~/.var/app/<id>` size per Flatpak app that has one — user data the
+    /// overlap tradeoff weighs (spec §9.4 heuristic 2). Apps without a
+    /// profile dir are absent.
+    #[serde(default)]
+    pub flatpak_profile_sizes: std::collections::HashMap<String, u64>,
 }
 
 impl ScanResult {
@@ -36,6 +42,7 @@ impl ScanResult {
             packages: Vec::new(),
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
+            flatpak_profile_sizes: Default::default(),
         }
     }
 }

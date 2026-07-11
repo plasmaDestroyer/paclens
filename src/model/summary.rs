@@ -111,6 +111,7 @@ mod tests {
                 upd("org.x.App", SourceId::flatpak_user()),
             ],
             cache_sizes: CacheSizes::default(),
+            flatpak_profile_sizes: Default::default(),
         }
     }
 
@@ -168,6 +169,7 @@ mod tests {
             packages: Vec::new(),
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
+            flatpak_profile_sizes: Default::default(),
         };
         assert_eq!(
             summarize(&empty, |_| true),

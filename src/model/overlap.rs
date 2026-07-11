@@ -42,9 +42,9 @@ impl std::fmt::Display for MatchMethod {
     }
 }
 
-/// Spec §4.6 verbatim; several fields wait for scanner support (profile
-/// paths/sizes) or a reliable cross-source version comparison, and the CLI
-/// reads versions off the `PackageRef`s meanwhile.
+/// Spec §4.6 verbatim; `native_profile_path` and `native_is_newer` still
+/// wait for a per-app config-path map and a reliable cross-source version
+/// comparison. Flatpak profile path/size are live (v0.1.4).
 #[derive(Default)]
 #[allow(dead_code)]
 pub struct Tradeoff {
@@ -61,9 +61,8 @@ pub struct Tradeoff {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PrimaryHeuristic {
     Native,
-    /// First produced once the scanner measures Flatpak profile sizes
-    /// (spec §9.4 heuristic 2); the renderers already handle it.
-    #[allow(dead_code)]
+    /// A >10 MiB `~/.var/app/<id>` profile — the user has data there
+    /// (spec §9.4 heuristic 2, live since v0.1.4).
     Flatpak,
     #[default]
     Unknown,

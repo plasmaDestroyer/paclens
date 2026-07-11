@@ -106,6 +106,7 @@ mod tests {
                 upd("org.gimp.GIMP", SourceId::flatpak_user()),
             ],
             cache_sizes: CacheSizes::default(),
+            flatpak_profile_sizes: Default::default(),
         }
     }
 
@@ -183,6 +184,7 @@ mod tests {
             packages: Vec::new(),
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
+            flatpak_profile_sizes: Default::default(),
         };
         let plan = plan_updates(&empty, enable_all);
         assert!(plan.is_empty());

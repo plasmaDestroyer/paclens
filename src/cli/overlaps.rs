@@ -178,6 +178,7 @@ mod tests {
             }],
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
+            flatpak_profile_sizes: Default::default(),
         }
     }
 

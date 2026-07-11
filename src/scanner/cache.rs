@@ -175,6 +175,7 @@ mod tests {
                 flatpak_unused_runtime_count: None,
                 flatpak_unused_runtime_bytes: None,
             },
+            flatpak_profile_sizes: Default::default(),
         }
     }
 

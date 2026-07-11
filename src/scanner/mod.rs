@@ -80,12 +80,15 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
     let pacman_available = PacmanProvider::new(runner).is_available();
     let flatpak_available = FlatpakProvider::new(runner).is_available();
     let checkupdates = crate::providers::binary_on_path(pacman::CHECKUPDATES_BIN);
+    let profile_dir =
+        directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".var").join("app"));
     assemble(
         runner,
         config,
         pacman_available,
         flatpak_available,
         checkupdates,
+        profile_dir.as_deref(),
     )
 }
 
@@ -103,33 +106,39 @@ fn assemble(
     pacman_available: bool,
     flatpak_available: bool,
     checkupdates_available: bool,
+    flatpak_profile_dir: Option<&Path>,
 ) -> ScanResult {
     let now = Utc::now();
     let scan_pacman = config.sources.pacman && pacman_available;
     let scan_flatpak = config.sources.flatpak && flatpak_available;
 
-    let ((mut packages, mut updates), (flatpak_packages, mut flatpak_updates), cache_sizes) =
-        std::thread::scope(|s| {
-            let pacman_lane = s.spawn(|| {
-                if !scan_pacman {
-                    return (Vec::new(), Vec::new());
-                }
-                let provider = PacmanProvider::with_checkupdates(runner, checkupdates_available);
-                collect_provider(&provider, "pacman")
-            });
-            let flatpak_lane = s.spawn(|| {
-                if !scan_flatpak {
-                    return (Vec::new(), Vec::new());
-                }
-                collect_provider(&FlatpakProvider::new(runner), "flatpak")
-            });
-            let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman));
-            (
-                join_lane(pacman_lane, "pacman"),
-                join_lane(flatpak_lane, "flatpak"),
-                join_lane(du_lane, "du"),
-            )
+    let (
+        (mut packages, mut updates),
+        (flatpak_packages, mut flatpak_updates, flatpak_profile_sizes),
+        cache_sizes,
+    ) = std::thread::scope(|s| {
+        let pacman_lane = s.spawn(|| {
+            if !scan_pacman {
+                return (Vec::new(), Vec::new());
+            }
+            let provider = PacmanProvider::with_checkupdates(runner, checkupdates_available);
+            collect_provider(&provider, "pacman")
         });
+        let flatpak_lane = s.spawn(|| {
+            if !scan_flatpak {
+                return (Vec::new(), Vec::new(), Default::default());
+            }
+            let (pkgs, ups) = collect_provider(&FlatpakProvider::new(runner), "flatpak");
+            let sizes = gather_profile_sizes(runner, flatpak_profile_dir, &pkgs);
+            (pkgs, ups, sizes)
+        });
+        let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman));
+        (
+            join_lane(pacman_lane, "pacman"),
+            join_lane(flatpak_lane, "flatpak"),
+            join_lane(du_lane, "du"),
+        )
+    });
 
     if config.sources.pacman && !pacman_available {
         tracing::info!("pacman not found on PATH; skipping");
@@ -186,6 +195,7 @@ fn assemble(
         packages,
         updates,
         cache_sizes,
+        flatpak_profile_sizes,
     }
 }
 
@@ -221,6 +231,30 @@ fn gather_cache_sizes(runner: &dyn CommandRunner, pacman_available: bool) -> Cac
 /// `du -sb <dir>` prints `<bytes>\t<path>`; take the leading byte count.
 fn parse_du_bytes(stdout: &str) -> Option<u64> {
     stdout.split_whitespace().next()?.parse().ok()
+}
+
+/// Size of `~/.var/app/<id>` per scanned Flatpak app (spec §9.4 heuristic 2:
+/// user data weighs into the overlap tradeoff). Apps without a profile dir
+/// (du fails or prints nothing) are simply absent. Runtimes have no profile.
+fn gather_profile_sizes(
+    runner: &dyn CommandRunner,
+    base: Option<&Path>,
+    packages: &[Package],
+) -> std::collections::HashMap<String, u64> {
+    let Some(base) = base else {
+        return Default::default();
+    };
+    let mut sizes = std::collections::HashMap::new();
+    for app in packages.iter().filter(|p| !p.runtime) {
+        let dir = base.join(&app.name);
+        let Some(dir) = dir.to_str() else { continue };
+        if let Ok(out) = runner.run("du", &["-sb", dir])
+            && let Some(bytes) = parse_du_bytes(&out.stdout)
+        {
+            sizes.insert(app.name.clone(), bytes);
+        }
+    }
+    sizes
 }
 
 /// Run one provider's scans, logging any failure and returning what survived.
@@ -292,8 +326,52 @@ mod tests {
     }
 
     #[test]
+    fn profile_sizes_measured_per_app_missing_dirs_absent() {
+        let runner = full_runner()
+            .with(
+                "du -sb /home/t/.var/app/org.mozilla.firefox",
+                "52428800\t/home/t/.var/app/org.mozilla.firefox\n",
+                0,
+            )
+            .with(
+                "du -sb /home/t/.var/app/org.gnome.Calculator",
+                "1024\t/home/t/.var/app/org.gnome.Calculator\n",
+                0,
+            );
+        // md.obsidian.Obsidian has no mock → du "fails" → no profile dir.
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            Some(Path::new("/home/t/.var/app")),
+        );
+        assert_eq!(
+            scan.flatpak_profile_sizes.get("org.mozilla.firefox"),
+            Some(&52_428_800)
+        );
+        assert_eq!(
+            scan.flatpak_profile_sizes.get("org.gnome.Calculator"),
+            Some(&1024)
+        );
+        assert!(
+            !scan
+                .flatpak_profile_sizes
+                .contains_key("md.obsidian.Obsidian"),
+            "missing dir must be absent"
+        );
+    }
+
+    #[test]
+    fn profile_sizes_empty_without_a_base_dir() {
+        let scan = assemble(&full_runner(), &Config::default(), true, true, true, None);
+        assert!(scan.flatpak_profile_sizes.is_empty());
+    }
+
+    #[test]
     fn assemble_full_pipeline_combines_both_sources() {
-        let scan = assemble(&full_runner(), &Config::default(), true, true, true);
+        let scan = assemble(&full_runner(), &Config::default(), true, true, true, None);
         // pacman + flatpak-user + flatpak-system
         assert_eq!(scan.sources.len(), 3);
         assert!(scan.sources.iter().all(|s| s.available));
@@ -307,7 +385,7 @@ mod tests {
 
     #[test]
     fn accurate_updates_flag_follows_checkupdates_availability() {
-        let with = assemble(&full_runner(), &Config::default(), true, true, true);
+        let with = assemble(&full_runner(), &Config::default(), true, true, true, None);
         let pacman = with
             .sources
             .iter()
@@ -315,7 +393,7 @@ mod tests {
             .unwrap();
         assert!(pacman.accurate_updates);
 
-        let without = assemble(&full_runner(), &Config::default(), true, true, false);
+        let without = assemble(&full_runner(), &Config::default(), true, true, false, None);
         let pacman = without
             .sources
             .iter()
@@ -336,7 +414,7 @@ mod tests {
     fn assemble_respects_disabled_pacman_source() {
         let mut config = Config::default();
         config.sources.pacman = false;
-        let scan = assemble(&full_runner(), &config, true, true, true);
+        let scan = assemble(&full_runner(), &config, true, true, true, None);
         assert!(scan.sources.iter().all(|s| s.id != SourceId::pacman()));
         assert!(
             scan.packages
@@ -351,7 +429,7 @@ mod tests {
     fn assemble_omits_flatpak_scopes_when_excluded() {
         let mut config = Config::default();
         config.scan.flatpak_include_system = false;
-        let scan = assemble(&full_runner(), &config, true, true, true);
+        let scan = assemble(&full_runner(), &config, true, true, true, None);
         assert!(
             scan.sources
                 .iter()
@@ -373,7 +451,7 @@ mod tests {
             .with(FP_LIST_KEY, FP_LIST, 0)
             .with(FP_RUNTIME_KEY, "", 0)
             .with(FP_UPDATES_KEY, FP_UPDATES, 0);
-        let scan = assemble(&runner, &Config::default(), true, true, true);
+        let scan = assemble(&runner, &Config::default(), true, true, true, None);
         assert!(
             scan.packages
                 .iter()
@@ -385,7 +463,14 @@ mod tests {
 
     #[test]
     fn assemble_skips_unavailable_binaries() {
-        let scan = assemble(&full_runner(), &Config::default(), false, false, false);
+        let scan = assemble(
+            &full_runner(),
+            &Config::default(),
+            false,
+            false,
+            false,
+            None,
+        );
         assert!(scan.packages.is_empty());
         assert!(scan.updates.is_empty());
         assert_eq!(scan.cache_sizes.pacman_cache_bytes, None);
