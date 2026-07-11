@@ -473,6 +473,24 @@ YYYY-MM-DD | no --noconfirm for pacman
 2026-07-08 | update screen lists only sources that have updates
            | a clean source has nothing to toggle or run — showing it was
            | noise (user decision; dashboard sources pane still shows all).
+
+2026-07-11 | update screen deleted — the dashboard IS the plan view
+           | after the pty console the screen only owned toggles + run, and
+           | the dashboard already showed everything else. Space toggles the
+           | selected source ([✓]/[ ]/dim dash column), u runs the plan in
+           | the console, the system pane shows "plan · N packages / M
+           | sources" (P1 stays visible), and the console/log viewer became
+           | screen-independent overlays. Enter still opens the package
+           | list. Spec §10.2's separate update screen is superseded.
+
+2026-07-11 | package-list sort modes ride a header-row model
+           | s cycles updates-first → reason → name → size. pkg_rows()
+           | interleaves dim non-selectable group headers; the cursor stays
+           | in package space and pkg_row_index() maps it to table rows, so
+           | the scrolloff margin math runs in row space. Updates-first
+           | drops its headers when nothing is pending; flatpak
+           | Unknown-reason packages group as "apps"; fuzzy filter overrides
+           | any sort, headerless. Sort persists for the session.
 ```
 
 ---
