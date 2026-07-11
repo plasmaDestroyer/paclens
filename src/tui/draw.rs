@@ -47,6 +47,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Dashboard => draw_dashboard(frame, area, app),
         Screen::Packages => draw_packages(frame, area, app),
         Screen::Overlaps => draw_overlaps(frame, area, app),
+        Screen::Cleanup => draw_cleanup(frame, area, app),
     }
 }
 
@@ -343,7 +344,15 @@ fn dashboard_key_rows(theme: &Theme) -> Vec<Line<'static>> {
             theme,
             &[("space", "toggle"), ("u", "update"), ("r", "refresh")],
         ),
-        keys_line(theme, &[("o", "overlaps"), ("L", "log"), ("q", "quit")]),
+        keys_line(
+            theme,
+            &[
+                ("o", "overlaps"),
+                ("c", "cleanup"),
+                ("L", "log"),
+                ("q", "quit"),
+            ],
+        ),
     ]
 }
 
@@ -813,6 +822,200 @@ fn render_overlaps_footer(frame: &mut Frame, area: Rect, theme: &Theme) {
         theme.dim,
     ));
     frame.render_widget(Paragraph::new(line), area);
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup screen (spec §10.3, roadmap v0.1.5) — advisory only, no actions
+// ---------------------------------------------------------------------------
+
+fn draw_cleanup(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let orphans = app.cleanup_orphans();
+    let title = if orphans.is_empty() {
+        " paclens · cleanup ".to_string()
+    } else {
+        format!(" paclens · cleanup ({} orphans) ", orphans.len())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(title, theme.title))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::vertical([Constraint::Min(4), Constraint::Length(1)]).split(inner);
+    let panes = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(chunks[0]);
+
+    render_orphan_pane(frame, panes[0], app);
+    if app.is_cleanup_why_open() {
+        render_cleanup_why_pane(frame, panes[1], app);
+    } else {
+        render_cache_pane(frame, panes[1], app);
+    }
+
+    let g = theme.glyphs;
+    let updown = format!("{}/{}", g.up, g.down);
+    let mut footer = keys_line(
+        theme,
+        &[
+            (&updown, "select"),
+            ("enter", "why"),
+            ("esc", "back"),
+            ("q", "quit"),
+        ],
+    );
+    footer.spans.push(Span::styled(
+        "   advisory only — commands are yours to run",
+        theme.dim,
+    ));
+    frame.render_widget(Paragraph::new(footer), chunks[1]);
+}
+
+/// Orphan candidates: dependency-installed, nothing requires them. Enter
+/// opens the why pane before any suggestion is trusted.
+fn render_orphan_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let pane = subpane(theme, " orphans ");
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    let orphans = app.cleanup_orphans();
+    if orphans.is_empty() {
+        frame.render_widget(
+            Paragraph::new("no orphan candidates — every dependency has a user")
+                .style(theme.success)
+                .alignment(Alignment::Center),
+            centered(inner, inner.width, 1),
+        );
+        return;
+    }
+
+    let body: Vec<Row> = orphans
+        .iter()
+        .map(|name| {
+            let size = match app.orphan_size(name) {
+                Some(b) => Span::styled(crate::format::human_bytes(b), theme.dim),
+                None => Span::styled("—".to_string(), theme.dim),
+            };
+            Row::new(vec![
+                Cell::from(Span::styled(name.clone(), theme.primary)),
+                Cell::from(Line::from(size).alignment(Alignment::Right)),
+            ])
+        })
+        .collect();
+    let table = Table::new(body, [Constraint::Min(16), Constraint::Length(10)])
+        .header(
+            Row::new(vec![
+                Cell::from("NAME"),
+                Cell::from(Line::from("SIZE").alignment(Alignment::Right)),
+            ])
+            .style(theme.header),
+        )
+        .column_spacing(2)
+        .row_highlight_style(theme.selected)
+        .highlight_symbol(theme.glyphs.pointer);
+    let mut state = TableState::default();
+    state.select(Some(app.cleanup_cursor()));
+    frame.render_stateful_widget(table, inner, &mut state);
+}
+
+/// Cache summary + the suggested commands, shown as copiable advisory text.
+fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let pane = subpane(theme, " cache ");
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    let kv = |label: &str, value: Span<'static>| {
+        Line::from(vec![
+            Span::styled(format!("{} ", theme.glyphs.bullet), theme.dim),
+            Span::styled(format!("{:17}", label), theme.dim),
+            value,
+        ])
+    };
+    let pacman_cache = match app.scan().cache_sizes.pacman_cache_bytes {
+        Some(b) => Span::styled(crate::format::human_bytes(b), theme.accent),
+        None => Span::styled("—".to_string(), theme.dim),
+    };
+    let (unused_count, unused_bytes) = app.unused_runtime_summary();
+    let unused = if unused_count == 0 {
+        Span::styled("none".to_string(), theme.dim)
+    } else {
+        Span::styled(
+            format!(
+                "{unused_count} ({})",
+                crate::format::human_bytes(unused_bytes)
+            ),
+            theme.accent,
+        )
+    };
+    let orphan_bytes: u64 = app
+        .cleanup_orphans()
+        .iter()
+        .filter_map(|n| app.orphan_size(n))
+        .sum();
+
+    let mut lines = vec![
+        kv("pacman cache", pacman_cache),
+        kv("unused runtimes", unused),
+        kv(
+            "orphans",
+            if app.cleanup_orphans().is_empty() {
+                Span::styled("none".to_string(), theme.dim)
+            } else {
+                Span::styled(
+                    format!(
+                        "{} ({})",
+                        app.cleanup_orphans().len(),
+                        crate::format::human_bytes(orphan_bytes)
+                    ),
+                    theme.accent,
+                )
+            },
+        ),
+        Line::default(),
+        Line::from(Span::styled(
+            "suggested — review, then run yourself:",
+            theme.dim,
+        )),
+        Line::from(Span::styled("  paccache -rk2", theme.primary)),
+        Line::from(Span::styled("  flatpak uninstall --unused", theme.primary)),
+    ];
+    if !app.cleanup_orphans().is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  sudo pacman -Rns {}", app.cleanup_orphans().join(" ")),
+            theme.primary,
+        )));
+        lines.push(Line::from(Span::styled(
+            "  (check each orphan's why first — enter on the list)",
+            theme.dim,
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
+}
+
+/// The selected orphan's why report, in the same pane the cache summary
+/// uses (Enter toggles between them).
+fn render_cleanup_why_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let pane = subpane(theme, " why ");
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+    let Some(report) = app.cleanup_why_report() else {
+        frame.render_widget(Paragraph::new("no selection").style(theme.dim), inner);
+        return;
+    };
+    let lines = why_pane_lines(&report, theme);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1911,6 +2114,62 @@ mod tests {
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         let text = render(&app, 96, 24);
         assert!(text.contains("o overlaps"), "hint missing:\n{text}");
+    }
+
+    // --- cleanup screen ---
+    #[test]
+    fn cleanup_screen_shows_orphans_cache_and_suggestions() {
+        let mut s = scan_with(Vec::new());
+        s.cache_sizes.pacman_cache_bytes = Some(7_600_000_000);
+        let mut orphan = rich_pkg("leafdep", InstallReason::Dependency, Some(2_000_000), &[]);
+        orphan.version = "1.0-1".to_string();
+        let mut rt = pkg("org.kde.Platform", SourceId::flatpak_user());
+        rt.runtime = true;
+        rt.size_bytes = Some(457_000_000);
+        s.packages = vec![orphan, rt];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 100, 24);
+        assert!(text.contains("cleanup (1 orphans)"), "title:\n{text}");
+        assert!(text.contains("leafdep"), "{text}");
+        assert!(text.contains("1.91 MiB"), "orphan size missing:\n{text}");
+        assert!(text.contains("pacman cache"), "{text}");
+        assert!(text.contains("7.08 GiB"), "cache size missing:\n{text}");
+        assert!(text.contains("unused runtimes"), "{text}");
+        assert!(text.contains("435.83 MiB"), "runtime size missing:\n{text}");
+        assert!(text.contains("paccache -rk2"), "{text}");
+        assert!(text.contains("flatpak uninstall --unused"), "{text}");
+        assert!(
+            text.contains("sudo pacman -Rns leafdep"),
+            "orphan command missing:\n{text}"
+        );
+        assert!(text.contains("advisory only"), "{text}");
+
+        // Enter swaps the right pane to the orphan's why report.
+        app.toggle_why();
+        let text = render(&app, 100, 24);
+        assert!(text.contains("why · leafdep"), "why pane missing:\n{text}");
+        assert!(text.contains("likely safe"), "{text}");
+        assert!(
+            !text.contains("paccache"),
+            "cache pane still visible:\n{text}"
+        );
+    }
+
+    #[test]
+    fn empty_cleanup_screen_celebrates() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 90, 20);
+        assert!(text.contains("no orphan candidates"), "{text}");
+        assert!(text.contains("esc back"), "{text}");
+    }
+
+    #[test]
+    fn dashboard_hints_the_cleanup_screen() {
+        let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        let text = render(&app, 96, 24);
+        assert!(text.contains("c cleanup"), "hint missing:\n{text}");
     }
 
     // --- inline exec console + log viewer ---

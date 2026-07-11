@@ -36,6 +36,8 @@ pub enum Action {
     OpenPackages,
     /// Dashboard → open the overlap screen (spec §10.5).
     OpenOverlaps,
+    /// Dashboard → open the cleanup screen (spec §10.5).
+    OpenCleanup,
     /// Package list → jump a page of rows.
     NextPage,
     PrevPage,
@@ -75,6 +77,7 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('u') => Action::Execute,
         KeyCode::Char('o') | KeyCode::Char('O') => Action::OpenOverlaps,
+        KeyCode::Char('c') | KeyCode::Char('C') => Action::OpenCleanup,
         KeyCode::Char('L') => Action::OpenLog,
         KeyCode::Enter => Action::OpenPackages,
         _ => Action::Ignore,
@@ -89,6 +92,22 @@ pub fn map_overlaps_key(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => Action::Next,
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::Esc => Action::Back,
+        _ => Action::Ignore,
+    }
+}
+
+/// Cleanup screen key map: nav, Enter/w opens the selected orphan's why
+/// panel (the roadmap rule: understand before removing), back, quit.
+/// Advisory only — no actions.
+pub fn map_cleanup_key(key: KeyEvent) -> Action {
+    if is_quit(&key) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => Action::Next,
+        KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::Enter | KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
         KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
@@ -245,6 +264,10 @@ mod tests {
             map_dashboard_key(plain(KeyCode::Char('o'))),
             Action::OpenOverlaps
         );
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('c'))),
+            Action::OpenCleanup
+        );
         assert_eq!(map_dashboard_key(plain(KeyCode::Esc)), Action::Ignore);
     }
 
@@ -313,6 +336,18 @@ mod tests {
         assert_eq!(map_overlaps_key(plain(KeyCode::Esc)), Action::Back);
         assert_eq!(map_overlaps_key(plain(KeyCode::Char('q'))), Action::Quit);
         assert_eq!(map_overlaps_key(plain(KeyCode::Enter)), Action::Ignore);
+    }
+
+    #[test]
+    fn cleanup_screen_keys() {
+        assert_eq!(map_cleanup_key(plain(KeyCode::Char('j'))), Action::Next);
+        assert_eq!(map_cleanup_key(plain(KeyCode::Enter)), Action::ToggleWhy);
+        assert_eq!(
+            map_cleanup_key(plain(KeyCode::Char('w'))),
+            Action::ToggleWhy
+        );
+        assert_eq!(map_cleanup_key(plain(KeyCode::Esc)), Action::Back);
+        assert_eq!(map_cleanup_key(plain(KeyCode::Char('q'))), Action::Quit);
     }
 
     #[test]

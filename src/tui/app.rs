@@ -64,6 +64,8 @@ pub enum Screen {
     Packages,
     /// Overlap candidates (spec §10.3, roadmap v0.1.4), entered with `o`.
     Overlaps,
+    /// Cleanup summary (spec §10.3, roadmap v0.1.5), entered with `c`.
+    Cleanup,
 }
 
 /// Package-list sort modes; `s` cycles them in this order (user decision
@@ -115,6 +117,7 @@ pub enum InputMode {
     Packages,
     PackageFilter,
     Overlaps,
+    Cleanup,
     /// Inline log viewer overlay.
     LogView,
     /// Inline execution console: keys pass through to the running command.
@@ -189,8 +192,13 @@ pub struct App {
     /// Package list: table body rows currently on screen (set by the event
     /// loop from the terminal size — the render side never mutates).
     pkg_viewport: usize,
-    /// Dashboard system pane: orphan candidates in the current scan.
-    orphan_count: usize,
+    /// Orphan candidates in the current scan (dashboard count + cleanup
+    /// screen list). Names only; sizes come off the packages.
+    orphans: Vec<String>,
+    /// Cleanup screen: cursor over `orphans`.
+    cleanup_cursor: usize,
+    /// Cleanup screen: the why side pane is open for the selected orphan.
+    cleanup_why: bool,
     /// Detected overlaps, recomputed per scan (never cached — spec §6.6).
     overlaps: Vec<OverlapCandidate>,
     /// Overlap screen: cursor over `overlaps`.
@@ -206,7 +214,7 @@ impl App {
         };
         let enabled = default_toggles(&scan);
         let graph = DepGraph::build(&scan);
-        let orphan_count = graph.orphans(&scan).len();
+        let orphans = graph.orphans(&scan);
         let overlaps = analyzer::detect_overlaps(&scan, &opts.overlap_ignore, &opts.extra_mappings);
         App {
             scan,
@@ -231,7 +239,9 @@ impl App {
             updates_scroll: 0,
             pkg_offset: 0,
             pkg_viewport: 0,
-            orphan_count,
+            orphans,
+            cleanup_cursor: 0,
+            cleanup_why: false,
             overlaps,
             overlap_cursor: 0,
         }
@@ -240,7 +250,10 @@ impl App {
     /// Swap in a fresh scan (after a refresh), keeping cursors valid.
     pub fn replace_scan(&mut self, scan: ScanResult) {
         self.graph = DepGraph::build(&scan);
-        self.orphan_count = self.graph.orphans(&scan).len();
+        self.orphans = self.graph.orphans(&scan);
+        self.cleanup_cursor = self
+            .cleanup_cursor
+            .min(self.orphans.len().saturating_sub(1));
         self.overlaps =
             analyzer::detect_overlaps(&scan, &self.opts.overlap_ignore, &self.opts.extra_mappings);
         self.overlap_cursor = self
@@ -281,6 +294,7 @@ impl App {
             Screen::Packages if self.filter_active => InputMode::PackageFilter,
             Screen::Packages => InputMode::Packages,
             Screen::Overlaps => InputMode::Overlaps,
+            Screen::Cleanup => InputMode::Cleanup,
         }
     }
     pub fn total_updates(&self) -> usize {
@@ -329,6 +343,10 @@ impl App {
                 let max = self.overlaps.len().saturating_sub(1);
                 self.overlap_cursor = (self.overlap_cursor + 1).min(max);
             }
+            (Screen::Cleanup, _) => {
+                let max = self.orphans.len().saturating_sub(1);
+                self.cleanup_cursor = (self.cleanup_cursor + 1).min(max);
+            }
         }
     }
     pub fn on_prev(&mut self) {
@@ -340,6 +358,9 @@ impl App {
             (Screen::Packages, _) => self.pkg_move(-1),
             (Screen::Overlaps, _) => {
                 self.overlap_cursor = self.overlap_cursor.saturating_sub(1);
+            }
+            (Screen::Cleanup, _) => {
+                self.cleanup_cursor = self.cleanup_cursor.saturating_sub(1);
             }
         }
     }
@@ -440,6 +461,61 @@ impl App {
         self.screen = Screen::Dashboard;
     }
 
+    // --- cleanup screen (roadmap v0.1.5) ---
+    pub fn open_cleanup(&mut self) {
+        self.cleanup_cursor = self
+            .cleanup_cursor
+            .min(self.orphans.len().saturating_sub(1));
+        self.cleanup_why = false;
+        self.screen = Screen::Cleanup;
+    }
+    pub fn cleanup_orphans(&self) -> &[String] {
+        &self.orphans
+    }
+    pub fn cleanup_cursor(&self) -> usize {
+        self.cleanup_cursor
+    }
+    pub fn is_cleanup_why_open(&self) -> bool {
+        self.cleanup_why
+    }
+    pub fn selected_orphan(&self) -> Option<&str> {
+        self.orphans.get(self.cleanup_cursor).map(|s| s.as_str())
+    }
+    /// The why report for the selected orphan (Enter opens it — the roadmap
+    /// rule: read the why before any removal suggestion).
+    pub fn cleanup_why_report(&self) -> Option<WhyReport> {
+        let name = self.selected_orphan()?;
+        Some(analyzer::why(
+            &self.scan,
+            &self.graph,
+            name,
+            self.opts.why_depth,
+        ))
+    }
+    /// Esc unwinds: why pane first, then back to the dashboard.
+    pub fn back_cleanup(&mut self) {
+        if self.cleanup_why {
+            self.cleanup_why = false;
+        } else {
+            self.screen = Screen::Dashboard;
+        }
+    }
+    /// Unused flatpak runtimes for the cache pane: (count, total bytes of
+    /// the sized ones).
+    pub fn unused_runtime_summary(&self) -> (usize, u64) {
+        let unused = self.graph.unused_runtimes(&self.scan);
+        let bytes = unused.iter().filter_map(|p| p.size_bytes).sum();
+        (unused.len(), bytes)
+    }
+    /// Installed size of one orphan, if the scan knows it.
+    pub fn orphan_size(&self, name: &str) -> Option<u64> {
+        self.scan
+            .packages
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.size_bytes)
+    }
+
     // --- update toggles (dashboard-owned) ---
     pub fn is_enabled(&self, id: &SourceId) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
@@ -464,7 +540,7 @@ impl App {
     }
 
     pub fn orphan_count(&self) -> usize {
-        self.orphan_count
+        self.orphans.len()
     }
     pub fn overlap_count(&self) -> usize {
         self.overlaps.len()
@@ -847,7 +923,11 @@ impl App {
     }
 
     pub fn toggle_why(&mut self) {
-        self.why_open = !self.why_open;
+        if self.screen == Screen::Cleanup {
+            self.cleanup_why = !self.cleanup_why;
+        } else {
+            self.why_open = !self.why_open;
+        }
     }
 
     /// Esc on the list unwinds one layer at a time: why pane → filter → back.
@@ -1243,6 +1323,73 @@ mod tests {
         app.replace_scan(scan_with_sources(three_sources())); // 0 overlaps
         assert_eq!(app.overlap_cursor(), 0);
         assert!(app.selected_overlap().is_none());
+    }
+
+    // --- cleanup screen ---
+    fn cleanup_scan() -> ScanResult {
+        let mut s = scan_with_sources(three_sources());
+        // orphan1/orphan2: dependency-installed, nothing requires them.
+        let mut o1 = pkg("orphan1", SourceId::pacman());
+        o1.install_reason = InstallReason::Dependency;
+        o1.size_bytes = Some(1_000_000);
+        let mut o2 = pkg("orphan2", SourceId::pacman());
+        o2.install_reason = InstallReason::Dependency;
+        // used dependency + its user.
+        let mut used = pkg("useddep", SourceId::pacman());
+        used.install_reason = InstallReason::Dependency;
+        let mut user = pkg("consumer", SourceId::pacman());
+        user.install_reason = InstallReason::Explicit;
+        user.depends_on = vec!["useddep".to_string()];
+        // one unused runtime with a size, one used by an app.
+        let mut spare_rt = pkg("org.kde.Platform", SourceId::flatpak_user());
+        spare_rt.runtime = true;
+        spare_rt.size_bytes = Some(457_000_000);
+        let mut used_rt = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        used_rt.runtime = true;
+        let mut fp_app = pkg("org.x.App", SourceId::flatpak_user());
+        fp_app.depends_on = vec!["org.gnome.Platform".to_string()];
+        s.packages = vec![o1, o2, used, user, spare_rt, used_rt, fp_app];
+        s
+    }
+
+    #[test]
+    fn cleanup_screen_lists_orphans_with_cursor_and_why() {
+        let mut app = App::new(cleanup_scan(), Theme::none(), AppOptions::test());
+        assert_eq!(app.orphan_count(), 2);
+        app.open_cleanup();
+        assert_eq!(app.screen(), Screen::Cleanup);
+        assert_eq!(app.input_mode(), InputMode::Cleanup);
+        assert_eq!(app.selected_orphan(), Some("orphan1"));
+        app.on_next();
+        assert_eq!(app.selected_orphan(), Some("orphan2"));
+        app.on_next(); // clamped
+        assert_eq!(app.cleanup_cursor(), 1);
+
+        // Enter → why pane for the selection; verdict must be likely safe.
+        app.toggle_why();
+        assert!(app.is_cleanup_why_open());
+        match app.cleanup_why_report().expect("report") {
+            crate::analyzer::WhyReport::Found(d) => {
+                assert_eq!(d.package, "orphan2");
+                assert_eq!(d.verdict, crate::analyzer::Verdict::LikelySafe);
+            }
+            other => panic!("expected found, got {other:?}"),
+        }
+        // Esc unwinds the why pane first, then the screen.
+        app.back_cleanup();
+        assert!(!app.is_cleanup_why_open());
+        assert_eq!(app.screen(), Screen::Cleanup);
+        app.back_cleanup();
+        assert_eq!(app.screen(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn unused_runtime_summary_counts_and_sizes() {
+        let app = App::new(cleanup_scan(), Theme::none(), AppOptions::test());
+        // org.kde.Platform unused (457 MB); org.gnome.Platform used by org.x.App.
+        assert_eq!(app.unused_runtime_summary(), (1, 457_000_000));
+        assert_eq!(app.orphan_size("orphan1"), Some(1_000_000));
+        assert_eq!(app.orphan_size("orphan2"), None);
     }
 
     // --- package-list sort modes ---
