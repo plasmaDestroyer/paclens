@@ -46,6 +46,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.screen() {
         Screen::Dashboard => draw_dashboard(frame, area, app),
         Screen::Packages => draw_packages(frame, area, app),
+        Screen::Overlaps => draw_overlaps(frame, area, app),
     }
 }
 
@@ -342,7 +343,7 @@ fn dashboard_key_rows(theme: &Theme) -> Vec<Line<'static>> {
             theme,
             &[("space", "toggle"), ("u", "update"), ("r", "refresh")],
         ),
-        keys_line(theme, &[("L", "log"), ("q", "quit")]),
+        keys_line(theme, &[("o", "overlaps"), ("L", "log"), ("q", "quit")]),
     ]
 }
 
@@ -619,6 +620,199 @@ fn bottom_line(area: Rect) -> Rect {
         width: area.width,
         height: 1,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Overlap screen (spec §10.3, roadmap v0.1.4) — advisory only, no actions
+// ---------------------------------------------------------------------------
+
+fn draw_overlaps(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let overlaps = app.overlaps();
+    let title = if overlaps.is_empty() {
+        " paclens · overlaps ".to_string()
+    } else {
+        format!(" paclens · overlaps ({}) ", overlaps.len())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(title, theme.title))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if overlaps.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No overlaps detected — nothing is installed both ways")
+                .style(theme.success)
+                .alignment(Alignment::Center),
+            centered(inner, inner.width, 1),
+        );
+        render_overlaps_footer(frame, bottom_line(inner), theme);
+        return;
+    }
+
+    let chunks = Layout::vertical([
+        Constraint::Min(4),     // candidate list
+        Constraint::Length(11), // tradeoff detail pane
+        Constraint::Length(1),  // footer
+    ])
+    .split(inner);
+
+    let header = Row::new(vec![
+        Cell::from("NAME"),
+        Cell::from("NATIVE"),
+        Cell::from("FLATPAK"),
+        Cell::from("CONFIDENCE"),
+        Cell::from("MATCHED VIA"),
+    ])
+    .style(theme.header);
+    let body: Vec<Row> = overlaps
+        .iter()
+        .map(|o| {
+            let native = o
+                .native_package
+                .as_ref()
+                .map(|p| p.version.clone())
+                .unwrap_or_default();
+            let flatpak = o
+                .flatpak_app
+                .as_ref()
+                .map(|p| p.version.clone())
+                .unwrap_or_default();
+            Row::new(vec![
+                Cell::from(Span::styled(o.display_name.clone(), theme.primary)),
+                Cell::from(Span::styled(native, theme.dim)),
+                Cell::from(Span::styled(flatpak, theme.dim)),
+                Cell::from(confidence_span(o.confidence, theme)),
+                Cell::from(Span::styled(o.match_method.to_string(), theme.dim)),
+            ])
+        })
+        .collect();
+    let table = Table::new(
+        body,
+        [
+            Constraint::Min(16),
+            Constraint::Length(14),
+            Constraint::Length(14),
+            Constraint::Length(10),
+            Constraint::Min(12),
+        ],
+    )
+    .header(header)
+    .column_spacing(2)
+    .row_highlight_style(theme.selected)
+    .highlight_symbol(theme.glyphs.pointer);
+    let mut state = TableState::default();
+    state.select(Some(app.overlap_cursor()));
+    frame.render_stateful_widget(table, chunks[0], &mut state);
+
+    if let Some(overlap) = app.selected_overlap() {
+        render_tradeoff_pane(frame, chunks[1], app, overlap);
+    }
+    render_overlaps_footer(frame, chunks[2], theme);
+}
+
+fn confidence_span(confidence: crate::model::Confidence, theme: &Theme) -> Span<'static> {
+    use crate::model::Confidence;
+    let style = match confidence {
+        Confidence::Confirmed => theme.success,
+        Confidence::Inferred => theme.accent,
+        Confidence::Unknown => theme.error,
+    };
+    Span::styled(confidence.to_string(), style)
+}
+
+/// The spec §9.5 tradeoff table for the selected overlap, plus the primary
+/// heuristic and the flatpak profile path/size when one exists.
+fn render_tradeoff_pane(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    o: &crate::model::OverlapCandidate,
+) {
+    use crate::model::PrimaryHeuristic;
+    let theme = &app.theme;
+    let pane = subpane(theme, " tradeoff ");
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    let t = &o.tradeoff;
+    let native_name = o
+        .native_package
+        .as_ref()
+        .map(|p| p.name.clone())
+        .unwrap_or_default();
+    let flatpak_name = o
+        .flatpak_app
+        .as_ref()
+        .map(|p| p.name.clone())
+        .unwrap_or_default();
+    let profile = match (&t.flatpak_profile_path, t.flatpak_profile_size_bytes) {
+        (Some(path), Some(bytes)) => {
+            format!("{} ({})", path.display(), crate::format::human_bytes(bytes))
+        }
+        _ => "none found".to_string(),
+    };
+    let primary = match t.likely_primary {
+        PrimaryHeuristic::Native => Span::styled("native — explicitly installed", theme.success),
+        PrimaryHeuristic::Flatpak => Span::styled("flatpak — profile has user data", theme.success),
+        PrimaryHeuristic::Unknown => Span::styled("unknown — check both", theme.dim),
+    };
+
+    let row = |label: &str, native: String, flatpak: String| {
+        Line::from(vec![
+            Span::styled(format!("{label:13}"), theme.dim),
+            Span::styled(format!("{native:27}"), theme.primary),
+            Span::styled(flatpak, theme.primary),
+        ])
+    };
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{:13}", ""), theme.dim),
+            Span::styled(format!("{:27}", "native"), theme.header),
+            Span::styled("flatpak", theme.header),
+        ]),
+        row("package", native_name, flatpak_name),
+        row(
+            "version",
+            t.native_version.clone().unwrap_or_default(),
+            t.flatpak_version.clone().unwrap_or_default(),
+        ),
+        row(
+            "updates",
+            "pacman (rolling)".to_string(),
+            "flatpak remote".to_string(),
+        ),
+        row("profile", "~/.config, ~/.local/share".to_string(), profile),
+        row("sandboxing", "no".to_string(), "yes (portals)".to_string()),
+        row(
+            "integration",
+            "full (dbus, theming)".to_string(),
+            "portal-gated".to_string(),
+        ),
+        Line::from(vec![
+            Span::styled(format!("{:13}", "primary"), theme.dim),
+            primary,
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_overlaps_footer(frame: &mut Frame, area: Rect, theme: &Theme) {
+    let g = theme.glyphs;
+    let updown = format!("{}/{}", g.up, g.down);
+    let mut line = keys_line(
+        theme,
+        &[(&updown, "select"), ("esc", "back"), ("q", "quit")],
+    );
+    line.spans.push(Span::styled(
+        "   advisory only — decide, then act yourself",
+        theme.dim,
+    ));
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,6 +1847,70 @@ mod tests {
         let text = render(&app, 78, 18);
         assert!(text.contains("no matches"), "{text}");
         assert!(text.contains("0 of 3"), "{text}");
+    }
+
+    // --- overlap screen ---
+    fn overlap_scan() -> crate::model::ScanResult {
+        let mut s = scan_with(Vec::new());
+        let mut native = rich_pkg("firefox", InstallReason::Explicit, None, &[]);
+        native.version = "128.0-1".to_string();
+        let mut flat = pkg("org.mozilla.firefox", SourceId::flatpak_user());
+        flat.description = Some("Firefox".to_string());
+        flat.version = "128.0".to_string();
+        s.packages = vec![native, flat];
+        s
+    }
+
+    #[test]
+    fn overlap_screen_lists_candidates_with_the_tradeoff_pane() {
+        let mut s = overlap_scan();
+        s.flatpak_profile_sizes
+            .insert("org.mozilla.firefox".to_string(), 52_428_800);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        let text = render(&app, 100, 26);
+        assert!(text.contains("overlaps (1)"), "title missing:\n{text}");
+        assert!(text.contains("Firefox"), "{text}");
+        assert!(text.contains("128.0-1"), "native version missing:\n{text}");
+        assert!(text.contains("confirmed"), "confidence missing:\n{text}");
+        assert!(text.contains("known map"), "match method missing:\n{text}");
+        assert!(text.contains("tradeoff"), "{text}");
+        assert!(text.contains("sandboxing"), "{text}");
+        assert!(text.contains("pacman (rolling)"), "{text}");
+        assert!(
+            text.contains("~/.var/app/org.mozilla.firefox (50.00 MiB)"),
+            "profile path/size missing:\n{text}"
+        );
+        assert!(
+            text.contains("native — explicitly installed"),
+            "primary heuristic missing:\n{text}"
+        );
+        assert!(text.contains("advisory only"), "{text}");
+        assert!(text.contains("esc back"), "{text}");
+    }
+
+    #[test]
+    fn overlap_screen_without_profile_says_none_found() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        let text = render(&app, 100, 26);
+        assert!(text.contains("none found"), "{text}");
+    }
+
+    #[test]
+    fn empty_overlap_screen_shows_the_way_back() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        let text = render(&app, 90, 20);
+        assert!(text.contains("No overlaps detected"), "{text}");
+        assert!(text.contains("esc back"), "{text}");
+    }
+
+    #[test]
+    fn dashboard_hints_the_overlap_screen() {
+        let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        let text = render(&app, 96, 24);
+        assert!(text.contains("o overlaps"), "hint missing:\n{text}");
     }
 
     // --- inline exec console + log viewer ---

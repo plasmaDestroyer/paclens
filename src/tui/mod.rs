@@ -28,7 +28,8 @@ use crate::scanner;
 
 use app::{App, InputMode};
 use input::{
-    Action, map_dashboard_key, map_exec_key, map_filter_key, map_log_key, map_packages_key,
+    Action, map_dashboard_key, map_exec_key, map_filter_key, map_log_key, map_overlaps_key,
+    map_packages_key,
 };
 use theme::Theme;
 
@@ -183,7 +184,11 @@ fn run_loop(
                 }
             }
             Action::OpenPackages => app.open_packages(),
-            Action::Back => app.back_packages(),
+            Action::OpenOverlaps => app.open_overlaps(),
+            Action::Back => match app.screen() {
+                app::Screen::Overlaps => app.close_overlaps(),
+                _ => app.back_packages(),
+            },
             Action::NextPage => {
                 if app.log_view().is_some() {
                     app.log_scroll(20);
@@ -271,6 +276,7 @@ fn read_action(mode: InputMode, exec_done: bool) -> anyhow::Result<Action> {
         Event::Key(key) if key.kind == KeyEventKind::Press => Ok(match mode {
             InputMode::Dashboard => map_dashboard_key(key),
             InputMode::Packages => map_packages_key(key),
+            InputMode::Overlaps => map_overlaps_key(key),
             InputMode::PackageFilter => map_filter_key(key),
             InputMode::LogView => map_log_key(key),
             InputMode::Exec => map_exec_key(key, exec_done),

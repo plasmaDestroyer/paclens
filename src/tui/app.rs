@@ -11,6 +11,7 @@ use crate::analyzer::{self, DepGraph, WhyReport};
 use crate::config::{Config, ExtraMapping};
 use crate::executor::ExecutionReport;
 use crate::fuzzy;
+use crate::model::OverlapCandidate;
 use crate::model::{ActionPlan, Package, PendingUpdate, ScanResult, Source, SourceId, summarize};
 use crate::planner;
 use crate::tui::theme::Theme;
@@ -61,6 +62,8 @@ pub enum Screen {
     Dashboard,
     /// Per-source package list (spec §10.3), entered with Enter on a dashboard row.
     Packages,
+    /// Overlap candidates (spec §10.3, roadmap v0.1.4), entered with `o`.
+    Overlaps,
 }
 
 /// Package-list sort modes; `s` cycles them in this order (user decision
@@ -111,6 +114,7 @@ pub enum InputMode {
     Dashboard,
     Packages,
     PackageFilter,
+    Overlaps,
     /// Inline log viewer overlay.
     LogView,
     /// Inline execution console: keys pass through to the running command.
@@ -187,8 +191,10 @@ pub struct App {
     pkg_viewport: usize,
     /// Dashboard system pane: orphan candidates in the current scan.
     orphan_count: usize,
-    /// Dashboard system pane: detected overlaps in the current scan.
-    overlap_count: usize,
+    /// Detected overlaps, recomputed per scan (never cached — spec §6.6).
+    overlaps: Vec<OverlapCandidate>,
+    /// Overlap screen: cursor over `overlaps`.
+    overlap_cursor: usize,
 }
 
 impl App {
@@ -201,8 +207,7 @@ impl App {
         let enabled = default_toggles(&scan);
         let graph = DepGraph::build(&scan);
         let orphan_count = graph.orphans(&scan).len();
-        let overlap_count =
-            analyzer::detect_overlaps(&scan, &opts.overlap_ignore, &opts.extra_mappings).len();
+        let overlaps = analyzer::detect_overlaps(&scan, &opts.overlap_ignore, &opts.extra_mappings);
         App {
             scan,
             graph,
@@ -227,7 +232,8 @@ impl App {
             pkg_offset: 0,
             pkg_viewport: 0,
             orphan_count,
-            overlap_count,
+            overlaps,
+            overlap_cursor: 0,
         }
     }
 
@@ -235,9 +241,11 @@ impl App {
     pub fn replace_scan(&mut self, scan: ScanResult) {
         self.graph = DepGraph::build(&scan);
         self.orphan_count = self.graph.orphans(&scan).len();
-        self.overlap_count =
-            analyzer::detect_overlaps(&scan, &self.opts.overlap_ignore, &self.opts.extra_mappings)
-                .len();
+        self.overlaps =
+            analyzer::detect_overlaps(&scan, &self.opts.overlap_ignore, &self.opts.extra_mappings);
+        self.overlap_cursor = self
+            .overlap_cursor
+            .min(self.overlaps.len().saturating_sub(1));
         self.scan = scan;
         let len = self.scan.sources.len();
         self.dash_selected = match (len, self.dash_selected) {
@@ -272,6 +280,7 @@ impl App {
             Screen::Dashboard => InputMode::Dashboard,
             Screen::Packages if self.filter_active => InputMode::PackageFilter,
             Screen::Packages => InputMode::Packages,
+            Screen::Overlaps => InputMode::Overlaps,
         }
     }
     pub fn total_updates(&self) -> usize {
@@ -316,6 +325,10 @@ impl App {
                 self.updates_scroll = (self.updates_scroll + 1).min(max);
             }
             (Screen::Packages, _) => self.pkg_move(1),
+            (Screen::Overlaps, _) => {
+                let max = self.overlaps.len().saturating_sub(1);
+                self.overlap_cursor = (self.overlap_cursor + 1).min(max);
+            }
         }
     }
     pub fn on_prev(&mut self) {
@@ -325,6 +338,9 @@ impl App {
                 self.updates_scroll = self.updates_scroll.saturating_sub(1);
             }
             (Screen::Packages, _) => self.pkg_move(-1),
+            (Screen::Overlaps, _) => {
+                self.overlap_cursor = self.overlap_cursor.saturating_sub(1);
+            }
         }
     }
 
@@ -403,6 +419,27 @@ impl App {
         self.scan.sources.get(self.dash_selected?)
     }
 
+    // --- overlap screen (spec §10.3, v0.1.4) ---
+    pub fn open_overlaps(&mut self) {
+        self.overlap_cursor = self
+            .overlap_cursor
+            .min(self.overlaps.len().saturating_sub(1));
+        self.screen = Screen::Overlaps;
+    }
+    pub fn overlaps(&self) -> &[OverlapCandidate] {
+        &self.overlaps
+    }
+    pub fn overlap_cursor(&self) -> usize {
+        self.overlap_cursor
+    }
+    pub fn selected_overlap(&self) -> Option<&OverlapCandidate> {
+        self.overlaps.get(self.overlap_cursor)
+    }
+    /// Esc anywhere non-dashboard unwinds toward the dashboard.
+    pub fn close_overlaps(&mut self) {
+        self.screen = Screen::Dashboard;
+    }
+
     // --- update toggles (dashboard-owned) ---
     pub fn is_enabled(&self, id: &SourceId) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
@@ -430,7 +467,7 @@ impl App {
         self.orphan_count
     }
     pub fn overlap_count(&self) -> usize {
-        self.overlap_count
+        self.overlaps.len()
     }
 
     /// The pacman source scanned via the stale `-Qu` fallback, if so.
@@ -1154,6 +1191,58 @@ mod tests {
         app.pkg_move(-10);
         assert_eq!(app.pkg_cursor(), 0);
         assert_eq!(app.pkg_total(), 2);
+    }
+
+    // --- overlap screen ---
+    fn overlap_scan() -> ScanResult {
+        let mut s = scan_with_sources(three_sources());
+        let mut ff_native = pkg("firefox", SourceId::pacman());
+        ff_native.install_reason = InstallReason::Explicit;
+        let mut ff_flat = pkg("org.mozilla.firefox", SourceId::flatpak_user());
+        ff_flat.description = Some("Firefox".to_string());
+        let mut gimp_native = pkg("gimp", SourceId::pacman());
+        gimp_native.install_reason = InstallReason::Explicit;
+        let mut gimp_flat = pkg("org.gimp.GIMP", SourceId::flatpak_user());
+        gimp_flat.description = Some("GIMP".to_string());
+        s.packages = vec![ff_native, ff_flat, gimp_native, gimp_flat];
+        s
+    }
+
+    #[test]
+    fn overlaps_recompute_per_scan_and_drive_the_screen() {
+        let mut app = App::new(
+            scan_with_sources(three_sources()),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        assert_eq!(app.overlap_count(), 0);
+        app.replace_scan(overlap_scan());
+        assert_eq!(app.overlap_count(), 2);
+
+        app.open_overlaps();
+        assert_eq!(app.screen(), Screen::Overlaps);
+        assert_eq!(app.input_mode(), InputMode::Overlaps);
+        // Sorted by display name: Firefox, GIMP.
+        assert_eq!(app.selected_overlap().unwrap().display_name, "Firefox");
+        app.on_next();
+        assert_eq!(app.selected_overlap().unwrap().display_name, "GIMP");
+        app.on_next(); // clamped
+        assert_eq!(app.overlap_cursor(), 1);
+        app.on_prev();
+        app.on_prev(); // clamped at 0
+        assert_eq!(app.overlap_cursor(), 0);
+        app.close_overlaps();
+        assert_eq!(app.screen(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn overlap_cursor_survives_a_shrinking_rescan() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.on_next(); // cursor 1
+        app.replace_scan(scan_with_sources(three_sources())); // 0 overlaps
+        assert_eq!(app.overlap_cursor(), 0);
+        assert!(app.selected_overlap().is_none());
     }
 
     // --- package-list sort modes ---

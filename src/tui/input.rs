@@ -34,6 +34,8 @@ pub enum Action {
     ExecDismiss,
     /// Dashboard → open the selected source's package list.
     OpenPackages,
+    /// Dashboard → open the overlap screen (spec §10.5).
+    OpenOverlaps,
     /// Package list → jump a page of rows.
     NextPage,
     PrevPage,
@@ -72,8 +74,22 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Char(' ') => Action::Toggle,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('u') => Action::Execute,
+        KeyCode::Char('o') | KeyCode::Char('O') => Action::OpenOverlaps,
         KeyCode::Char('L') => Action::OpenLog,
         KeyCode::Enter => Action::OpenPackages,
+        _ => Action::Ignore,
+    }
+}
+
+/// Overlap screen key map: nav, back, quit. Advisory only — no actions.
+pub fn map_overlaps_key(key: KeyEvent) -> Action {
+    if is_quit(&key) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => Action::Next,
+        KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
 }
@@ -225,6 +241,10 @@ mod tests {
             map_dashboard_key(plain(KeyCode::Char('L'))),
             Action::OpenLog
         );
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('o'))),
+            Action::OpenOverlaps
+        );
         assert_eq!(map_dashboard_key(plain(KeyCode::Esc)), Action::Ignore);
     }
 
@@ -284,6 +304,15 @@ mod tests {
             map_filter_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Action::Quit
         );
+    }
+
+    #[test]
+    fn overlap_screen_keys() {
+        assert_eq!(map_overlaps_key(plain(KeyCode::Char('j'))), Action::Next);
+        assert_eq!(map_overlaps_key(plain(KeyCode::Up)), Action::Prev);
+        assert_eq!(map_overlaps_key(plain(KeyCode::Esc)), Action::Back);
+        assert_eq!(map_overlaps_key(plain(KeyCode::Char('q'))), Action::Quit);
+        assert_eq!(map_overlaps_key(plain(KeyCode::Enter)), Action::Ignore);
     }
 
     #[test]
