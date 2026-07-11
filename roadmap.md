@@ -505,6 +505,8 @@ Explicitly deferred. Not forgotten — just not yet.
 | daemon mode | not needed until background sync is a confirmed need |
 | plugin / provider system | premature abstraction |
 | distro support beyond Arch family | out of scope entirely |
+| hands-free updates (auto-answer defaults, like CachyOS arch-update) | `--noconfirm` suppresses pacman's conflict resolution (standing decision); needs a safer design — pty auto-replies the *default* answer per prompt, opt-in via config — user request 2026-07-11 |
+| post-update cache cleanup (paccache, `flatpak uninstall --unused`) | destructive; rides the v0.5 trust ladder — advisory sizes ship first in v0.1.5; user request 2026-07-11 |
 
 ---
 
