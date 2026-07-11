@@ -13,7 +13,9 @@ use petgraph::Direction;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 
-use crate::model::{Confidence, DependencyEdge, EdgeKind, InstallReason, ScanResult, SourceId};
+use crate::model::{
+    Confidence, DependencyEdge, EdgeKind, InstallReason, Package, ScanResult, SourceId,
+};
 
 pub struct DepGraph {
     graph: DiGraph<String, DependencyEdge>,
@@ -191,6 +193,17 @@ impl DepGraph {
             frontier = next;
         }
         None
+    }
+
+    /// Unused Flatpak runtimes (roadmap v0.1.5): runtime-flagged packages no
+    /// installed app depends on. Name-level — a runtime name any app uses
+    /// counts as used for every branch of it (conservative; a false
+    /// negative beats suggesting a removal that breaks an app).
+    pub fn unused_runtimes<'a>(&self, scan: &'a ScanResult) -> Vec<&'a Package> {
+        scan.packages
+            .iter()
+            .filter(|p| p.runtime && self.required_by(&p.name).is_empty())
+            .collect()
     }
 
     /// Orphan candidates (spec §7.2): installed as a dependency, nothing
@@ -377,6 +390,23 @@ mod tests {
         // nothing requires it either → also an orphan candidate. Flatpak
         // packages never appear (pacman-only concept).
         assert_eq!(g.orphans(&s), vec!["leafdep", "scripter"]);
+    }
+
+    #[test]
+    fn unused_runtimes_are_runtime_flagged_with_no_users() {
+        let mut s = scan();
+        let mut spare = pkg("org.kde.Platform", InstallReason::Unknown, &[], &[]);
+        spare.source_id = SourceId::flatpak_user();
+        spare.runtime = true;
+        s.packages.push(spare);
+        let g = DepGraph::build(&s);
+        let unused: Vec<&str> = g
+            .unused_runtimes(&s)
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        // org.gnome.Platform is used by org.x.App; org.kde.Platform is not.
+        assert_eq!(unused, vec!["org.kde.Platform"]);
     }
 
     #[test]
