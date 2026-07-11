@@ -39,6 +39,8 @@ pub enum Action {
     PrevPage,
     /// Package list → focus the fuzzy-filter input.
     StartFilter,
+    /// Package list → next sort mode (updates → reason → name → size).
+    CycleSort,
     /// Package list → toggle the why side pane.
     ToggleWhy,
     /// Filter input → append a character.
@@ -87,6 +89,7 @@ pub fn map_packages_key(key: KeyEvent) -> Action {
         KeyCode::PageDown => Action::NextPage,
         KeyCode::PageUp => Action::PrevPage,
         KeyCode::Char('/') => Action::StartFilter,
+        KeyCode::Char('s') | KeyCode::Char('S') => Action::CycleSort,
         KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
         KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
@@ -243,6 +246,10 @@ mod tests {
         assert_eq!(
             map_packages_key(plain(KeyCode::Char('/'))),
             Action::StartFilter
+        );
+        assert_eq!(
+            map_packages_key(plain(KeyCode::Char('s'))),
+            Action::CycleSort
         );
         assert_eq!(
             map_packages_key(plain(KeyCode::Char('w'))),

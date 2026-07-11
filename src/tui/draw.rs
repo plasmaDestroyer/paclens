@@ -678,6 +678,10 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(" total", theme.dim),
         ]);
     }
+    summary.extend([
+        Span::styled(format!(" {b} ", b = theme.glyphs.bullet), theme.dim),
+        Span::styled(format!("sort: {}", app.pkg_sort().label()), theme.dim),
+    ]);
     frame.render_widget(Paragraph::new(Line::from(summary)), chunks[0]);
 
     if app.is_why_open() {
@@ -708,6 +712,7 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
             &[
                 (&updown, "navigate"),
                 ("/", "filter"),
+                ("s", "sort"),
                 ("w", "why"),
                 ("esc", "back"),
                 ("q", "quit"),
@@ -721,9 +726,9 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
 /// the width, where they would truncate into noise.
 fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) {
     let theme = &app.theme;
-    let pkgs = app.visible_packages();
+    let rows = app.pkg_rows();
 
-    if pkgs.is_empty() {
+    if rows.is_empty() {
         let msg = if app.pkg_filter().is_empty() {
             "no packages"
         } else {
@@ -752,16 +757,37 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
     }
     .style(theme.header);
 
-    let body: Vec<Row> = pkgs
+    // Under the default sort, packages with a pending update read accented.
+    let accent_pending =
+        app.pkg_sort() == crate::tui::app::PkgSort::UpdatesFirst && app.pkg_filter().is_empty();
+    let body: Vec<Row> = rows
         .iter()
-        .map(|p| {
+        .map(|row| {
+            let p = match row {
+                crate::tui::app::PkgRow::Header(label, count) => {
+                    // A dim, non-selectable divider (the cursor skips it).
+                    let text = Span::styled(
+                        format!("{b} {label} ({count})", b = theme.glyphs.bullet),
+                        theme.dim,
+                    );
+                    let mut cells = vec![Cell::from(text)];
+                    cells.resize_with(if narrow { 2 } else { 6 }, || Cell::from(""));
+                    return Row::new(cells);
+                }
+                crate::tui::app::PkgRow::Pkg(p) => p,
+            };
+            let name = if accent_pending && app.pkg_pending(&p.name) {
+                Span::styled(p.name.clone(), theme.accent)
+            } else {
+                Span::styled(p.name.clone(), theme.primary)
+            };
             let reason = match p.install_reason {
                 crate::model::InstallReason::Explicit => Span::styled("explicit", theme.primary),
                 crate::model::InstallReason::Dependency => Span::styled("dependency", theme.dim),
                 crate::model::InstallReason::Unknown => Span::styled("—", theme.dim),
             };
             if narrow {
-                return Row::new(vec![Cell::from(p.name.clone()), Cell::from(reason)]);
+                return Row::new(vec![Cell::from(name), Cell::from(reason)]);
             }
             let kind = if p.runtime {
                 Span::styled("runtime", theme.dim)
@@ -776,7 +802,7 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
             };
             let description = Span::styled(p.description.clone().unwrap_or_default(), theme.dim);
             Row::new(vec![
-                Cell::from(p.name.clone()),
+                Cell::from(name),
                 Cell::from(Span::styled(p.version.clone(), theme.dim)),
                 Cell::from(kind),
                 Cell::from(reason),
@@ -804,10 +830,10 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
         .row_highlight_style(theme.selected)
         .highlight_symbol(theme.glyphs.pointer);
 
-    // Offset comes from the app's scrolloff math; the cursor is always inside
-    // the window it computes, so ratatui keeps the offset as-is.
+    // Offset comes from the app's scrolloff math (row space); the selected
+    // row is always inside that window, so ratatui keeps the offset as-is.
     let mut state = TableState::default().with_offset(app.pkg_offset());
-    state.select(Some(app.pkg_cursor()));
+    state.select(Some(app.pkg_row_index()));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
@@ -1221,6 +1247,31 @@ mod tests {
         app.focus_sources();
         app.on_next(); // different source selected
         assert_eq!(app.updates_scroll(), 0, "stale scroll survived");
+    }
+
+    #[test]
+    fn package_list_renders_sort_headers_and_chip() {
+        let mut s = scan_with(vec![upd("glibc", "2.39", "2.40", SourceId::pacman())]);
+        s.packages = vec![
+            rich_pkg("glibc", InstallReason::Dependency, Some(50_000_000), &[]),
+            rich_pkg("bash", InstallReason::Explicit, None, &[]),
+        ];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        let text = render(&app, 100, 22);
+        assert!(text.contains("sort: updates"), "chip missing:\n{text}");
+        assert!(
+            text.contains("pending updates (1)"),
+            "header missing:\n{text}"
+        );
+        assert!(text.contains("up to date (1)"), "{text}");
+        assert!(text.contains("s sort"), "footer missing:\n{text}");
+
+        app.cycle_sort(); // reason
+        let text = render(&app, 100, 22);
+        assert!(text.contains("sort: reason"), "{text}");
+        assert!(text.contains("explicit (1)"), "{text}");
+        assert!(text.contains("dependencies (1)"), "{text}");
     }
 
     #[test]

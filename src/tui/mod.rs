@@ -199,6 +199,7 @@ fn run_loop(
                 }
             }
             Action::StartFilter => app.start_filter(),
+            Action::CycleSort => app.cycle_sort(),
             Action::ToggleWhy => app.toggle_why(),
             Action::FilterChar(c) => app.filter_push(c),
             Action::FilterBackspace => app.filter_pop(),

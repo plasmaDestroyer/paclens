@@ -63,6 +63,46 @@ pub enum Screen {
     Packages,
 }
 
+/// Package-list sort modes; `s` cycles them in this order (user decision
+/// 2026-07-11). Fuzzy filtering overrides the sort while a query is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkgSort {
+    /// Packages with a pending update first, then the rest (default).
+    UpdatesFirst,
+    /// Grouped by install reason: explicit / dependencies / apps / runtimes.
+    Reason,
+    /// Plain A–Z.
+    Name,
+    /// Largest install size first.
+    Size,
+}
+
+impl PkgSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            PkgSort::UpdatesFirst => "updates",
+            PkgSort::Reason => "reason",
+            PkgSort::Name => "name",
+            PkgSort::Size => "size",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            PkgSort::UpdatesFirst => PkgSort::Reason,
+            PkgSort::Reason => PkgSort::Name,
+            PkgSort::Name => PkgSort::Size,
+            PkgSort::Size => PkgSort::UpdatesFirst,
+        }
+    }
+}
+
+/// One renderable package-list row: a dim section header (group label +
+/// count, never selectable) or a package.
+pub enum PkgRow<'a> {
+    Header(&'static str, usize),
+    Pkg(&'a Package),
+}
+
 /// Which key map is active. The exec console and log viewer are overlays
 /// that outrank the screen (they can cover the dashboard). The package
 /// list has two: the list itself and the fuzzy-filter input.
@@ -127,6 +167,8 @@ pub struct App {
     filter_active: bool,
     /// Package list: the why side pane is open.
     why_open: bool,
+    /// Package list: active sort mode (persists across list opens).
+    pkg_sort: PkgSort,
     /// Spinner animation frame, advanced by the loop's poll tick.
     spinner_frame: usize,
     /// Inline log viewer overlay (any screen).
@@ -176,6 +218,7 @@ impl App {
             pkg_filter: String::new(),
             filter_active: false,
             why_open: false,
+            pkg_sort: PkgSort::UpdatesFirst,
             spinner_frame: 0,
             log_view: None,
             exec: None,
@@ -500,6 +543,9 @@ impl App {
     pub fn pkg_source(&self) -> Option<&SourceId> {
         self.pkg_source.as_ref()
     }
+    /// The render side selects by `pkg_row_index()`; tests assert the raw
+    /// package-space cursor through this.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn pkg_cursor(&self) -> usize {
         self.pkg_cursor
     }
@@ -513,9 +559,43 @@ impl App {
         self.why_open
     }
 
-    /// Packages of the open source: name-sorted, or fuzzy-filtered and
-    /// score-ordered while a filter query is set.
-    pub fn visible_packages(&self) -> Vec<&Package> {
+    /// Does this package (of the open source) have a pending update?
+    pub fn pkg_pending(&self, name: &str) -> bool {
+        match &self.pkg_source {
+            Some(src) => self
+                .scan
+                .updates
+                .iter()
+                .any(|u| &u.source_id == src && u.package_name == name),
+            None => false,
+        }
+    }
+
+    /// The install-reason group a package belongs to (`Reason` sort). Flatpak
+    /// apps scan with an Unknown reason — they group as "apps", not
+    /// "unknown" (that label is a pacman data gap).
+    fn reason_group(p: &Package) -> &'static str {
+        if p.runtime {
+            "runtimes"
+        } else {
+            match p.install_reason {
+                crate::model::InstallReason::Explicit => "explicit",
+                crate::model::InstallReason::Dependency => "dependencies",
+                crate::model::InstallReason::Unknown => {
+                    if p.source_id == SourceId::pacman() {
+                        "unknown"
+                    } else {
+                        "apps"
+                    }
+                }
+            }
+        }
+    }
+
+    /// The open source's packages in display order, grouped for the active
+    /// sort. An empty label means "no header row". Fuzzy filtering overrides
+    /// the sort with score order.
+    fn grouped(&self) -> Vec<(&'static str, Vec<&Package>)> {
         let Some(source) = &self.pkg_source else {
             return Vec::new();
         };
@@ -525,16 +605,97 @@ impl App {
             .iter()
             .filter(|p| &p.source_id == source)
             .collect();
-        if self.pkg_filter.is_empty() {
-            pkgs.sort_by(|a, b| a.name.cmp(&b.name));
-            return pkgs;
+        if !self.pkg_filter.is_empty() {
+            let mut scored: Vec<(fuzzy::Score, &Package)> = pkgs
+                .into_iter()
+                .filter_map(|p| fuzzy::matches(&self.pkg_filter, &p.name).map(|s| (s, p)))
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+            return vec![("", scored.into_iter().map(|(_, p)| p).collect())];
         }
-        let mut scored: Vec<(fuzzy::Score, &Package)> = pkgs
-            .into_iter()
-            .filter_map(|p| fuzzy::matches(&self.pkg_filter, &p.name).map(|s| (s, p)))
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
-        scored.into_iter().map(|(_, p)| p).collect()
+        pkgs.sort_by(|a, b| a.name.cmp(&b.name));
+        match self.pkg_sort {
+            PkgSort::Name => vec![("", pkgs)],
+            PkgSort::Size => {
+                let mut pkgs = pkgs;
+                pkgs.sort_by(|a, b| {
+                    b.size_bytes
+                        .unwrap_or(0)
+                        .cmp(&a.size_bytes.unwrap_or(0))
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+                vec![("", pkgs)]
+            }
+            PkgSort::UpdatesFirst => {
+                let (pending, rest): (Vec<_>, Vec<_>) =
+                    pkgs.into_iter().partition(|p| self.pkg_pending(&p.name));
+                if pending.is_empty() {
+                    // Nothing pending: headers would be noise.
+                    vec![("", rest)]
+                } else {
+                    vec![("pending updates", pending), ("up to date", rest)]
+                }
+            }
+            PkgSort::Reason => {
+                let mut out = Vec::new();
+                for group in ["explicit", "dependencies", "apps", "runtimes", "unknown"] {
+                    let members: Vec<&Package> = pkgs
+                        .iter()
+                        .copied()
+                        .filter(|p| Self::reason_group(p) == group)
+                        .collect();
+                    if !members.is_empty() {
+                        out.push((group, members));
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    /// Packages of the open source in display order (the cursor's domain —
+    /// headers are a render concern, see `pkg_rows`).
+    pub fn visible_packages(&self) -> Vec<&Package> {
+        self.grouped().into_iter().flat_map(|(_, v)| v).collect()
+    }
+
+    /// Renderable rows: packages in display order with dim section headers
+    /// interleaved (only labeled, non-empty groups get one).
+    pub fn pkg_rows(&self) -> Vec<PkgRow<'_>> {
+        let mut out = Vec::new();
+        for (label, members) in self.grouped() {
+            if !label.is_empty() {
+                out.push(PkgRow::Header(label, members.len()));
+            }
+            out.extend(members.into_iter().map(PkgRow::Pkg));
+        }
+        out
+    }
+
+    /// The table-row index of the cursor's package (accounts for the header
+    /// rows above it) — feeds the table selection and the scrolloff math.
+    pub fn pkg_row_index(&self) -> usize {
+        let mut pkgs_seen = 0;
+        for (i, row) in self.pkg_rows().iter().enumerate() {
+            if let PkgRow::Pkg(_) = row {
+                if pkgs_seen == self.pkg_cursor {
+                    return i;
+                }
+                pkgs_seen += 1;
+            }
+        }
+        0
+    }
+
+    pub fn pkg_sort(&self) -> PkgSort {
+        self.pkg_sort
+    }
+
+    /// `s`: next sort mode; the cursor snaps home (the list reorders).
+    pub fn cycle_sort(&mut self) {
+        self.pkg_sort = self.pkg_sort.next();
+        self.pkg_cursor = 0;
+        self.pkg_offset = 0;
     }
 
     /// Total packages of the open source, unfiltered (for the "n of N" line).
@@ -616,10 +777,11 @@ impl App {
     }
 
     fn sync_pkg_offset(&mut self) {
+        // Row space, not package space — header rows scroll like any other.
         self.pkg_offset = scrolloff(
             self.pkg_offset,
-            self.pkg_cursor,
-            self.visible_packages().len(),
+            self.pkg_row_index(),
+            self.pkg_rows().len(),
             self.pkg_viewport,
         );
     }
@@ -991,6 +1153,147 @@ mod tests {
         app.pkg_move(-10);
         assert_eq!(app.pkg_cursor(), 0);
         assert_eq!(app.pkg_total(), 2);
+    }
+
+    // --- package-list sort modes ---
+    fn sorted_app() -> App {
+        // pacman: a (update pending), b explicit, c dependency w/ sizes.
+        let mut s = scan_with_sources(three_sources());
+        let mut b = pkg("b", SourceId::pacman());
+        b.install_reason = InstallReason::Explicit;
+        b.size_bytes = Some(10);
+        let mut c = pkg("c", SourceId::pacman());
+        c.install_reason = InstallReason::Dependency;
+        c.size_bytes = Some(99);
+        let mut a = pkg("a", SourceId::pacman());
+        a.install_reason = InstallReason::Explicit;
+        s.packages = vec![a, b, c];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        app
+    }
+
+    fn row_names(app: &App) -> Vec<String> {
+        app.pkg_rows()
+            .iter()
+            .map(|r| match r {
+                PkgRow::Header(label, n) => format!("[{label} {n}]"),
+                PkgRow::Pkg(p) => p.name.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn updates_first_puts_pending_on_top_with_headers() {
+        let app = sorted_app();
+        assert_eq!(
+            row_names(&app),
+            vec!["[pending updates 1]", "a", "[up to date 2]", "b", "c"]
+        );
+        // Cursor domain is packages only; row index skips the headers.
+        let names: Vec<&str> = app
+            .visible_packages()
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+        assert_eq!(app.pkg_row_index(), 1); // cursor 0 = "a", under a header
+        assert!(app.pkg_pending("a"));
+        assert!(!app.pkg_pending("b"));
+    }
+
+    #[test]
+    fn updates_first_drops_headers_when_nothing_is_pending() {
+        let mut s = scan_with_sources(three_sources());
+        s.packages = vec![pkg("a", SourceId::pacman()), pkg("b", SourceId::pacman())];
+        s.updates.clear();
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        assert_eq!(row_names(&app), vec!["a", "b"], "headers must vanish");
+    }
+
+    #[test]
+    fn reason_sort_groups_by_install_reason() {
+        let mut app = sorted_app();
+        app.cycle_sort(); // updates → reason
+        assert_eq!(app.pkg_sort(), PkgSort::Reason);
+        assert_eq!(
+            row_names(&app),
+            vec!["[explicit 2]", "a", "b", "[dependencies 1]", "c"]
+        );
+    }
+
+    #[test]
+    fn reason_sort_labels_flatpak_apps_and_runtimes() {
+        let mut s = scan_with_sources(three_sources());
+        let mut rt = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        rt.runtime = true;
+        s.packages = vec![pkg("org.x.App", SourceId::flatpak_user()), rt];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.on_next(); // flatpak-user
+        app.open_packages();
+        app.cycle_sort();
+        assert_eq!(
+            row_names(&app),
+            vec![
+                "[apps 1]",
+                "org.x.App",
+                "[runtimes 1]",
+                "org.gnome.Platform"
+            ]
+        );
+    }
+
+    #[test]
+    fn size_sort_is_largest_first_and_name_sort_is_plain() {
+        let mut app = sorted_app();
+        app.cycle_sort(); // reason
+        app.cycle_sort(); // name
+        assert_eq!(app.pkg_sort(), PkgSort::Name);
+        assert_eq!(row_names(&app), vec!["a", "b", "c"]);
+        app.cycle_sort(); // size
+        assert_eq!(app.pkg_sort(), PkgSort::Size);
+        // c (99) > b (10) > a (None → last).
+        assert_eq!(row_names(&app), vec!["c", "b", "a"]);
+        app.cycle_sort(); // wraps to updates-first
+        assert_eq!(app.pkg_sort(), PkgSort::UpdatesFirst);
+    }
+
+    #[test]
+    fn cycle_sort_snaps_the_cursor_home() {
+        let mut app = sorted_app();
+        app.pkg_move(2);
+        assert_eq!(app.pkg_cursor(), 2);
+        app.cycle_sort();
+        assert_eq!(app.pkg_cursor(), 0);
+        assert_eq!(app.pkg_offset(), 0);
+    }
+
+    #[test]
+    fn filter_overrides_the_sort_without_headers() {
+        let mut app = sorted_app();
+        app.start_filter();
+        app.filter_push('b');
+        assert_eq!(row_names(&app), vec!["b"], "no headers while filtering");
+    }
+
+    #[test]
+    fn scrolloff_counts_header_rows() {
+        // 50 packages, one pending → 52 rows. The offset math must run in
+        // row space or the cursor drifts by the header count.
+        let mut s = scan_with_sources(three_sources());
+        s.packages = (0..50)
+            .map(|i| pkg(&format!("p{i:02}"), SourceId::pacman()))
+            .collect();
+        s.updates = vec![upd("p00", SourceId::pacman())];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        app.set_pkg_viewport(10);
+        assert_eq!(app.pkg_rows().len(), 52);
+        app.pkg_move(20); // cursor pkg 20 → row 22
+        assert_eq!(app.pkg_row_index(), 22);
+        // Row 22 must sit 4 rows above the bottom: offset 22-(10-1-4) = 17.
+        assert_eq!(app.pkg_offset(), 17);
     }
 
     // --- scrolloff ---
