@@ -491,6 +491,20 @@ YYYY-MM-DD | no --noconfirm for pacman
            | drops its headers when nothing is pending; flatpak
            | Unknown-reason packages group as "apps"; fuzzy filter overrides
            | any sort, headerless. Sort persists for the session.
+
+2026-07-11 | flatpak profile sizes measured by the scanner (v0.1.4)
+           | ScanResult.flatpak_profile_sizes (SCHEMA_VERSION 3): the
+           | flatpak lane runs du -sb on ~/.var/app/<id> per app; missing
+           | dirs are absent. The analyzer stays pure — it only reads the
+           | map and string-builds the display path. Spec §9.4 heuristic 2
+           | (>10 MiB profile ⇒ flatpak likely primary) went live with it;
+           | rule 1 (explicit native) still outranks it per spec order.
+
+2026-07-11 | overlap screen layout: list on top, tradeoff pane below
+           | the §9.5 table is wide (factor/native/flatpak columns), so a
+           | bottom pane fits it better than a why-style side pane. o (not
+           | just spec's O) opens it from the dashboard. Advisory only —
+           | no action keys in v0.1.4 by design.
 ```
 
 ---
