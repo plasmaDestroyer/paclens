@@ -520,6 +520,22 @@ YYYY-MM-DD | no --noconfirm for pacman
            | report (roadmap rule). Suggestions are copiable text
            | (paccache -rk2, flatpak uninstall --unused, pacman -Rns with
            | real names) — no action keys until the v0.5 trust ladder.
+
+2026-07-12 | provider timeout implemented in SystemCommandRunner (v0.2.0)
+           | spec §2.2 wanted a tokio timeout on remote-ls; the runner is
+           | sync, so it spawns with piped stdio, drains on threads, polls
+           | try_wait and kills past config scan.provider_timeout_secs
+           | (0 = off). Applies to every provider command, not just
+           | remote-ls — any hung binary dies, not just flatpak's.
+
+2026-07-12 | v0.2.0 audit outcomes
+           | cache invalidation already watched /var/lib/pacman/local mtime
+           | (shipped v0.0.3, roadmap item was pre-satisfied). Config knobs
+           | min_confidence (TUI), orphan_ignore and provider_timeout_secs
+           | were schema-only — now consumed. Cargo version finally bumped
+           | 0.0.1 → 0.2.0. PKGBUILD lives in packaging/ — AUR publish and
+           | crates.io name registration are human steps. The two-week
+           | daily-driver promotion criterion is the user's clock, not ours.
 ```
 
 ---

@@ -138,8 +138,8 @@ fn install_reason(scan: &ScanResult, name: &str) -> Option<InstallReason> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Confidence;
     use crate::config::ColorTheme;
+    use crate::model::Confidence;
     use crate::model::{
         CacheSizes, MatchMethod, Package, PackageRef, SCHEMA_VERSION, SourceId, Tradeoff,
     };
