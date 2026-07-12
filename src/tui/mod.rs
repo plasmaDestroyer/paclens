@@ -43,7 +43,8 @@ struct ScanJob(mpsc::Receiver<anyhow::Result<ScanResult>>);
 fn spawn_scan(config: Config) -> ScanJob {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(scanner::scan_and_store(&SystemCommandRunner, &config));
+        let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
+        let _ = tx.send(scanner::scan_and_store(&runner, &config));
     });
     ScanJob(rx)
 }

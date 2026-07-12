@@ -24,7 +24,7 @@ pub fn run(
     config_path: Option<&Path>,
     styles: &Styles,
 ) -> anyhow::Result<()> {
-    let runner = SystemCommandRunner;
+    let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
 
     let pacman = summarize(&scan, |id| id == &SourceId::pacman());

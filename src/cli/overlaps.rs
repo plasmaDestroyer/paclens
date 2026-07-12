@@ -10,7 +10,7 @@ use crate::analyzer;
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::config::schema::MinConfidence;
-use crate::model::{Confidence, InstallReason, OverlapCandidate, PrimaryHeuristic, ScanResult};
+use crate::model::{InstallReason, OverlapCandidate, PrimaryHeuristic, ScanResult};
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
@@ -20,7 +20,7 @@ pub fn run(
     config_path: Option<&Path>,
     styles: &Styles,
 ) -> anyhow::Result<()> {
-    let runner = SystemCommandRunner;
+    let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
     let overlaps = analyzer::detect_overlaps(
         &scan,
@@ -32,16 +32,6 @@ pub fn run(
     Ok(())
 }
 
-/// Keep candidates at or above the configured confidence floor.
-fn passes(confidence: Confidence, min: MinConfidence) -> bool {
-    let floor = match min {
-        MinConfidence::Confirmed => Confidence::Confirmed,
-        MinConfidence::Inferred => Confidence::Inferred,
-        MinConfidence::Unknown => Confidence::Unknown,
-    };
-    confidence <= floor // Ord: Confirmed < Inferred < Unknown
-}
-
 fn render_overlaps(
     overlaps: &[OverlapCandidate],
     scan: &ScanResult,
@@ -50,7 +40,7 @@ fn render_overlaps(
 ) -> String {
     let shown: Vec<&OverlapCandidate> = overlaps
         .iter()
-        .filter(|o| passes(o.confidence, min))
+        .filter(|o| min.allows(o.confidence))
         .collect();
 
     let mut out = String::new();
@@ -148,6 +138,7 @@ fn install_reason(scan: &ScanResult, name: &str) -> Option<InstallReason> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Confidence;
     use crate::config::ColorTheme;
     use crate::model::{
         CacheSizes, MatchMethod, Package, PackageRef, SCHEMA_VERSION, SourceId, Tradeoff,

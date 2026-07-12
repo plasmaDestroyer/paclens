@@ -192,6 +192,18 @@ impl MinConfidence {
             _ => None,
         }
     }
+
+    /// Does a candidate at `confidence` clear this floor? Shared by the CLI
+    /// report and the TUI overlap screen (P5 — they must never disagree).
+    pub fn allows(self, confidence: crate::model::Confidence) -> bool {
+        use crate::model::Confidence;
+        let floor = match self {
+            MinConfidence::Confirmed => Confidence::Confirmed,
+            MinConfidence::Inferred => Confidence::Inferred,
+            MinConfidence::Unknown => Confidence::Unknown,
+        };
+        confidence <= floor // Ord: Confirmed < Inferred < Unknown
+    }
 }
 
 impl Overlap {

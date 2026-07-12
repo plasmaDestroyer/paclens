@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::analyzer::{self, DepGraph, WhyReport};
-use crate::config::{Config, ExtraMapping};
+use crate::config::{Config, ExtraMapping, MinConfidence};
 use crate::executor::ExecutionReport;
 use crate::fuzzy;
 use crate::model::OverlapCandidate;
@@ -26,6 +26,11 @@ pub struct AppOptions {
     pub overlap_ignore: Vec<String>,
     /// `config.overlap.extra_mappings`, same.
     pub extra_mappings: Vec<ExtraMapping>,
+    /// `config.overlap.min_confidence` — the overlap screen shows only
+    /// candidates clearing this floor (same rule as the CLI report, P5).
+    pub min_confidence: MinConfidence,
+    /// `config.cleanup.orphan_ignore` — names kept out of the orphan list.
+    pub orphan_ignore: Vec<String>,
 }
 
 impl AppOptions {
@@ -35,6 +40,8 @@ impl AppOptions {
             privilege_tool,
             overlap_ignore: config.overlap.ignore.clone(),
             extra_mappings: config.overlap.extra_mappings.clone(),
+            min_confidence: config.overlap.min_confidence(),
+            orphan_ignore: config.cleanup.orphan_ignore.clone(),
         }
     }
 
@@ -46,6 +53,8 @@ impl AppOptions {
             privilege_tool: Some("sudo"),
             overlap_ignore: Vec::new(),
             extra_mappings: Vec::new(),
+            min_confidence: MinConfidence::Unknown, // tests see everything
+            orphan_ignore: Vec::new(),
         }
     }
 }
@@ -214,8 +223,8 @@ impl App {
         };
         let enabled = default_toggles(&scan);
         let graph = DepGraph::build(&scan);
-        let orphans = graph.orphans(&scan);
-        let overlaps = analyzer::detect_overlaps(&scan, &opts.overlap_ignore, &opts.extra_mappings);
+        let orphans = derive_orphans(&graph, &scan, &opts);
+        let overlaps = derive_overlaps(&scan, &opts);
         App {
             scan,
             graph,
@@ -250,12 +259,11 @@ impl App {
     /// Swap in a fresh scan (after a refresh), keeping cursors valid.
     pub fn replace_scan(&mut self, scan: ScanResult) {
         self.graph = DepGraph::build(&scan);
-        self.orphans = self.graph.orphans(&scan);
+        self.orphans = derive_orphans(&self.graph, &scan, &self.opts);
         self.cleanup_cursor = self
             .cleanup_cursor
             .min(self.orphans.len().saturating_sub(1));
-        self.overlaps =
-            analyzer::detect_overlaps(&scan, &self.opts.overlap_ignore, &self.opts.extra_mappings);
+        self.overlaps = derive_overlaps(&scan, &self.opts);
         self.overlap_cursor = self
             .overlap_cursor
             .min(self.overlaps.len().saturating_sub(1));
@@ -969,6 +977,23 @@ fn scrolloff(offset: usize, cursor: usize, len: usize, viewport: usize) -> usize
     offset.clamp(min, max).min(len - viewport)
 }
 
+/// Orphan candidates minus the configured ignore list.
+fn derive_orphans(graph: &DepGraph, scan: &ScanResult, opts: &AppOptions) -> Vec<String> {
+    graph
+        .orphans(scan)
+        .into_iter()
+        .filter(|name| !opts.orphan_ignore.iter().any(|i| i == name))
+        .collect()
+}
+
+/// Detected overlaps at or above the configured confidence floor.
+fn derive_overlaps(scan: &ScanResult, opts: &AppOptions) -> Vec<OverlapCandidate> {
+    analyzer::detect_overlaps(scan, &opts.overlap_ignore, &opts.extra_mappings)
+        .into_iter()
+        .filter(|o| opts.min_confidence.allows(o.confidence))
+        .collect()
+}
+
 fn default_toggles(scan: &ScanResult) -> HashMap<SourceId, bool> {
     scan.sources.iter().map(|s| (s.id.clone(), true)).collect()
 }
@@ -1381,6 +1406,42 @@ mod tests {
         assert_eq!(app.screen(), Screen::Cleanup);
         app.back_cleanup();
         assert_eq!(app.screen(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn orphan_ignore_filters_the_cleanup_list() {
+        let opts = AppOptions {
+            orphan_ignore: vec!["orphan1".to_string()],
+            ..AppOptions::test()
+        };
+        let app = App::new(cleanup_scan(), Theme::none(), opts);
+        assert_eq!(app.cleanup_orphans(), ["orphan2"]);
+        assert_eq!(app.orphan_count(), 1, "dashboard count matches");
+    }
+
+    #[test]
+    fn overlap_confidence_floor_filters_the_screen() {
+        // suffix match = Inferred; a Confirmed-only floor hides it.
+        let mut s = scan_with_sources(three_sources());
+        let mut native = pkg("celluloid", SourceId::pacman());
+        native.install_reason = InstallReason::Explicit;
+        let fp = pkg("io.github.x.celluloid", SourceId::flatpak_user());
+        s.packages = vec![native, fp];
+        let all = App::new(s.clone(), Theme::none(), AppOptions::test());
+        assert_eq!(all.overlap_count(), 1);
+        let strict = App::new(
+            s,
+            Theme::none(),
+            AppOptions {
+                min_confidence: crate::config::MinConfidence::Confirmed,
+                ..AppOptions::test()
+            },
+        );
+        assert_eq!(
+            strict.overlap_count(),
+            0,
+            "inferred match must not clear a confirmed floor"
+        );
     }
 
     #[test]

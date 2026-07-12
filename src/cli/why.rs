@@ -20,7 +20,7 @@ pub fn run(
     package: &str,
     styles: &Styles,
 ) -> anyhow::Result<()> {
-    let runner = SystemCommandRunner;
+    let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
     let graph = DepGraph::build(&scan);
     let report = analyzer::why(&scan, &graph, package, config.why.max_depth);

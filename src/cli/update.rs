@@ -32,7 +32,7 @@ pub fn run(
         anyhow::bail!("update needs a terminal to confirm on — use --dry-run to preview the plan");
     }
 
-    let runner = SystemCommandRunner;
+    let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
 
     if let Some(requested) = source
