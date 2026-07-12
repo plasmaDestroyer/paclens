@@ -1294,7 +1294,9 @@ fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Lin
                 Line::from(Span::styled(format!("why · {}", p.package), theme.title)),
                 Line::default(),
             ];
-            let reason = if p.source_id != SourceId::pacman() {
+            let is_alpm =
+                p.source_id == SourceId::pacman() || p.source_id == crate::model::SourceId::aur();
+            let reason = if !is_alpm {
                 if p.runtime {
                     "flatpak runtime".to_string()
                 } else {
@@ -1311,6 +1313,12 @@ fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Lin
                 }
             };
             lines.push(kv("reason", reason, theme.primary));
+            for caveat in &p.caveats {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:10}", "caveat"), theme.dim),
+                    Span::styled(caveat.clone(), theme.accent),
+                ]));
+            }
             // "needed by" doubles as the breakage list — removing this
             // package breaks exactly what requires it.
             lines.push(kv("needed by", names(&p.required_by), theme.primary));

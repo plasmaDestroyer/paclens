@@ -74,6 +74,12 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     let flatpak = summarize(scan, is_flatpak);
     out.push_str(&render_row("pacman", &pacman, s));
     out.push('\n');
+    // The aur row only exists when the source is configured (v0.3).
+    if scan.sources.iter().any(|src| src.id == SourceId::aur()) {
+        let aur = summarize(scan, |id| id == &SourceId::aur());
+        out.push_str(&render_row("aur", &aur, s));
+        out.push('\n');
+    }
     out.push_str(&render_row("flatpak", &flatpak, s));
     out.push('\n');
 

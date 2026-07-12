@@ -57,6 +57,9 @@ pub struct WhyDetail {
     /// Reverse-dep chain as a tree (spec §10.3 / roadmap v0.1.2): each root is
     /// a direct requirer, children are *their* requirers, every edge labeled.
     pub tree: Vec<TreeNode>,
+    /// Source-specific warnings (roadmap v0.3): AUR PKGBUILD review, VCS
+    /// build-snapshot versions. Rendered verbatim by the CLI and the TUI.
+    pub caveats: Vec<String>,
     pub verdict: Verdict,
     pub confidence: Confidence,
 }
@@ -149,6 +152,25 @@ fn flatten(nodes: &[TreeNode], indent: &str, g: (&str, &str, &str, &str), out: &
     }
 }
 
+/// AUR-specific warnings (roadmap v0.3). Advisory wording only — never
+/// blocks anything.
+fn caveats_for(pkg: &crate::model::Package) -> Vec<String> {
+    let mut out = Vec::new();
+    if pkg.source_id != SourceId::aur() {
+        return out;
+    }
+    out.push("AUR package — review PKGBUILD changes before updating".to_string());
+    const VCS: [&str; 5] = ["-git", "-svn", "-hg", "-bzr", "-cvs"];
+    if VCS.iter().any(|s| pkg.name.ends_with(s)) {
+        out.push(
+            "VCS package — the version is a build snapshot; enable scan.aur_devel \
+             to check against the upstream HEAD"
+                .to_string(),
+        );
+    }
+    out
+}
+
 pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> WhyReport {
     let Some(pkg) = scan.packages.iter().find(|p| p.name == name) else {
         let suggestion = fuzzy::best_match(name, scan.packages.iter().map(|p| p.name.as_str()))
@@ -159,7 +181,9 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         };
     };
 
-    let is_pacman = pkg.source_id == SourceId::pacman();
+    // AUR packages are libalpm too: real install reasons, real dep data —
+    // the pacman verdict rules apply to them (v0.3).
+    let is_alpm = crate::analyzer::graph::is_alpm(&pkg.source_id);
     let edges = graph.required_by_edges(name);
     let required_by: Vec<String> = edges.iter().map(|(n, _)| n.clone()).collect();
     let would_remove: Vec<String> = graph
@@ -184,7 +208,7 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         .map(|(_, c)| *c)
         .max()
         .unwrap_or(Confidence::Confirmed);
-    let (verdict, confidence) = if is_pacman && pkg.install_reason == InstallReason::Unknown {
+    let (verdict, confidence) = if is_alpm && pkg.install_reason == InstallReason::Unknown {
         (Verdict::Unclear, Confidence::Unknown)
     } else if required_by.is_empty() {
         let conf = if pkg.runtime {
@@ -201,6 +225,7 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         package: pkg.name.clone(),
         source_id: pkg.source_id.clone(),
         runtime: pkg.runtime,
+        caveats: caveats_for(pkg),
         reason: pkg.install_reason,
         transitive_required_by: graph.transitive_required_by(name, max_depth),
         depth_from_explicit: graph.depth_from_explicit(scan, name),
@@ -403,6 +428,56 @@ mod tests {
             WhyReport::NotFound { suggestion, .. } => assert_eq!(suggestion, None),
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    // --- AUR caveats (v0.3) ---
+    #[test]
+    fn aur_packages_carry_the_pkgbuild_caveat_and_alpm_rules() {
+        let mut s = scan();
+        let mut foreign = pkg("timr-bin", InstallReason::Explicit, &[], &[]);
+        foreign.source_id = SourceId::aur();
+        s.packages.push(foreign);
+        let g = DepGraph::build(&s);
+        let WhyReport::Found(d) = why(&s, &g, "timr-bin", 20) else {
+            panic!("expected found")
+        };
+        assert_eq!(d.caveats.len(), 1);
+        assert!(d.caveats[0].contains("review PKGBUILD"), "{:?}", d.caveats);
+        assert_eq!(d.verdict, Verdict::LikelySafe); // alpm leaf rules apply
+    }
+
+    #[test]
+    fn vcs_aur_packages_get_the_snapshot_caveat() {
+        let mut s = scan();
+        let mut foreign = pkg("paclens-git", InstallReason::Explicit, &[], &[]);
+        foreign.source_id = SourceId::aur();
+        s.packages.push(foreign);
+        let g = DepGraph::build(&s);
+        let WhyReport::Found(d) = why(&s, &g, "paclens-git", 20) else {
+            panic!("expected found")
+        };
+        assert_eq!(d.caveats.len(), 2);
+        assert!(d.caveats[1].contains("build snapshot"), "{:?}", d.caveats);
+    }
+
+    #[test]
+    fn aur_unknown_reason_is_unclear_like_pacman() {
+        let mut s = scan();
+        let mut foreign = pkg("weird-bin", InstallReason::Unknown, &[], &[]);
+        foreign.source_id = SourceId::aur();
+        s.packages.push(foreign);
+        let g = DepGraph::build(&s);
+        let WhyReport::Found(d) = why(&s, &g, "weird-bin", 20) else {
+            panic!("expected found")
+        };
+        assert_eq!(d.verdict, Verdict::Unclear);
+    }
+
+    #[test]
+    fn pacman_and_flatpak_have_no_caveats() {
+        let p = detail("firefox");
+        assert!(p.caveats.is_empty());
+        assert!(detail("org.gnome.Calculator").caveats.is_empty());
     }
 
     // --- reverse-dep tree ---

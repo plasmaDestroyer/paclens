@@ -56,12 +56,12 @@ fn render_report(report: &WhyReport, show_transitive: bool, s: &Styles) -> Strin
 }
 
 fn render_detail(p: &WhyDetail, show_transitive: bool, s: &Styles) -> String {
-    let is_pacman = p.source_id == SourceId::pacman();
+    let is_alpm = p.source_id == SourceId::pacman() || p.source_id == SourceId::aur();
     let mut out = String::new();
     out.push_str(&format!("{}\n", s.title(&p.package)));
     out.push_str(&field(s, "source", &p.source_id.to_string()));
 
-    let reason = if !is_pacman {
+    let reason = if !is_alpm {
         if p.runtime {
             "flatpak runtime — shared by the apps that depend on it".to_string()
         } else {
@@ -81,12 +81,15 @@ fn render_detail(p: &WhyDetail, show_transitive: bool, s: &Styles) -> String {
         }
     };
     out.push_str(&field(s, "reason", &reason));
-    if !is_pacman && !p.runtime {
+    if !is_alpm && !p.runtime {
         out.push_str(&field(
             s,
             "removal",
             &format!("flatpak uninstall {}", p.package),
         ));
+    }
+    for caveat in &p.caveats {
+        out.push_str(&field(s, "caveat", &s.summary_updates(caveat)));
     }
 
     out.push_str(&field(s, "required by", &name_list(&p.required_by, s)));
@@ -175,6 +178,7 @@ mod tests {
             package: "firefox".to_string(),
             source_id: SourceId::pacman(),
             runtime: false,
+            caveats: Vec::new(),
             reason: InstallReason::Explicit,
             required_by: Vec::new(),
             transitive_required_by: Vec::new(),
@@ -297,6 +301,25 @@ mod tests {
         assert!(text.contains("pkg7"), "{text}");
         assert!(!text.contains("pkg8,"), "{text}");
         assert!(text.contains("… 4 more"), "{text}");
+    }
+
+    #[test]
+    fn aur_caveats_render_as_fields() {
+        let p = WhyDetail {
+            package: "timr-bin".to_string(),
+            source_id: SourceId::aur(),
+            caveats: vec!["AUR package — review PKGBUILD changes before updating".to_string()],
+            ..base()
+        };
+        let text = render_report(&WhyReport::Found(p), true, &plain());
+        assert!(text.contains("aur"), "{text}");
+        assert!(text.contains("caveat:"), "{text}");
+        assert!(text.contains("review PKGBUILD"), "{text}");
+        assert!(
+            text.contains("explicitly installed"),
+            "aur must use the alpm reason wording:\n{text}"
+        );
+        assert!(!text.contains("flatpak uninstall"), "{text}");
     }
 
     #[test]
