@@ -1,0 +1,44 @@
+# Maintainer: plasmaDestroyer <satyasheel2004@gmail.com>
+pkgname=paclens
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="A TUI-first pacman + Flatpak inspection and update tool for Arch Linux"
+arch=('x86_64')
+url="https://github.com/plasmaDestroyer/paclens"
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'pacman')
+makedepends=('cargo' 'git')
+optdepends=(
+  'pacman-contrib: accurate update detection via checkupdates'
+  'flatpak: Flatpak app and runtime scanning'
+)
+source=("git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # overlap_map.toml is compiled in via include_str!() — no runtime file.
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 config.default.toml "$pkgdir/usr/share/doc/$pkgname/config.default.toml"
+}
