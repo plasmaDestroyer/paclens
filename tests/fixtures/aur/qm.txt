@@ -1,0 +1,6 @@
+antigravity 2.2.1-1
+docker-desktop 4.81.0-1
+google-chrome-beta 151.0.7922.19-1
+timr-bin 1.11.0-1
+ttf-meslo 1.2.1-3
+visual-studio-code-bin 1.128.0-1

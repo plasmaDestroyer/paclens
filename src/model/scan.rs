@@ -16,7 +16,8 @@ use super::{Package, PendingUpdate, Source};
 /// v3: `flatpak_profile_sizes` (v0.1.4).
 /// v4: flatpak `Package.size_bytes` populated (v0.1.5) — data enrichment;
 /// bumped so stale caches rescan instead of showing unknown sizes.
-pub const SCHEMA_VERSION: u32 = 4;
+/// v5: foreign packages split into the `aur` source (v0.3).
+pub const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {

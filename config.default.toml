@@ -30,6 +30,10 @@ color_theme = "dark"
 pacman  = true
 flatpak = true
 
+# AUR (foreign) packages, listed as their own source. Scanning works via
+# pacman; update detection and the update step need paru installed.
+aur     = true
+
 
 [scan]
 
@@ -42,6 +46,10 @@ flatpak_include_user = true
 # Timeout in seconds for any single provider command.
 # If a provider exceeds this, it is marked as failed and skipped.
 provider_timeout_secs = 10
+
+# Check VCS (-git) AUR packages against the upstream HEAD (paru --devel)
+# instead of the version string. Accurate for -git packages but slower.
+aur_devel = false
 
 
 [why]

@@ -8,7 +8,7 @@ use chrono::Utc;
 use crate::model::{
     ActionKind, ActionPlan, ActionStep, FlatpakScope, ScanResult, SourceId, SourceKind,
 };
-use crate::providers::{flatpak, pacman};
+use crate::providers::{aur, flatpak, pacman};
 
 /// Build the update plan from a scan, including only **available** sources that
 /// have at least one pending update and pass `is_enabled` (the per-source
@@ -32,6 +32,9 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
         }
         let (command, needs_sudo) = match &source.kind {
             SourceKind::Pacman => (pacman::update_command(), true),
+            // paru is never run under sudo — it self-elevates for the
+            // install step after building as the user.
+            SourceKind::Aur => (aur::update_command(), false),
             SourceKind::Flatpak { scope } => (
                 flatpak::update_command(*scope),
                 *scope == FlatpakScope::System,

@@ -16,6 +16,10 @@ impl SourceId {
         SourceId("pacman".to_string())
     }
 
+    pub fn aur() -> Self {
+        SourceId("aur".to_string())
+    }
+
     pub fn flatpak() -> Self {
         SourceId("flatpak".to_string())
     }
@@ -86,7 +90,12 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
     Pacman,
-    Flatpak { scope: FlatpakScope },
+    /// Foreign (AUR) packages: installed through libalpm like pacman's, but
+    /// updated via paru (roadmap v0.3).
+    Aur,
+    Flatpak {
+        scope: FlatpakScope,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

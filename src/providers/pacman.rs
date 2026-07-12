@@ -260,8 +260,9 @@ fn parse_size(raw: &str) -> Option<u64> {
     Some((value * multiplier).round() as u64)
 }
 
-/// Parse `pacman -Qu`: one `name current -> available` per line.
-fn parse_updates(stdout: &str) -> Vec<PendingUpdate> {
+/// Parse the `name current -> available` line format shared by
+/// `pacman -Qu`, `checkupdates` and `paru -Qua`.
+pub(crate) fn parse_updates_as(stdout: &str, source: SourceId) -> Vec<PendingUpdate> {
     stdout
         .lines()
         .filter_map(|line| {
@@ -276,10 +277,14 @@ fn parse_updates(stdout: &str) -> Vec<PendingUpdate> {
                 package_name: name,
                 current_version: current,
                 available_version: available,
-                source_id: SourceId::pacman(),
+                source_id: source.clone(),
             })
         })
         .collect()
+}
+
+fn parse_updates(stdout: &str) -> Vec<PendingUpdate> {
+    parse_updates_as(stdout, SourceId::pacman())
 }
 
 #[cfg(test)]

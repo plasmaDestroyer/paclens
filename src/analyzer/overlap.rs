@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::config::ExtraMapping;
 use crate::model::{
     Confidence, InstallReason, MatchMethod, OverlapCandidate, Package, PackageRef,
-    PrimaryHeuristic, ScanResult, SourceId, Tradeoff,
+    PrimaryHeuristic, ScanResult, Tradeoff,
 };
 
 /// Generic pacman names that must never be overlap targets (spec §9.3 +
@@ -76,10 +76,11 @@ pub fn detect_overlaps(
     ignore: &[String],
     extra_mappings: &[ExtraMapping],
 ) -> Vec<OverlapCandidate> {
+    // "Native" = anything installed through libalpm — repo or AUR (v0.3).
     let native: HashMap<&str, &Package> = scan
         .packages
         .iter()
-        .filter(|p| p.source_id == SourceId::pacman())
+        .filter(|p| crate::analyzer::graph::is_alpm(&p.source_id))
         .map(|p| (p.name.as_str(), p))
         .collect();
     let map = known_map(extra_mappings);
@@ -202,6 +203,7 @@ fn package_ref(p: &Package) -> PackageRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::SourceId;
     use crate::model::{CacheSizes, SCHEMA_VERSION};
     use chrono::Utc;
 

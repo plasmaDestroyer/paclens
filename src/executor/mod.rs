@@ -91,7 +91,9 @@ impl ExecutionReport {
 /// Does this step need privilege escalation? Source-specific (P6, spec §13):
 /// pacman and flatpak-system do; flatpak-user does not.
 pub fn needs_privilege(step: &ActionStep) -> bool {
-    step.source_id != SourceId::flatpak_user()
+    // flatpak --user needs nothing; paru must NOT run under sudo (it builds
+    // as the user and self-elevates for the install step itself).
+    step.source_id != SourceId::flatpak_user() && step.source_id != SourceId::aur()
 }
 
 /// Why a step cannot run, or `None` if it is executable. Since v0.1.0 the only
@@ -137,11 +139,14 @@ pub fn executable_steps(plan: &ActionPlan, tool: Option<&str>) -> usize {
 /// `"3 flatpaks"` / `"1 package"` — the unit the source itself uses
 /// ("flatpaks", not "apps": runtime updates count too).
 pub fn target_noun(source_id: &SourceId, count: usize) -> String {
-    let unit = match (source_id.as_str().starts_with("flatpak"), count) {
-        (true, 1) => "flatpak",
-        (true, _) => "flatpaks",
-        (false, 1) => "package",
-        (false, _) => "packages",
+    let s = source_id.as_str();
+    let unit = match (s.starts_with("flatpak"), s == "aur", count) {
+        (true, _, 1) => "flatpak",
+        (true, _, _) => "flatpaks",
+        (_, true, 1) => "AUR package",
+        (_, true, _) => "AUR packages",
+        (_, _, 1) => "package",
+        (_, _, _) => "packages",
     };
     format!("{count} {unit}")
 }
@@ -378,8 +383,27 @@ mod tests {
     }
 
     #[test]
+    fn aur_steps_run_unprivileged() {
+        let step = ActionStep {
+            source_id: SourceId::aur(),
+            kind: ActionKind::Update,
+            targets: vec!["timr-bin".to_string()],
+            command: vec!["paru".to_string(), "-Sua".to_string()],
+        };
+        assert!(!needs_privilege(&step), "paru must never run under sudo");
+        assert_eq!(skip_reason(&step, None), None, "runs without a tool");
+        assert_eq!(
+            effective_command(&step, Some("sudo")),
+            vec!["paru", "-Sua"],
+            "no sudo prefix even when a tool exists"
+        );
+    }
+
+    #[test]
     fn target_noun_matches_each_sources_vocabulary() {
         assert_eq!(target_noun(&SourceId::flatpak_user(), 1), "1 flatpak");
+        assert_eq!(target_noun(&SourceId::aur(), 2), "2 AUR packages");
+        assert_eq!(target_noun(&SourceId::aur(), 1), "1 AUR package");
         assert_eq!(target_noun(&SourceId::flatpak_system(), 3), "3 flatpaks");
         assert_eq!(target_noun(&SourceId::pacman(), 1), "1 package");
         assert_eq!(target_noun(&SourceId::pacman(), 19), "19 packages");

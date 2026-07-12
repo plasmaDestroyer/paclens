@@ -16,6 +16,7 @@ use crate::model::{
     CacheSizes, FlatpakScope, Package, PendingUpdate, SCHEMA_VERSION, ScanResult, Source, SourceId,
     SourceKind,
 };
+use crate::providers::aur;
 use crate::providers::flatpak::FlatpakProvider;
 use crate::providers::pacman::{self, PacmanProvider};
 use crate::providers::{CommandRunner, Provider};
@@ -80,6 +81,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
     let pacman_available = PacmanProvider::new(runner).is_available();
     let flatpak_available = FlatpakProvider::new(runner).is_available();
     let checkupdates = crate::providers::binary_on_path(pacman::CHECKUPDATES_BIN);
+    let paru = crate::providers::binary_on_path(aur::PARU_BIN);
     let profile_dir =
         directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".var").join("app"));
     assemble(
@@ -88,6 +90,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
         pacman_available,
         flatpak_available,
         checkupdates,
+        paru,
         profile_dir.as_deref(),
     )
 }
@@ -106,16 +109,19 @@ fn assemble(
     pacman_available: bool,
     flatpak_available: bool,
     checkupdates_available: bool,
+    paru_available: bool,
     flatpak_profile_dir: Option<&Path>,
 ) -> ScanResult {
     let now = Utc::now();
     let scan_pacman = config.sources.pacman && pacman_available;
     let scan_flatpak = config.sources.flatpak && flatpak_available;
+    let scan_aur = config.sources.aur && scan_pacman;
 
     let (
         (mut packages, mut updates),
         (flatpak_packages, mut flatpak_updates, flatpak_profile_sizes),
         cache_sizes,
+        (foreign, mut aur_updates),
     ) = std::thread::scope(|s| {
         let pacman_lane = s.spawn(|| {
             if !scan_pacman {
@@ -133,10 +139,35 @@ fn assemble(
             (pkgs, ups, sizes)
         });
         let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman));
+        let aur_lane = s.spawn(|| {
+            if !scan_aur {
+                return (std::collections::HashSet::new(), Vec::new());
+            }
+            let foreign = match aur::foreign_names(runner) {
+                Ok(names) => names,
+                Err(err) => {
+                    tracing::error!(error = %err, "pacman -Qm failed; no aur source");
+                    return (std::collections::HashSet::new(), Vec::new());
+                }
+            };
+            let updates = if paru_available {
+                match aur::scan_updates(runner, config.scan.aur_devel) {
+                    Ok(ups) => ups,
+                    Err(err) => {
+                        tracing::error!(error = %err, "paru -Qua failed; no aur updates");
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            (foreign, updates)
+        });
         (
             join_lane(pacman_lane, "pacman"),
             join_lane(flatpak_lane, "flatpak"),
             join_lane(du_lane, "du"),
+            join_lane(aur_lane, "aur"),
         )
     });
 
@@ -155,6 +186,17 @@ fn assemble(
             available: pacman_available,
             last_scanned: scan_pacman.then_some(now),
             accurate_updates: checkupdates_available,
+        });
+    }
+    if config.sources.aur {
+        // Foreign packages list via pacman either way; "available" means the
+        // update path (paru) exists — its absence shows as "not found".
+        sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: paru_available && pacman_available,
+            last_scanned: scan_aur.then_some(now),
+            accurate_updates: true,
         });
     }
     if config.sources.flatpak {
@@ -183,6 +225,15 @@ fn assemble(
             });
         }
     }
+
+    // Foreign packages keep their full pacman -Qi metadata but belong to the
+    // aur source (v0.3) — everything downstream keys on source_id.
+    if scan_aur {
+        for pkg in packages.iter_mut().filter(|p| foreign.contains(&p.name)) {
+            pkg.source_id = SourceId::aur();
+        }
+    }
+    updates.append(&mut aur_updates);
 
     packages.extend(flatpak_packages);
     reconcile_flatpak_updates(&mut flatpak_updates, &packages);
@@ -344,6 +395,7 @@ mod tests {
             true,
             true,
             true,
+            false,
             Some(Path::new("/home/t/.var/app")),
         );
         assert_eq!(
@@ -364,16 +416,126 @@ mod tests {
 
     #[test]
     fn profile_sizes_empty_without_a_base_dir() {
-        let scan = assemble(&full_runner(), &Config::default(), true, true, true, None);
+        let scan = assemble(
+            &full_runner(),
+            &Config::default(),
+            true,
+            true,
+            true,
+            false,
+            None,
+        );
         assert!(scan.flatpak_profile_sizes.is_empty());
+    }
+
+    const QM_FIXTURE: &str = include_str!("../../tests/fixtures/aur/qm.txt");
+    const QUA_FIXTURE: &str = include_str!("../../tests/fixtures/aur/qua.txt");
+
+    #[test]
+    fn foreign_packages_move_to_the_aur_source_with_updates() {
+        // QI_SMALL has firefox/glibc/bash; mark bash foreign.
+        let runner = full_runner().with("pacman -Qm", "bash 5.2-1\n", 0).with(
+            "paru -Qua",
+            "bash 5.2-1 -> 5.3-1\n",
+            0,
+        );
+        let scan = assemble(&runner, &Config::default(), true, true, true, true, None);
+        let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
+        assert_eq!(bash.source_id, SourceId::aur());
+        // Non-foreign packages stay pacman.
+        let alac = scan
+            .packages
+            .iter()
+            .find(|p| p.name == "alacritty")
+            .unwrap();
+        assert_eq!(alac.source_id, SourceId::pacman());
+        // The aur update landed with its source.
+        assert!(
+            scan.updates
+                .iter()
+                .any(|u| u.package_name == "bash" && u.source_id == SourceId::aur()),
+            "{:?}",
+            scan.updates
+                .iter()
+                .map(|u| &u.package_name)
+                .collect::<Vec<_>>()
+        );
+        // Source row: available (paru present).
+        let aur = scan
+            .sources
+            .iter()
+            .find(|s| s.id == SourceId::aur())
+            .unwrap();
+        assert!(aur.available);
+    }
+
+    #[test]
+    fn missing_paru_lists_foreign_packages_but_no_updates() {
+        let runner = full_runner().with("pacman -Qm", "bash 5.2-1\n", 0);
+        let scan = assemble(&runner, &Config::default(), true, true, true, false, None);
+        let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
+        assert_eq!(
+            bash.source_id,
+            SourceId::aur(),
+            "labeling works without paru"
+        );
+        assert!(!scan.updates.iter().any(|u| u.source_id == SourceId::aur()));
+        let aur = scan
+            .sources
+            .iter()
+            .find(|s| s.id == SourceId::aur())
+            .unwrap();
+        assert!(!aur.available, "paru missing → aur shows not found");
+    }
+
+    #[test]
+    fn sources_aur_false_keeps_foreign_under_pacman() {
+        let mut config = Config::default();
+        config.sources.aur = false;
+        let runner = full_runner().with("pacman -Qm", "bash 5.2-1\n", 0);
+        let scan = assemble(&runner, &config, true, true, true, true, None);
+        let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
+        assert_eq!(bash.source_id, SourceId::pacman());
+        assert!(!scan.sources.iter().any(|s| s.id == SourceId::aur()));
+    }
+
+    #[test]
+    fn aur_fixtures_parse_end_to_end() {
+        let runner =
+            full_runner()
+                .with("pacman -Qm", QM_FIXTURE, 0)
+                .with("paru -Qua", QUA_FIXTURE, 0);
+        let scan = assemble(&runner, &Config::default(), true, true, true, true, None);
+        // None of the live foreign names exist in QI_SMALL — no relabels,
+        // but the updates still land under aur.
+        assert_eq!(
+            scan.updates
+                .iter()
+                .filter(|u| u.source_id == SourceId::aur())
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn assemble_full_pipeline_combines_both_sources() {
-        let scan = assemble(&full_runner(), &Config::default(), true, true, true, None);
-        // pacman + flatpak-user + flatpak-system
-        assert_eq!(scan.sources.len(), 3);
-        assert!(scan.sources.iter().all(|s| s.available));
+        let scan = assemble(
+            &full_runner(),
+            &Config::default(),
+            true,
+            true,
+            true,
+            false,
+            None,
+        );
+        // pacman + aur + flatpak-user + flatpak-system
+        assert_eq!(scan.sources.len(), 4);
+        // Everything available except aur (no paru in this fixture).
+        assert!(
+            scan.sources
+                .iter()
+                .all(|s| s.available || s.id == SourceId::aur())
+        );
         // 3 pacman packages + 3 flatpak apps
         assert_eq!(scan.packages.len(), 6);
         // 4 pacman updates + 2 flatpak updates
@@ -384,7 +546,15 @@ mod tests {
 
     #[test]
     fn accurate_updates_flag_follows_checkupdates_availability() {
-        let with = assemble(&full_runner(), &Config::default(), true, true, true, None);
+        let with = assemble(
+            &full_runner(),
+            &Config::default(),
+            true,
+            true,
+            true,
+            false,
+            None,
+        );
         let pacman = with
             .sources
             .iter()
@@ -392,7 +562,15 @@ mod tests {
             .unwrap();
         assert!(pacman.accurate_updates);
 
-        let without = assemble(&full_runner(), &Config::default(), true, true, false, None);
+        let without = assemble(
+            &full_runner(),
+            &Config::default(),
+            true,
+            true,
+            false,
+            false,
+            None,
+        );
         let pacman = without
             .sources
             .iter()
@@ -413,7 +591,7 @@ mod tests {
     fn assemble_respects_disabled_pacman_source() {
         let mut config = Config::default();
         config.sources.pacman = false;
-        let scan = assemble(&full_runner(), &config, true, true, true, None);
+        let scan = assemble(&full_runner(), &config, true, true, true, false, None);
         assert!(scan.sources.iter().all(|s| s.id != SourceId::pacman()));
         assert!(
             scan.packages
@@ -428,7 +606,7 @@ mod tests {
     fn assemble_omits_flatpak_scopes_when_excluded() {
         let mut config = Config::default();
         config.scan.flatpak_include_system = false;
-        let scan = assemble(&full_runner(), &config, true, true, true, None);
+        let scan = assemble(&full_runner(), &config, true, true, true, false, None);
         assert!(
             scan.sources
                 .iter()
@@ -450,7 +628,7 @@ mod tests {
             .with(FP_LIST_KEY, FP_LIST, 0)
             .with(FP_RUNTIME_KEY, "", 0)
             .with(FP_UPDATES_KEY, FP_UPDATES, 0);
-        let scan = assemble(&runner, &Config::default(), true, true, true, None);
+        let scan = assemble(&runner, &Config::default(), true, true, true, false, None);
         assert!(
             scan.packages
                 .iter()
@@ -465,6 +643,7 @@ mod tests {
         let scan = assemble(
             &full_runner(),
             &Config::default(),
+            false,
             false,
             false,
             false,

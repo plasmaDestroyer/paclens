@@ -17,6 +17,12 @@ use crate::model::{
     Confidence, DependencyEdge, EdgeKind, InstallReason, Package, ScanResult, SourceId,
 };
 
+/// pacman and AUR packages are both installed through libalpm: real dep
+/// data, real install reasons — the graph treats them identically (v0.3).
+pub(crate) fn is_alpm(source_id: &SourceId) -> bool {
+    *source_id == SourceId::pacman() || *source_id == SourceId::aur()
+}
+
 pub struct DepGraph {
     graph: DiGraph<String, DependencyEdge>,
     index: HashMap<String, NodeIndex>,
@@ -32,7 +38,7 @@ impl DepGraph {
         // duplicate — good enough for lookup purposes.
         let mut alias: HashMap<&str, &str> = HashMap::new();
         for pkg in &scan.packages {
-            if pkg.source_id != SourceId::pacman() {
+            if !is_alpm(&pkg.source_id) {
                 continue;
             }
             for provided in &pkg.provides {
@@ -48,16 +54,16 @@ impl DepGraph {
         };
         for pkg in &scan.packages {
             let from = dep_graph.get_or_insert(&pkg.name);
-            let is_pacman = pkg.source_id == SourceId::pacman();
+            let alpm = is_alpm(&pkg.source_id);
             for dep in &pkg.depends_on {
-                // Resolve a virtual dep to its real provider (pacman only).
-                let target = if !is_pacman || installed.contains(dep.as_str()) {
+                // Resolve a virtual dep to its real provider (libalpm only).
+                let target = if !alpm || installed.contains(dep.as_str()) {
                     dep.as_str()
                 } else {
                     alias.get(dep.as_str()).copied().unwrap_or(dep.as_str())
                 };
                 let to = dep_graph.get_or_insert(target);
-                let edge = if is_pacman {
+                let edge = if alpm {
                     DependencyEdge {
                         kind: EdgeKind::Real,
                         confidence: Confidence::Confirmed,
@@ -214,7 +220,7 @@ impl DepGraph {
             .packages
             .iter()
             .filter(|p| {
-                p.source_id == SourceId::pacman()
+                is_alpm(&p.source_id)
                     && p.install_reason == InstallReason::Dependency
                     && self.required_by(&p.name).is_empty()
             })

@@ -6,6 +6,7 @@
 //!
 //! Built in v0.0.2 (probing) and v0.0.3 (full `pacman -Qi` parser).
 
+pub mod aur;
 pub mod flatpak;
 pub mod pacman;
 

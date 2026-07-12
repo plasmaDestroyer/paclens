@@ -33,6 +33,7 @@ pub struct General {
 pub struct Sources {
     pub pacman: bool,
     pub flatpak: bool,
+    pub aur: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +42,9 @@ pub struct Scan {
     pub flatpak_include_system: bool,
     pub flatpak_include_user: bool,
     pub provider_timeout_secs: u64,
+    /// Pass `--devel` to paru's update check: compare VCS (-git) packages
+    /// against the upstream HEAD instead of the version string. Slower.
+    pub aur_devel: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,6 +93,7 @@ impl Default for Sources {
         Self {
             pacman: true,
             flatpak: true,
+            aur: true,
         }
     }
 }
@@ -99,6 +104,7 @@ impl Default for Scan {
             flatpak_include_system: true,
             flatpak_include_user: true,
             provider_timeout_secs: 10,
+            aur_devel: false,
         }
     }
 }
