@@ -11,6 +11,7 @@ makedepends=('cargo' 'git')
 optdepends=(
   'pacman-contrib: accurate update detection via checkupdates'
   'flatpak: Flatpak app and runtime scanning'
+  'paru: AUR update detection and updates'
 )
 source=("git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')

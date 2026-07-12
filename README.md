@@ -1,6 +1,6 @@
 # paclens
 
-A TUI-first **pacman + Flatpak** inspection and update tool for **Arch Linux**.
+A TUI-first **pacman + AUR + Flatpak** inspection and update tool for **Arch Linux**.
 
 paclens unifies your two package worlds into one dashboard: update both from
 one place, ask *why* anything is installed and what removing it would break,
@@ -34,13 +34,16 @@ your shell. Everything else is advisory: paclens never removes anything.
   and the update plan, live on one screen.
 - **Accurate update detection** — `checkupdates` (pacman-contrib) so counts
   are right even with a stale sync DB; falls back to `pacman -Qu` with a
-  staleness warning. Flatpak apps *and* runtimes.
+  staleness warning. Flatpak apps *and* runtimes. AUR packages via `paru`
+  (their own source row; `paru -Sua` runs unprivileged in the console), with
+  optional `--devel` checks for `-git` packages.
 - **Updates in a real terminal** — the update runs on a pty inside the TUI:
   sudo's password prompt, pacman's questions, colors and progress bars all
   work untouched. Ctrl-C interrupts the command, not the TUI.
 - **`why` inspector** — install reason, reverse-dependency chain as a tree
   with per-edge confidence labels, what a removal would break or orphan, and
-  a cautious verdict. Works for pacman packages, Flatpak apps and runtimes.
+  a cautious verdict. Works for pacman, AUR (with PKGBUILD/VCS caveats),
+  Flatpak apps and runtimes.
 - **Overlap detector** — finds apps installed both natively and as Flatpaks
   (curated map → reverse-DNS → display name, each with a decreasing
   confidence label) and shows a side-by-side tradeoff: versions, profile
@@ -70,8 +73,9 @@ cd paclens
 cargo install --path . --locked
 ```
 
-Optional dependency: `pacman-contrib` (for `checkupdates` — accurate update
-counts without touching your sync DB).
+Optional dependencies: `pacman-contrib` (for `checkupdates` — accurate
+update counts without touching your sync DB) and `paru` (AUR update
+detection and updates; foreign packages still list without it).
 
 ## Usage
 

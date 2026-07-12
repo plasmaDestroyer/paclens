@@ -536,6 +536,27 @@ YYYY-MM-DD | no --noconfirm for pacman
            | 0.0.1 → 0.2.0. PKGBUILD lives in packaging/ — AUR publish and
            | crates.io name registration are human steps. The two-week
            | daily-driver promotion criterion is the user's clock, not ours.
+
+2026-07-12 | AUR = the libalpm split, not a second pacman scan (v0.3)
+           | foreign packages already carry full pacman -Qi metadata; the
+           | scanner just relabels them (pacman -Qm names → source_id aur,
+           | works without paru; SCHEMA_VERSION 5). paru only does what
+           | pacman can't: update detection (-Qua, exit 1 = none, same line
+           | format as -Qu → shared parse_updates_as) and the update step
+           | (paru -Sua). The graph/why/overlap treat aur as alpm (is_alpm):
+           | Real/Confirmed edges, real install reasons, native side of
+           | overlaps, orphan candidates.
+
+2026-07-12 | paru is never run under sudo
+           | it builds as the user and self-elevates for the install step —
+           | needs_privilege() excludes aur; the pty console handles paru's
+           | own sudo prompt. The aur source shows "not found" without paru
+           | even though its packages still list (update path unavailable).
+
+2026-07-12 | -git detection = paru --devel, not our own ls-remote
+           | roadmap wanted upstream-HEAD comparison for VCS packages; paru
+           | already implements it. config scan.aur_devel (default false —
+           | slow) forwards the flag; the why caveat points at the knob.
 ```
 
 ---
