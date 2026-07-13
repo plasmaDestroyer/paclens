@@ -557,6 +557,26 @@ YYYY-MM-DD | no --noconfirm for pacman
            | roadmap wanted upstream-HEAD comparison for VCS packages; paru
            | already implements it. config scan.aur_devel (default false —
            | slow) forwards the flag; the why caveat points at the knob.
+
+2026-07-14 | cleanup screen must show reclaimable, not just total (v0.5 req)
+           | field finding: 11 GB pacman cache, but paccache -dk2 reclaims
+           | 0 bytes — the bulk is the *current* version of every installed
+           | package (the downgrade safety net), which paccache never touches.
+           | Showing "11 GB · run paccache -rk2" implies the total is
+           | cleanable. Fix when cleanup grows: parse paccache -d dry-run
+           | output for the honest reclaimable number, show both.
+
+2026-07-14 | AUR build cache belongs on the cleanup screen (v0.5 req)
+           | ~/.cache/paru was 9 GB on the reference system and paclens
+           | doesn't surface it. Suggest `paru -Sc --aur` (clone dir only).
+
+2026-07-14 | cleanup execution: paccache + paru -Sc --aur, never pacman -Sc
+           | pacman >=7's sandboxed downloader (DownloadUser=alpm) leaves
+           | download-* partials owned by the alpm user; pacman -Sc (and so
+           | paru -Sc) errors trying to remove them. paccache only globs
+           | *.pkg.tar* — immune. paru -Sc --aur skips the pacman cache
+           | entirely. Leftover download-* partials: detect and report with
+           | a suggested sudo rm, never auto-remove.
 ```
 
 ---
