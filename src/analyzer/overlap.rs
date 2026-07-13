@@ -42,29 +42,42 @@ struct MapFile {
 }
 
 #[derive(Deserialize)]
-struct MapEntry {
-    flatpak_id: String,
+pub(crate) struct MapEntry {
+    pub(crate) flatpak_id: String,
     pacman_name: String,
     #[serde(default)]
     alt_names: Vec<String>,
+    /// Curated native profile directories (`~/`-relative) — the migration
+    /// advisory's `Confirmed` tier (v0.4).
+    #[serde(default)]
+    pub(crate) profile_dirs: Vec<String>,
+}
+
+/// The bundled map plus user extras, as raw entries. The overlap matcher
+/// flattens this to names; the migration advisory reads `profile_dirs`.
+pub(crate) fn map_entries(extra: &[ExtraMapping]) -> Vec<MapEntry> {
+    let mut entries = toml::from_str::<MapFile>(BUNDLED_MAP)
+        .unwrap_or(MapFile {
+            mapping: Vec::new(),
+        })
+        .mapping;
+    entries.extend(extra.iter().map(|e| MapEntry {
+        flatpak_id: e.flatpak_id.clone(),
+        pacman_name: e.pacman_name.clone(),
+        alt_names: e.alt_names.clone(),
+        profile_dirs: e.profile_dirs.clone(),
+    }));
+    entries
 }
 
 /// flatpak id → candidate pacman names, bundled map + user extras (extras win
 /// by being checked from the same table; duplicates simply append names).
 fn known_map(extra: &[ExtraMapping]) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    let bundled: MapFile = toml::from_str(BUNDLED_MAP).unwrap_or(MapFile {
-        mapping: Vec::new(),
-    });
-    for entry in bundled.mapping {
+    for entry in map_entries(extra) {
         let names = map.entry(entry.flatpak_id).or_default();
         names.push(entry.pacman_name);
         names.extend(entry.alt_names);
-    }
-    for entry in extra {
-        let names = map.entry(entry.flatpak_id.clone()).or_default();
-        names.push(entry.pacman_name.clone());
-        names.extend(entry.alt_names.iter().cloned());
     }
     map
 }
@@ -248,6 +261,7 @@ mod tests {
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
+            profile_dir_sizes: Default::default(),
         }
     }
 
@@ -334,6 +348,7 @@ mod tests {
             flatpak_id: "com.custom.App".to_string(),
             pacman_name: "custom-app".to_string(),
             alt_names: Vec::new(),
+            profile_dirs: Vec::new(),
         }];
         let s = scan(vec![
             pacman_pkg("custom-app", InstallReason::Explicit),

@@ -6,6 +6,7 @@
 
 mod action;
 mod dependency;
+mod migrate;
 mod overlap;
 mod package;
 mod scan;
@@ -15,6 +16,7 @@ mod update;
 
 pub use action::{ActionKind, ActionPlan, ActionStep};
 pub use dependency::{Confidence, DependencyEdge, EdgeKind};
+pub use migrate::{Direction, MigrationReport, PathKind, PathMapping};
 pub use overlap::{MatchMethod, OverlapCandidate, PackageRef, PrimaryHeuristic, Tradeoff};
 pub use package::{InstallReason, Package};
 pub use scan::{CacheSizes, SCHEMA_VERSION, ScanResult};

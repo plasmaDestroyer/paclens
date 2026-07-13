@@ -185,6 +185,7 @@ mod tests {
             updates,
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
+            profile_dir_sizes: Default::default(),
         }
     }
 

@@ -247,6 +247,8 @@ fn assemble(
         updates,
         cache_sizes,
         flatpak_profile_sizes,
+        // Filled by the migration-advisory probe below (v0.4).
+        profile_dir_sizes: Default::default(),
     }
 }
 

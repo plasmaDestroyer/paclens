@@ -69,6 +69,11 @@ pub struct ExtraMapping {
     pub pacman_name: String,
     #[serde(default)]
     pub alt_names: Vec<String>,
+    /// Native profile directories (`~/`-relative) for the migration
+    /// advisory, e.g. `["~/.mozilla"]`. Optional — XDG-convention guesses
+    /// cover unmapped apps at lower confidence.
+    #[serde(default)]
+    pub profile_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

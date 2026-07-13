@@ -17,7 +17,8 @@ use super::{Package, PendingUpdate, Source};
 /// v4: flatpak `Package.size_bytes` populated (v0.1.5) — data enrichment;
 /// bumped so stale caches rescan instead of showing unknown sizes.
 /// v5: foreign packages split into the `aur` source (v0.3).
-pub const SCHEMA_VERSION: u32 = 5;
+/// v6: `profile_dir_sizes` — migration advisory probe (v0.4).
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -32,6 +33,12 @@ pub struct ScanResult {
     /// profile dir are absent.
     #[serde(default)]
     pub flatpak_profile_sizes: std::collections::HashMap<String, u64>,
+    /// Sizes of profile directories the migration advisory cares about
+    /// (v0.4), keyed by the `~/`-relative path. Only directories that exist
+    /// are present. Which paths get probed is decided by the pure
+    /// `analyzer::migrate::probe_paths`; the scanner just measures them.
+    #[serde(default)]
+    pub profile_dir_sizes: std::collections::HashMap<String, u64>,
 }
 
 impl ScanResult {
@@ -46,6 +53,7 @@ impl ScanResult {
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
+            profile_dir_sizes: Default::default(),
         }
     }
 }

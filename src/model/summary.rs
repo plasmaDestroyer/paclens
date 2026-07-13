@@ -112,6 +112,7 @@ mod tests {
             ],
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
+            profile_dir_sizes: Default::default(),
         }
     }
 
@@ -170,6 +171,7 @@ mod tests {
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
+            profile_dir_sizes: Default::default(),
         };
         assert_eq!(
             summarize(&empty, |_| true),

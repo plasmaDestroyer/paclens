@@ -8,6 +8,8 @@
 #   flatpak_id  (required)  Flatpak application ID
 #   pacman_name (required)  primary pacman package name
 #   alt_names   (optional)  alternative pacman names, checked if primary not found
+#   profile_dirs (optional) native profile directories (~/-relative) for the
+#                           migration advisory; verified locations only
 #   notes       (optional)  human context, not parsed at runtime
 #
 # Rules:
@@ -20,27 +22,32 @@
 [[mapping]]
 flatpak_id  = "org.mozilla.firefox"
 pacman_name = "firefox"
+profile_dirs = ["~/.mozilla"]
 
 [[mapping]]
 flatpak_id  = "org.chromium.Chromium"
 pacman_name = "chromium"
+profile_dirs = ["~/.config/chromium"]
 
 [[mapping]]
 flatpak_id  = "com.google.Chrome"
 pacman_name = "google-chrome"
 alt_names   = ["google-chrome-stable"]
 notes       = "AUR"
+profile_dirs = ["~/.config/google-chrome"]
 
 [[mapping]]
 flatpak_id  = "com.brave.Browser"
 pacman_name = "brave-bin"
 alt_names   = ["brave-browser"]
 notes       = "AUR"
+profile_dirs = ["~/.config/BraveSoftware"]
 
 [[mapping]]
 flatpak_id  = "com.microsoft.Edge"
 pacman_name = "microsoft-edge-stable-bin"
 notes       = "AUR"
+profile_dirs = ["~/.config/microsoft-edge"]
 
 [[mapping]]
 flatpak_id  = "io.github.zen_browser.zen"
@@ -49,33 +56,40 @@ notes       = "AUR; common Flatpak vs native pain point"
 
 
 # --- Email and Communication ---
+profile_dirs = ["~/.zen"]
 
 [[mapping]]
 flatpak_id  = "org.mozilla.Thunderbird"
 pacman_name = "thunderbird"
+profile_dirs = ["~/.thunderbird"]
 
 [[mapping]]
 flatpak_id  = "com.discordapp.Discord"
 pacman_name = "discord"
+profile_dirs = ["~/.config/discord"]
 
 [[mapping]]
 flatpak_id  = "org.signal.Signal"
 pacman_name = "signal-desktop"
 notes       = "AUR"
+profile_dirs = ["~/.config/Signal"]
 
 [[mapping]]
 flatpak_id  = "com.slack.Slack"
 pacman_name = "slack-desktop"
 notes       = "AUR"
+profile_dirs = ["~/.config/Slack"]
 
 [[mapping]]
 flatpak_id  = "us.zoom.Zoom"
 pacman_name = "zoom"
 notes       = "AUR"
+profile_dirs = ["~/.zoom"]
 
 [[mapping]]
 flatpak_id  = "org.telegram.desktop"
 pacman_name = "telegram-desktop"
+profile_dirs = ["~/.local/share/TelegramDesktop"]
 
 [[mapping]]
 flatpak_id  = "com.spotify.Client"
@@ -85,46 +99,55 @@ notes       = "AUR; spotify-launcher is the official Arch method"
 
 
 # --- Editors and IDEs ---
+profile_dirs = ["~/.config/spotify"]
 
 [[mapping]]
 flatpak_id  = "com.visualstudio.code"
 pacman_name = "visual-studio-code-bin"
 alt_names   = ["code"]
 notes       = "AUR; 'code' is the OSS variant in official repos"
+profile_dirs = ["~/.config/Code"]
 
 [[mapping]]
 flatpak_id  = "com.vscodium.codium"
 pacman_name = "vscodium"
 alt_names   = ["vscodium-bin"]
 notes       = "AUR"
+profile_dirs = ["~/.config/VSCodium"]
 
 [[mapping]]
 flatpak_id  = "com.jetbrains.IntelliJ-IDEA-Ultimate"
 pacman_name = "intellij-idea-ultimate-edition"
 notes       = "AUR"
+profile_dirs = ["~/.config/JetBrains", "~/.local/share/JetBrains"]
 
 [[mapping]]
 flatpak_id  = "com.jetbrains.IntelliJ-IDEA-Community"
 pacman_name = "intellij-idea-community-edition"
+profile_dirs = ["~/.config/JetBrains", "~/.local/share/JetBrains"]
 
 [[mapping]]
 flatpak_id  = "com.jetbrains.PyCharm-Professional"
 pacman_name = "pycharm-professional"
 notes       = "AUR"
+profile_dirs = ["~/.config/JetBrains", "~/.local/share/JetBrains"]
 
 [[mapping]]
 flatpak_id  = "com.jetbrains.PyCharm-Community"
 pacman_name = "pycharm-community-edition"
+profile_dirs = ["~/.config/JetBrains", "~/.local/share/JetBrains"]
 
 [[mapping]]
 flatpak_id  = "com.jetbrains.CLion"
 pacman_name = "clion"
 notes       = "AUR"
+profile_dirs = ["~/.config/JetBrains", "~/.local/share/JetBrains"]
 
 [[mapping]]
 flatpak_id  = "com.jetbrains.WebStorm"
 pacman_name = "webstorm"
 notes       = "AUR"
+profile_dirs = ["~/.config/JetBrains", "~/.local/share/JetBrains"]
 
 [[mapping]]
 flatpak_id  = "org.gnome.TextEditor"
@@ -144,10 +167,12 @@ pacman_name = "kate"
 [[mapping]]
 flatpak_id  = "org.videolan.VLC"
 pacman_name = "vlc"
+profile_dirs = ["~/.config/vlc"]
 
 [[mapping]]
 flatpak_id  = "io.mpv.Mpv"
 pacman_name = "mpv"
+profile_dirs = ["~/.config/mpv"]
 
 [[mapping]]
 flatpak_id  = "org.gnome.Totem"
@@ -156,6 +181,7 @@ pacman_name = "totem"
 [[mapping]]
 flatpak_id  = "org.kde.kdenlive"
 pacman_name = "kdenlive"
+profile_dirs = ["~/.local/share/kdenlive"]
 
 [[mapping]]
 flatpak_id  = "org.audacityteam.Audacity"
@@ -168,6 +194,7 @@ pacman_name = "gwenview"
 [[mapping]]
 flatpak_id  = "com.obsproject.Studio"
 pacman_name = "obs-studio"
+profile_dirs = ["~/.config/obs-studio"]
 
 [[mapping]]
 flatpak_id  = "io.github.celluloid_player.Celluloid"
@@ -179,18 +206,22 @@ pacman_name = "celluloid"
 [[mapping]]
 flatpak_id  = "org.gimp.GIMP"
 pacman_name = "gimp"
+profile_dirs = ["~/.config/GIMP"]
 
 [[mapping]]
 flatpak_id  = "org.inkscape.Inkscape"
 pacman_name = "inkscape"
+profile_dirs = ["~/.config/inkscape"]
 
 [[mapping]]
 flatpak_id  = "org.blender.Blender"
 pacman_name = "blender"
+profile_dirs = ["~/.config/blender"]
 
 [[mapping]]
 flatpak_id  = "org.kde.krita"
 pacman_name = "krita"
+profile_dirs = ["~/.local/share/krita"]
 
 [[mapping]]
 flatpak_id  = "org.darktable.Darktable"
@@ -198,21 +229,25 @@ pacman_name = "darktable"
 
 
 # --- Office and Productivity ---
+profile_dirs = ["~/.config/darktable"]
 
 [[mapping]]
 flatpak_id  = "org.libreoffice.LibreOffice"
 pacman_name = "libreoffice-fresh"
 alt_names   = ["libreoffice-still"]
+profile_dirs = ["~/.config/libreoffice"]
 
 [[mapping]]
 flatpak_id  = "md.obsidian.Obsidian"
 pacman_name = "obsidian"
 notes       = "AUR"
+profile_dirs = ["~/.config/obsidian"]
 
 [[mapping]]
 flatpak_id  = "com.logseq.Logseq"
 pacman_name = "logseq-desktop-bin"
 notes       = "AUR"
+profile_dirs = ["~/.logseq"]
 
 [[mapping]]
 flatpak_id  = "org.gnome.Evince"
@@ -259,14 +294,17 @@ pacman_name = "gnome-terminal"
 [[mapping]]
 flatpak_id  = "com.valvesoftware.Steam"
 pacman_name = "steam"
+profile_dirs = ["~/.local/share/Steam"]
 
 [[mapping]]
 flatpak_id  = "net.lutris.Lutris"
 pacman_name = "lutris"
+profile_dirs = ["~/.config/lutris", "~/.local/share/lutris"]
 
 [[mapping]]
 flatpak_id  = "org.libretro.RetroArch"
 pacman_name = "retroarch"
+profile_dirs = ["~/.config/retroarch"]
 
 [[mapping]]
 flatpak_id  = "com.heroicgameslauncher.hgl"
@@ -275,6 +313,7 @@ notes       = "AUR"
 
 
 # --- Developer Tools ---
+profile_dirs = ["~/.config/heroic"]
 
 [[mapping]]
 flatpak_id  = "io.podman_desktop.PodmanDesktop"
@@ -285,13 +324,16 @@ notes       = "AUR"
 flatpak_id  = "io.dbeaver.DBeaverCommunity"
 pacman_name = "dbeaver"
 notes       = "AUR"
+profile_dirs = ["~/.local/share/DBeaverData"]
 
 [[mapping]]
 flatpak_id  = "rest.insomnia.Insomnia"
 pacman_name = "insomnia-bin"
 notes       = "AUR"
+profile_dirs = ["~/.config/Insomnia"]
 
 [[mapping]]
 flatpak_id  = "com.getpostman.Postman"
 pacman_name = "postman-bin"
 notes       = "AUR"
+profile_dirs = ["~/.config/Postman"]
