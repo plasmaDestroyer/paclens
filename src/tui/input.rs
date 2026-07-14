@@ -47,6 +47,8 @@ pub enum Action {
     CycleSort,
     /// Package list → toggle the why side pane.
     ToggleWhy,
+    /// Flip the migration report's direction (overlap screen, v0.4).
+    FlipDirection,
     /// Filter input → append a character.
     FilterChar(char),
     FilterBackspace,
@@ -92,6 +94,9 @@ pub fn map_overlaps_key(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => Action::Next,
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        // Enter/w toggles the migration advisory pane (v0.4).
+        KeyCode::Enter | KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
+        KeyCode::Char('d') | KeyCode::Char('D') => Action::FlipDirection,
         KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
@@ -335,7 +340,15 @@ mod tests {
         assert_eq!(map_overlaps_key(plain(KeyCode::Up)), Action::Prev);
         assert_eq!(map_overlaps_key(plain(KeyCode::Esc)), Action::Back);
         assert_eq!(map_overlaps_key(plain(KeyCode::Char('q'))), Action::Quit);
-        assert_eq!(map_overlaps_key(plain(KeyCode::Enter)), Action::Ignore);
+        assert_eq!(map_overlaps_key(plain(KeyCode::Enter)), Action::ToggleWhy);
+        assert_eq!(
+            map_overlaps_key(plain(KeyCode::Char('w'))),
+            Action::ToggleWhy
+        );
+        assert_eq!(
+            map_overlaps_key(plain(KeyCode::Char('d'))),
+            Action::FlipDirection
+        );
     }
 
     #[test]

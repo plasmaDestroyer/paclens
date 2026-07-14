@@ -659,7 +659,7 @@ fn draw_overlaps(frame: &mut Frame, area: Rect, app: &App) {
                 .alignment(Alignment::Center),
             centered(inner, inner.width, 1),
         );
-        render_overlaps_footer(frame, bottom_line(inner), theme);
+        render_overlaps_footer(frame, bottom_line(inner), theme, false);
         return;
     }
 
@@ -718,10 +718,14 @@ fn draw_overlaps(frame: &mut Frame, area: Rect, app: &App) {
     state.select(Some(app.overlap_cursor()));
     frame.render_stateful_widget(table, chunks[0], &mut state);
 
-    if let Some(overlap) = app.selected_overlap() {
+    if app.is_migrate_open()
+        && let Some(report) = app.migration_report()
+    {
+        render_migrate_pane(frame, chunks[1], app, &report);
+    } else if let Some(overlap) = app.selected_overlap() {
         render_tradeoff_pane(frame, chunks[1], app, overlap);
     }
-    render_overlaps_footer(frame, chunks[2], theme);
+    render_overlaps_footer(frame, chunks[2], theme, app.is_migrate_open());
 }
 
 fn confidence_span(confidence: crate::model::Confidence, theme: &Theme) -> Span<'static> {
@@ -810,13 +814,115 @@ fn render_tradeoff_pane(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_overlaps_footer(frame: &mut Frame, area: Rect, theme: &Theme) {
+/// The migration advisory pane (v0.4): Enter on an overlap swaps the
+/// tradeoff pane for this. Per mapping two lines (from + to), then the
+/// analyzer's warnings; truncated content points at the CLI report.
+fn render_migrate_pane(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    report: &crate::model::MigrationReport,
+) {
+    use crate::model::PathKind;
+    let theme = &app.theme;
+    let g = theme.glyphs;
+    let title = format!(
+        " migrate {} {} {} [{}] ",
+        report.display_name,
+        g.arrow,
+        report.direction.target(),
+        report.confidence,
+    );
+    let pane = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(title, theme.header))
+        .padding(Padding::horizontal(1));
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    if report.mappings.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no profile data found on either side — nothing to migrate",
+            theme.dim,
+        )));
+    }
+    for m in &report.mappings {
+        let (from, from_bytes, to, to_bytes) = m.endpoints(report.direction);
+        let mut spans = vec![
+            Span::styled(format!("{:9}", m.kind.to_string()), theme.dim),
+            Span::styled(from.to_string(), theme.primary),
+        ];
+        match from_bytes {
+            Some(b) => spans.push(Span::styled(
+                format!("  {}", crate::format::human_bytes(b)),
+                theme.accent,
+            )),
+            None => spans.push(Span::styled("  (not present)", theme.dim)),
+        }
+        spans.push(Span::styled(format!("  [{}]", m.confidence), theme.dim));
+        lines.push(Line::from(spans));
+
+        let to_span = if m.kind == PathKind::Cache {
+            Span::styled("(skip — cache regenerates)", theme.dim)
+        } else if let Some(b) = to_bytes {
+            Span::styled(
+                format!("{to}  (exists, {})", crate::format::human_bytes(b)),
+                theme.accent,
+            )
+        } else {
+            Span::styled(to.to_string(), theme.primary)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:9}{} ", "", g.arrow), theme.dim),
+            to_span,
+        ]));
+    }
+    for w in &report.warnings {
+        lines.push(Line::from(vec![
+            Span::styled("! ", theme.accent),
+            Span::styled(w.clone(), theme.dim),
+        ]));
+    }
+
+    // No scrolling in a fixed pane: truncate and point at the CLI report.
+    let fit = inner.height as usize;
+    if lines.len() > fit && fit > 0 {
+        lines.truncate(fit - 1);
+        lines.push(Line::from(Span::styled(
+            format!("… more — run `paclens migrate {}`", report.display_name),
+            theme.dim,
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_overlaps_footer(frame: &mut Frame, area: Rect, theme: &Theme, migrate_open: bool) {
     let g = theme.glyphs;
     let updown = format!("{}/{}", g.up, g.down);
-    let mut line = keys_line(
-        theme,
-        &[(&updown, "select"), ("esc", "back"), ("q", "quit")],
-    );
+    let mut line = if migrate_open {
+        keys_line(
+            theme,
+            &[
+                (&updown, "select"),
+                ("d", "flip direction"),
+                ("enter", "close"),
+                ("esc", "back"),
+            ],
+        )
+    } else {
+        keys_line(
+            theme,
+            &[
+                (&updown, "select"),
+                ("enter", "migrate report"),
+                ("esc", "back"),
+                ("q", "quit"),
+            ],
+        )
+    };
     line.spans.push(Span::styled(
         "   advisory only — decide, then act yourself",
         theme.dim,
@@ -2099,6 +2205,65 @@ mod tests {
         );
         assert!(text.contains("advisory only"), "{text}");
         assert!(text.contains("esc back"), "{text}");
+    }
+
+    #[test]
+    fn migrate_pane_replaces_the_tradeoff_on_enter() {
+        let mut s = overlap_scan();
+        s.profile_dir_sizes
+            .insert("~/.mozilla".to_string(), 1_200_000_000);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.toggle_why();
+        let text = render(&app, 110, 26);
+        // Explicit native + unknown flatpak → primary native → to-native.
+        assert!(
+            text.contains("migrate Firefox -> native [confirmed]"),
+            "pane title missing:\n{text}"
+        );
+        assert!(text.contains("(not present)"), "{text}");
+        assert!(
+            text.contains("-> ~/.mozilla  (exists, 1.12 GiB)"),
+            "target annotation missing:\n{text}"
+        );
+        assert!(text.contains("! close Firefox everywhere"), "{text}");
+        assert!(text.contains("! backup both sides"), "{text}");
+        assert!(
+            !text.contains("sandboxing"),
+            "tradeoff must be gone:\n{text}"
+        );
+        assert!(text.contains("d flip direction"), "footer keys:\n{text}");
+        assert!(text.contains("enter close"), "{text}");
+    }
+
+    #[test]
+    fn migrate_pane_flips_direction_on_d() {
+        let mut s = overlap_scan();
+        s.profile_dir_sizes
+            .insert("~/.mozilla".to_string(), 1_200_000_000);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.toggle_why();
+        app.flip_migrate_direction();
+        let text = render(&app, 110, 26);
+        assert!(
+            text.contains("migrate Firefox -> flatpak [confirmed]"),
+            "{text}"
+        );
+        assert!(text.contains("~/.mozilla  1.12 GiB"), "{text}");
+        assert!(
+            text.contains("-> ~/.var/app/org.mozilla.firefox/.mozilla"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn migrate_pane_without_data_says_nothing_to_migrate() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.toggle_why();
+        let text = render(&app, 110, 26);
+        assert!(text.contains("nothing to migrate"), "{text}");
     }
 
     #[test]

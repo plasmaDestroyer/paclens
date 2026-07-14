@@ -15,8 +15,6 @@ pub enum Direction {
 }
 
 impl Direction {
-    // TODO(v0.4): the TUI's direction-flip key lands next commit.
-    #[allow(dead_code)]
     pub fn flipped(self) -> Self {
         match self {
             Direction::ToFlatpak => Direction::ToNative,

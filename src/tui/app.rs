@@ -11,8 +11,8 @@ use crate::analyzer::{self, DepGraph, WhyReport};
 use crate::config::{Config, ExtraMapping, MinConfidence};
 use crate::executor::ExecutionReport;
 use crate::fuzzy;
-use crate::model::OverlapCandidate;
 use crate::model::{ActionPlan, Package, PendingUpdate, ScanResult, Source, SourceId, summarize};
+use crate::model::{Direction, MigrationReport, OverlapCandidate};
 use crate::planner;
 use crate::tui::theme::Theme;
 
@@ -212,6 +212,12 @@ pub struct App {
     overlaps: Vec<OverlapCandidate>,
     /// Overlap screen: cursor over `overlaps`.
     overlap_cursor: usize,
+    /// Overlap screen: Enter swaps the tradeoff pane for the migration
+    /// advisory report (v0.4).
+    overlap_migrate: bool,
+    /// `d` direction override; `None` = the report's default (toward the
+    /// likely-primary side). Cleared when the cursor moves.
+    migrate_direction: Option<Direction>,
 }
 
 impl App {
@@ -253,6 +259,8 @@ impl App {
             cleanup_why: false,
             overlaps,
             overlap_cursor: 0,
+            overlap_migrate: false,
+            migrate_direction: None,
         }
     }
 
@@ -350,6 +358,7 @@ impl App {
             (Screen::Overlaps, _) => {
                 let max = self.overlaps.len().saturating_sub(1);
                 self.overlap_cursor = (self.overlap_cursor + 1).min(max);
+                self.migrate_direction = None; // per-candidate intent
             }
             (Screen::Cleanup, _) => {
                 let max = self.orphans.len().saturating_sub(1);
@@ -366,6 +375,7 @@ impl App {
             (Screen::Packages, _) => self.pkg_move(-1),
             (Screen::Overlaps, _) => {
                 self.overlap_cursor = self.overlap_cursor.saturating_sub(1);
+                self.migrate_direction = None;
             }
             (Screen::Cleanup, _) => {
                 self.cleanup_cursor = self.cleanup_cursor.saturating_sub(1);
@@ -453,6 +463,8 @@ impl App {
         self.overlap_cursor = self
             .overlap_cursor
             .min(self.overlaps.len().saturating_sub(1));
+        self.overlap_migrate = false;
+        self.migrate_direction = None;
         self.screen = Screen::Overlaps;
     }
     pub fn overlaps(&self) -> &[OverlapCandidate] {
@@ -464,9 +476,37 @@ impl App {
     pub fn selected_overlap(&self) -> Option<&OverlapCandidate> {
         self.overlaps.get(self.overlap_cursor)
     }
-    /// Esc anywhere non-dashboard unwinds toward the dashboard.
+    /// Esc unwinds: migration pane first, then back to the dashboard.
     pub fn close_overlaps(&mut self) {
-        self.screen = Screen::Dashboard;
+        if self.overlap_migrate {
+            self.overlap_migrate = false;
+            self.migrate_direction = None;
+        } else {
+            self.screen = Screen::Dashboard;
+        }
+    }
+    pub fn is_migrate_open(&self) -> bool {
+        self.overlap_migrate
+    }
+    /// The migration advisory for the selected overlap (v0.4) — recomputed
+    /// per draw off the scan (P5), honoring the `d` direction override.
+    pub fn migration_report(&self) -> Option<MigrationReport> {
+        let candidate = self.selected_overlap()?;
+        Some(analyzer::migrate::report(
+            &self.scan,
+            candidate,
+            &self.opts.extra_mappings,
+            self.migrate_direction,
+        ))
+    }
+    /// `d` on the open report: flip the migration direction.
+    pub fn flip_migrate_direction(&mut self) {
+        if !self.overlap_migrate {
+            return;
+        }
+        if let Some(report) = self.migration_report() {
+            self.migrate_direction = Some(report.direction.flipped());
+        }
     }
 
     // --- cleanup screen (roadmap v0.1.5) ---
@@ -931,10 +971,14 @@ impl App {
     }
 
     pub fn toggle_why(&mut self) {
-        if self.screen == Screen::Cleanup {
-            self.cleanup_why = !self.cleanup_why;
-        } else {
-            self.why_open = !self.why_open;
+        match self.screen {
+            Screen::Cleanup => self.cleanup_why = !self.cleanup_why,
+            // The overlap screen's detail toggle is the migration report.
+            Screen::Overlaps => {
+                self.overlap_migrate = !self.overlap_migrate;
+                self.migrate_direction = None;
+            }
+            _ => self.why_open = !self.why_open,
         }
     }
 
@@ -1339,6 +1383,60 @@ mod tests {
         assert_eq!(app.overlap_cursor(), 0);
         app.close_overlaps();
         assert_eq!(app.screen(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn migrate_pane_toggles_flips_and_unwinds() {
+        let mut scan = overlap_scan();
+        scan.profile_dir_sizes
+            .insert("~/.mozilla".to_string(), 1_000);
+        let mut app = App::new(scan, Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        assert!(!app.is_migrate_open());
+
+        // Enter (ToggleWhy on this screen) opens the report.
+        app.toggle_why();
+        assert!(app.is_migrate_open());
+        let report = app.migration_report().expect("report");
+        // firefox is explicit native + unknown flatpak → primary native.
+        assert_eq!(report.direction, Direction::ToNative);
+        assert_eq!(report.mappings.len(), 1);
+
+        // d flips; moving the cursor clears the override but keeps the pane.
+        app.flip_migrate_direction();
+        assert_eq!(
+            app.migration_report().expect("report").direction,
+            Direction::ToFlatpak
+        );
+        app.on_next();
+        assert!(app.is_migrate_open());
+        app.on_prev();
+        assert_eq!(
+            app.migration_report().expect("report").direction,
+            Direction::ToNative,
+            "cursor movement must clear the direction override"
+        );
+
+        // Esc unwinds the pane first, then the screen.
+        app.close_overlaps();
+        assert!(!app.is_migrate_open());
+        assert_eq!(app.screen(), Screen::Overlaps);
+        app.close_overlaps();
+        assert_eq!(app.screen(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn flip_does_nothing_while_the_pane_is_closed() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.flip_migrate_direction();
+        assert!(app.migration_report().is_some());
+        assert!(!app.is_migrate_open());
+        // The default direction is untouched.
+        assert_eq!(
+            app.migration_report().expect("report").direction,
+            Direction::ToNative
+        );
     }
 
     #[test]

@@ -209,6 +209,7 @@ fn run_loop(
             Action::StartFilter => app.start_filter(),
             Action::CycleSort => app.cycle_sort(),
             Action::ToggleWhy => app.toggle_why(),
+            Action::FlipDirection => app.flip_migrate_direction(),
             Action::FilterChar(c) => app.filter_push(c),
             Action::FilterBackspace => app.filter_pop(),
             Action::FilterAccept => app.filter_accept(),
