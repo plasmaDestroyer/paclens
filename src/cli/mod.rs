@@ -1,5 +1,6 @@
 //! CLI entry: argument parsing, the init sequence, and subcommand dispatch.
 
+mod migrate;
 mod overlaps;
 mod status;
 mod style;
@@ -75,8 +76,32 @@ pub enum Command {
     },
     /// List detected Flatpak/native overlaps.
     Overlaps,
+    /// Show the migration advisory report for one overlap (read-only).
+    Migrate {
+        /// The overlap to report on: display name, package name, or app id.
+        package: String,
+        /// Migration direction (default: toward the likely-primary side).
+        #[arg(long, value_enum, value_name = "SIDE")]
+        to: Option<MigrateTarget>,
+    },
     /// Print an orphan and cache summary (advisory only).
     Cleanup,
+}
+
+/// `--to` values for `migrate`, mapped onto the model's `Direction`.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum MigrateTarget {
+    Flatpak,
+    Native,
+}
+
+impl From<MigrateTarget> for crate::model::Direction {
+    fn from(t: MigrateTarget) -> Self {
+        match t {
+            MigrateTarget::Flatpak => crate::model::Direction::ToFlatpak,
+            MigrateTarget::Native => crate::model::Direction::ToNative,
+        }
+    }
 }
 
 /// Parse args, load config, initialize logging, and dispatch.
@@ -188,6 +213,24 @@ pub fn run() -> ExitCode {
             );
             report(
                 overlaps::run(&config, cli.refresh, config_path.as_deref(), &out_styles),
+                &err_styles,
+            )
+        }
+        Command::Migrate { package, to } => {
+            let out_styles = Styles::resolve(
+                cli.no_color,
+                config.general.color_theme(),
+                std::io::stdout().is_terminal(),
+            );
+            report(
+                migrate::run(
+                    &config,
+                    cli.refresh,
+                    config_path.as_deref(),
+                    &package,
+                    to.map(Into::into),
+                    &out_styles,
+                ),
                 &err_styles,
             )
         }

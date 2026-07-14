@@ -6,9 +6,6 @@
 //! Nothing here reads the filesystem, and nothing downstream executes any of
 //! it: the report is "what you would need to do manually" (roadmap v0.4).
 
-// TODO(v0.4): drop once the scanner/CLI/TUI commits consume these fns.
-#![allow(dead_code)]
-
 use crate::config::ExtraMapping;
 use crate::model::{
     Confidence, Direction, MigrationReport, OverlapCandidate, PathKind, PathMapping,

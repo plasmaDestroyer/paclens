@@ -3,9 +3,6 @@
 //! paclens never copies, moves, or deletes profile data (that is v0.5's
 //! problem, behind backups and confirmations).
 
-// TODO(v0.4): drop once the CLI/TUI renderer commits consume these types.
-#![allow(dead_code)]
-
 use crate::model::Confidence;
 
 /// Which side the user would consolidate into.
@@ -18,6 +15,8 @@ pub enum Direction {
 }
 
 impl Direction {
+    // TODO(v0.4): the TUI's direction-flip key lands next commit.
+    #[allow(dead_code)]
     pub fn flipped(self) -> Self {
         match self {
             Direction::ToFlatpak => Direction::ToNative,
