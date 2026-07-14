@@ -82,8 +82,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
     let flatpak_available = FlatpakProvider::new(runner).is_available();
     let checkupdates = crate::providers::binary_on_path(pacman::CHECKUPDATES_BIN);
     let paru = crate::providers::binary_on_path(aur::PARU_BIN);
-    let profile_dir =
-        directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".var").join("app"));
+    let home_dir = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
     assemble(
         runner,
         config,
@@ -91,7 +90,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
         flatpak_available,
         checkupdates,
         paru,
-        profile_dir.as_deref(),
+        home_dir.as_deref(),
     )
 }
 
@@ -110,9 +109,11 @@ fn assemble(
     flatpak_available: bool,
     checkupdates_available: bool,
     paru_available: bool,
-    flatpak_profile_dir: Option<&Path>,
+    home_dir: Option<&Path>,
 ) -> ScanResult {
     let now = Utc::now();
+    let flatpak_profile_dir = home_dir.map(|h| h.join(".var").join("app"));
+    let flatpak_profile_dir = flatpak_profile_dir.as_deref();
     let scan_pacman = config.sources.pacman && pacman_available;
     let scan_flatpak = config.sources.flatpak && flatpak_available;
     let scan_aur = config.sources.aur && scan_pacman;
@@ -239,7 +240,7 @@ fn assemble(
     reconcile_flatpak_updates(&mut flatpak_updates, &packages);
     updates.append(&mut flatpak_updates);
 
-    ScanResult {
+    let mut scan = ScanResult {
         schema_version: SCHEMA_VERSION,
         scanned_at: now,
         sources,
@@ -247,9 +248,49 @@ fn assemble(
         updates,
         cache_sizes,
         flatpak_profile_sizes,
-        // Filled by the migration-advisory probe below (v0.4).
         profile_dir_sizes: Default::default(),
+    };
+
+    // v0.4 migration-advisory probe. Which paths matter is pure analyzer
+    // logic (overlap candidates → their profile-dir pairs); the scanner only
+    // expands `~` and measures. Runs after the lanes join because it needs
+    // the assembled package list.
+    let candidates = crate::analyzer::detect_overlaps(
+        &scan,
+        &config.overlap.ignore,
+        &config.overlap.extra_mappings,
+    );
+    let paths = crate::analyzer::migrate::probe_paths(&candidates, &config.overlap.extra_mappings);
+    scan.profile_dir_sizes = measure_profile_dirs(runner, home_dir, &paths);
+    scan
+}
+
+/// Measure the migration advisory's candidate dirs (`~/`-relative paths from
+/// the pure probe). Dirs that don't exist (du fails) are simply absent.
+/// ponytail: du -sb per dir — a probed Steam library takes seconds; fine
+/// because it only runs for apps installed on *both* sides.
+fn measure_profile_dirs(
+    runner: &dyn CommandRunner,
+    home: Option<&Path>,
+    paths: &[String],
+) -> std::collections::HashMap<String, u64> {
+    let Some(home) = home else {
+        return Default::default();
+    };
+    let mut sizes = std::collections::HashMap::new();
+    for path in paths {
+        let Some(rel) = path.strip_prefix("~/") else {
+            continue;
+        };
+        let abs = home.join(rel);
+        let Some(abs) = abs.to_str() else { continue };
+        if let Ok(out) = runner.run("du", &["-sb", abs])
+            && let Some(bytes) = parse_du_bytes(&out.stdout)
+        {
+            sizes.insert(path.clone(), bytes);
+        }
     }
+    sizes
 }
 
 /// Join one scan lane; a panicked lane yields its default (empty) result and
@@ -398,7 +439,7 @@ mod tests {
             true,
             true,
             false,
-            Some(Path::new("/home/t/.var/app")),
+            Some(Path::new("/home/t")),
         );
         assert_eq!(
             scan.flatpak_profile_sizes.get("org.mozilla.firefox"),
@@ -414,6 +455,79 @@ mod tests {
                 .contains_key("md.obsidian.Obsidian"),
             "missing dir must be absent"
         );
+    }
+
+    /// A minimal -Qi stanza for firefox, appended to QI_SMALL so the scan
+    /// contains an overlap with the FP_LIST org.mozilla.firefox app.
+    const FIREFOX_QI: &str = "Name            : firefox\n\
+                              Version         : 141.0-1\n\
+                              Description     : Fast, Private & Safe Web Browser\n\
+                              Depends On      : None\n\
+                              Required By     : None\n\
+                              Optional Deps   : None\n\
+                              Provides        : None\n\
+                              Installed Size  : 250.00 MiB\n\
+                              Install Reason  : Explicitly installed\n";
+
+    #[test]
+    fn migration_probe_measures_existing_profile_dirs() {
+        let qi = format!("{QI_SMALL}\n{FIREFOX_QI}");
+        let runner = full_runner()
+            .with("pacman -Qi", &qi, 0)
+            // The curated pair exists on both sides…
+            .with("du -sb /home/t/.mozilla", "1200\t/home/t/.mozilla\n", 0)
+            .with(
+                "du -sb /home/t/.var/app/org.mozilla.firefox/.mozilla",
+                "300\t/home/t/.var/app/org.mozilla.firefox/.mozilla\n",
+                0,
+            )
+            // …one XDG guess exists too. Everything unmocked "fails" = absent.
+            .with(
+                "du -sb /home/t/.cache/firefox",
+                "77\t/home/t/.cache/firefox\n",
+                0,
+            );
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            false,
+            Some(Path::new("/home/t")),
+        );
+        assert_eq!(scan.profile_dir_sizes.get("~/.mozilla"), Some(&1200));
+        assert_eq!(
+            scan.profile_dir_sizes
+                .get("~/.var/app/org.mozilla.firefox/.mozilla"),
+            Some(&300)
+        );
+        assert_eq!(scan.profile_dir_sizes.get("~/.cache/firefox"), Some(&77));
+        assert!(
+            !scan.profile_dir_sizes.contains_key("~/.config/firefox"),
+            "missing dirs must be absent"
+        );
+    }
+
+    #[test]
+    fn migration_probe_skips_without_a_home_dir_or_overlaps() {
+        // No home dir → nothing measured even with an overlap present.
+        let qi = format!("{QI_SMALL}\n{FIREFOX_QI}");
+        let runner = full_runner().with("pacman -Qi", &qi, 0);
+        let scan = assemble(&runner, &Config::default(), true, true, true, false, None);
+        assert!(scan.profile_dir_sizes.is_empty());
+
+        // No overlaps (stock fixtures) → no du probes issued at all.
+        let scan = assemble(
+            &full_runner(),
+            &Config::default(),
+            true,
+            true,
+            true,
+            false,
+            Some(Path::new("/home/t")),
+        );
+        assert!(scan.profile_dir_sizes.is_empty());
     }
 
     #[test]
