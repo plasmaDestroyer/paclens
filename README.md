@@ -49,6 +49,11 @@ your shell. Everything else is advisory: paclens never removes anything.
   confidence label) and shows a side-by-side tradeoff: versions, profile
   locations and sizes, sandboxing, integration, which install is likely the
   one you actually use.
+- **Migration advisory** — for each overlap, where both sides keep their
+  config/data/cache (curated map at full confidence, XDG-convention guesses
+  labeled as such), which direction consolidation would go, and the exact
+  manual steps — paclens copies and removes nothing (execution lands in
+  v0.5, behind backups).
 - **Cleanup report** — orphan candidates derived from the dependency graph
   (no `pacman -Qtd`), unused Flatpak runtimes, cache sizes, and the exact
   commands to reclaim the space — shown as text for *you* to run.
@@ -93,6 +98,8 @@ detection and updates; foreign packages still list without it).
 | `/` | package list | fuzzy filter |
 | `s` | package list | cycle sort: updates → reason → name → size |
 | `w` | package list | why pane for the selected package |
+| `enter` | overlaps | migration report for the selected overlap |
+| `d` | overlaps | flip the migration direction |
 | `enter` | cleanup | why report for the selected orphan |
 | `esc` | everywhere | back / unwind |
 | `q` | everywhere | quit |
@@ -104,8 +111,10 @@ paclens status            # dashboard summary to stdout
 paclens update            # update all sources (asks y/N first)
 paclens why firefox       # why is this installed, what breaks without it
 paclens overlaps          # Flatpak/native duplicates with tradeoffs
-paclens cleanup           # orphan + cache report (advisory only)
+paclens migrate firefox   # where both sides keep data + manual steps
 ```
+
+(The cleanup report is TUI-only for now — press `c` on the dashboard.)
 
 `--refresh` forces a re-scan, `--no-color` gives plain ASCII output,
 `--config <path>` uses an alternate config.

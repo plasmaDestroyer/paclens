@@ -577,6 +577,29 @@ YYYY-MM-DD | no --noconfirm for pacman
            | *.pkg.tar* — immune. paru -Sc --aur skips the pacman cache
            | entirely. Leftover download-* partials: detect and report with
            | a suggested sudo rm, never auto-remove.
+
+2026-07-14 | migration probe: scanner asks the pure analyzer what to measure
+           | (v0.4) the profile-dir list depends on overlap matching, so the
+           | scanner runs detect_overlaps + migrate::probe_paths on the
+           | just-assembled scan and du -sb's the results into
+           | ScanResult.profile_dir_sizes (schema v6). The purity contract
+           | holds: the analyzer never touches disk; the scanner never
+           | decides which paths matter. Overlaps still recompute on load.
+
+2026-07-14 | flatpak counterpart paths derive from the sandbox HOME convention
+           | (v0.4) Flatpak sets the XDG vars inside ~/.var/app/<id>, so
+           | ~/.config/X ↔ <sandbox>/config/X, ~/.local/share/X ↔ data/X,
+           | ~/.cache/X ↔ cache/X, and any other dotdir (~/.mozilla) keeps
+           | its name under the sandbox HOME. Apps that ignore XDG inside
+           | the sandbox exist; the probe's existence data plus the
+           | "advisory — verify" warning carry that risk honestly.
+
+2026-07-14 | migration report defaults toward the likely-primary side
+           | (v0.4, user choice) consolidate into where the data already
+           | is; d/--to flips. Unknown primary defaults to native → flatpak
+           | with an explicit "primary side unclear" warning — never a
+           | silent guess. Rows appear only when at least one side exists;
+           | cache rows always advise "skip — regenerates".
 ```
 
 ---

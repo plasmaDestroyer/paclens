@@ -77,7 +77,8 @@ ignore = []
 min_confidence = "Inferred"
 
 # User-defined overlap mappings, merged with the built-in overlap_map.toml.
-# Each entry maps a Flatpak app ID to a pacman package name.
+# Each entry maps a Flatpak app ID to a pacman package name. Optional
+# profile_dirs (~/-relative) feed the migration advisory at full confidence.
 # Uncomment and add entries as needed:
 #
 # [[overlap.extra_mappings]]
@@ -88,6 +89,7 @@ min_confidence = "Inferred"
 # flatpak_id  = "com.example.Another"
 # pacman_name = "another-app"
 # alt_names   = ["another-app-bin"]
+# profile_dirs = ["~/.config/another-app"]
 
 
 [cleanup]
