@@ -172,8 +172,7 @@ mod tests {
             updates: Vec::new(),
             cache_sizes: CacheSizes {
                 pacman_cache_bytes: Some(5_986_725_560),
-                flatpak_unused_runtime_count: None,
-                flatpak_unused_runtime_bytes: None,
+                ..CacheSizes::default()
             },
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),

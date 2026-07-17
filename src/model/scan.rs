@@ -18,7 +18,8 @@ use super::{Package, PendingUpdate, Source};
 /// bumped so stale caches rescan instead of showing unknown sizes.
 /// v5: foreign packages split into the `aur` source (v0.3).
 /// v6: `profile_dir_sizes` — migration advisory probe (v0.4).
-pub const SCHEMA_VERSION: u32 = 6;
+/// v7: `CacheSizes` reclaimable + paru build cache (v0.5 cleanup honesty).
+pub const SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -63,6 +64,14 @@ impl ScanResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheSizes {
     pub pacman_cache_bytes: Option<u64>,
+    /// What `paccache -rk2` would actually free (its dry run) — the honest
+    /// number next to the total, which is mostly current-version tarballs
+    /// (v0.5 cleanup honesty; dev-notes 2026-07-14). `None` = no paccache.
+    #[serde(default)]
+    pub pacman_cache_reclaimable_bytes: Option<u64>,
+    /// `~/.cache/paru` — AUR build cache (clones + built packages).
+    #[serde(default)]
+    pub paru_cache_bytes: Option<u64>,
     pub flatpak_unused_runtime_count: Option<u32>,
     pub flatpak_unused_runtime_bytes: Option<u64>,
 }

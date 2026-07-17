@@ -1059,16 +1059,35 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     let inner = pane.inner(area);
     frame.render_widget(pane, area);
 
-    let kv = |label: &str, value: Span<'static>| {
-        Line::from(vec![
+    let kv = |label: &str, value: Vec<Span<'static>>| {
+        let mut spans = vec![
             Span::styled(format!("{} ", theme.glyphs.bullet), theme.dim),
             Span::styled(format!("{:17}", label), theme.dim),
-            value,
-        ])
+        ];
+        spans.extend(value);
+        Line::from(spans)
     };
-    let pacman_cache = match app.scan().cache_sizes.pacman_cache_bytes {
-        Some(b) => Span::styled(crate::format::human_bytes(b), theme.accent),
-        None => Span::styled("—".to_string(), theme.dim),
+    let sizes = &app.scan().cache_sizes;
+    // Honesty rule (dev-notes 2026-07-14): the total is mostly the
+    // current-version tarballs paccache never touches — show what a
+    // `paccache -rk2` would actually free next to it.
+    let pacman_cache = match (
+        sizes.pacman_cache_bytes,
+        sizes.pacman_cache_reclaimable_bytes,
+    ) {
+        (Some(b), Some(0)) => vec![
+            Span::styled(crate::format::human_bytes(b), theme.accent),
+            Span::styled(" (nothing to reclaim)", theme.dim),
+        ],
+        (Some(b), Some(r)) => vec![
+            Span::styled(crate::format::human_bytes(b), theme.accent),
+            Span::styled(
+                format!(" ({} reclaimable)", crate::format::human_bytes(r)),
+                theme.primary,
+            ),
+        ],
+        (Some(b), None) => vec![Span::styled(crate::format::human_bytes(b), theme.accent)],
+        (None, _) => vec![Span::styled("—".to_string(), theme.dim)],
     };
     let (unused_count, unused_bytes) = app.unused_runtime_summary();
     let unused = if unused_count == 0 {
@@ -1088,12 +1107,18 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
         .filter_map(|n| app.orphan_size(n))
         .sum();
 
-    let mut lines = vec![
-        kv("pacman cache", pacman_cache),
-        kv("unused runtimes", unused),
+    let mut lines = vec![kv("pacman cache", pacman_cache)];
+    if let Some(b) = sizes.paru_cache_bytes {
+        lines.push(kv(
+            "paru build cache",
+            vec![Span::styled(crate::format::human_bytes(b), theme.accent)],
+        ));
+    }
+    lines.extend([
+        kv("unused runtimes", vec![unused]),
         kv(
             "orphans",
-            if app.cleanup_orphans().is_empty() {
+            vec![if app.cleanup_orphans().is_empty() {
                 Span::styled("none".to_string(), theme.dim)
             } else {
                 Span::styled(
@@ -1104,16 +1129,25 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
                     ),
                     theme.accent,
                 )
-            },
+            }],
         ),
         Line::default(),
         Line::from(Span::styled(
             "suggested — review, then run yourself:",
             theme.dim,
         )),
-        Line::from(Span::styled("  paccache -rk2", theme.primary)),
-        Line::from(Span::styled("  flatpak uninstall --unused", theme.primary)),
-    ];
+    ]);
+    // Only suggest what would actually do something.
+    if sizes.pacman_cache_reclaimable_bytes != Some(0) {
+        lines.push(Line::from(Span::styled("  paccache -rk2", theme.primary)));
+    }
+    lines.push(Line::from(Span::styled(
+        "  flatpak uninstall --unused",
+        theme.primary,
+    )));
+    if sizes.paru_cache_bytes.is_some() {
+        lines.push(Line::from(Span::styled("  paru -Sc --aur", theme.primary)));
+    }
     if !app.cleanup_orphans().is_empty() {
         lines.push(Line::from(Span::styled(
             format!("  sudo pacman -Rns {}", app.cleanup_orphans().join(" ")),
@@ -2350,6 +2384,43 @@ mod tests {
     }
 
     // --- cleanup screen ---
+    #[test]
+    fn cache_pane_shows_honest_reclaimable_and_paru_cache() {
+        let mut s = scan_with(Vec::new());
+        s.cache_sizes.pacman_cache_bytes = Some(11_000_000_000);
+        s.cache_sizes.pacman_cache_reclaimable_bytes = Some(0);
+        s.cache_sizes.paru_cache_bytes = Some(9_000_000_000);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 24);
+        assert!(
+            text.contains("(nothing to reclaim)"),
+            "honesty note missing:\n{text}"
+        );
+        assert!(
+            !text.contains("paccache -rk2"),
+            "pointless suggestion must be hidden:\n{text}"
+        );
+        assert!(text.contains("paru build cache"), "{text}");
+        assert!(text.contains("8.38 GiB"), "paru size missing:\n{text}");
+        assert!(text.contains("paru -Sc --aur"), "{text}");
+
+        // A real reclaimable number shows inline and keeps the suggestion.
+        let mut s = scan_with(Vec::new());
+        s.cache_sizes.pacman_cache_bytes = Some(11_000_000_000);
+        s.cache_sizes.pacman_cache_reclaimable_bytes = Some(846_000_000);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 24);
+        assert!(
+            text.contains("(806.81 MiB reclaimable)"),
+            "reclaimable missing:\n{text}"
+        );
+        assert!(text.contains("paccache -rk2"), "{text}");
+        assert!(!text.contains("paru build cache"), "no paru row:\n{text}");
+        assert!(!text.contains("paru -Sc --aur"), "{text}");
+    }
+
     #[test]
     fn cleanup_screen_shows_orphans_cache_and_suggestions() {
         let mut s = scan_with(Vec::new());

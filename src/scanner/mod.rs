@@ -139,7 +139,7 @@ fn assemble(
             let sizes = gather_profile_sizes(runner, flatpak_profile_dir, &pkgs);
             (pkgs, ups, sizes)
         });
-        let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman));
+        let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman, home_dir));
         let aur_lane = s.spawn(|| {
             if !scan_aur {
                 return (std::collections::HashSet::new(), Vec::new());
@@ -305,9 +305,13 @@ fn join_lane<T: Default>(handle: std::thread::ScopedJoinHandle<'_, T>, lane: &st
     }
 }
 
-/// Gather disk-usage figures. Currently the pacman package cache; flatpak
-/// unused-runtime sizing arrives with the cleanup screen (v0.1.5).
-fn gather_cache_sizes(runner: &dyn CommandRunner, pacman_available: bool) -> CacheSizes {
+/// Gather disk-usage figures: pacman cache total, what paccache would
+/// actually reclaim (v0.5 cleanup honesty), and the paru build cache.
+fn gather_cache_sizes(
+    runner: &dyn CommandRunner,
+    pacman_available: bool,
+    home: Option<&Path>,
+) -> CacheSizes {
     // `du` exits non-zero when a transient root-owned `download-*` subdir is
     // unreadable, but still prints the grand total to stdout — so parse stdout
     // regardless of exit code.
@@ -315,8 +319,21 @@ fn gather_cache_sizes(runner: &dyn CommandRunner, pacman_available: bool) -> Cac
         .then(|| runner.run("du", &["-sb", PACMAN_CACHE_DIR]))
         .and_then(Result::ok)
         .and_then(|out| parse_du_bytes(&out.stdout));
+    // The dry run mirrors the suggested `paccache -rk2`. paccache missing →
+    // command fails → None (the pane shows the total alone).
+    let pacman_cache_reclaimable_bytes = pacman_available
+        .then(|| runner.run("paccache", &["-dk2"]))
+        .and_then(Result::ok)
+        .and_then(|out| parse_paccache_saved(&format!("{}\n{}", out.stdout, out.stderr)));
+    let paru_cache_bytes = home
+        .map(|h| h.join(".cache").join("paru"))
+        .and_then(|dir| dir.to_str().map(String::from))
+        .and_then(|dir| runner.run("du", &["-sb", &dir]).ok())
+        .and_then(|out| parse_du_bytes(&out.stdout));
     CacheSizes {
         pacman_cache_bytes,
+        pacman_cache_reclaimable_bytes,
+        paru_cache_bytes,
         flatpak_unused_runtime_count: None,
         flatpak_unused_runtime_bytes: None,
     }
@@ -325,6 +342,28 @@ fn gather_cache_sizes(runner: &dyn CommandRunner, pacman_available: bool) -> Cac
 /// `du -sb <dir>` prints `<bytes>\t<path>`; take the leading byte count.
 fn parse_du_bytes(stdout: &str) -> Option<u64> {
     stdout.split_whitespace().next()?.parse().ok()
+}
+
+/// paccache's dry run ends in either `==> no candidate packages found for
+/// pruning` (nothing to reclaim) or `==> finished dry run: N candidates
+/// (disk space saved: 806.97 MiB)`. Anything else is unparseable → `None`.
+fn parse_paccache_saved(output: &str) -> Option<u64> {
+    if output.contains("no candidate packages found") {
+        return Some(0);
+    }
+    let rest = output.split("disk space saved: ").nth(1)?;
+    let mut parts = rest.split_whitespace();
+    let number: f64 = parts.next()?.parse().ok()?;
+    let unit = parts.next()?.trim_end_matches(')');
+    let factor: u64 = match unit {
+        "B" => 1,
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        "TiB" => 1 << 40,
+        _ => return None,
+    };
+    Some((number * factor as f64) as u64)
 }
 
 /// Size of `~/.var/app/<id>` per scanned Flatpak app (spec §9.4 heuristic 2:
@@ -770,6 +809,68 @@ mod tests {
         assert_eq!(scan.cache_sizes.pacman_cache_bytes, None);
         // Sources are still listed (per config) but marked unavailable.
         assert!(scan.sources.iter().all(|s| !s.available));
+    }
+
+    #[test]
+    fn parse_paccache_saved_reads_both_endings() {
+        assert_eq!(
+            parse_paccache_saved("==> no candidate packages found for pruning\n"),
+            Some(0)
+        );
+        assert_eq!(
+            parse_paccache_saved(
+                "==> finished dry run: 30 candidates (disk space saved: 806.97 MiB)\n"
+            ),
+            Some((806.97 * 1024.0 * 1024.0) as u64)
+        );
+        assert_eq!(
+            parse_paccache_saved("==> finished dry run: 2 candidates (disk space saved: 1.20 GiB)"),
+            Some((1.2 * 1024.0 * 1024.0 * 1024.0) as u64)
+        );
+        assert_eq!(parse_paccache_saved("garbage"), None);
+        assert_eq!(parse_paccache_saved(""), None);
+    }
+
+    #[test]
+    fn cache_sizes_include_reclaimable_and_paru_cache() {
+        let runner = full_runner()
+            .with(
+                "paccache -dk2",
+                "==> finished dry run: 3 candidates (disk space saved: 100.00 MiB)\n",
+                0,
+            )
+            .with(
+                "du -sb /home/t/.cache/paru",
+                "9000000000\t/home/t/.cache/paru\n",
+                0,
+            );
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            false,
+            Some(Path::new("/home/t")),
+        );
+        assert_eq!(
+            scan.cache_sizes.pacman_cache_reclaimable_bytes,
+            Some(100 * 1024 * 1024)
+        );
+        assert_eq!(scan.cache_sizes.paru_cache_bytes, Some(9_000_000_000));
+
+        // paccache or the paru cache dir missing → honest None.
+        let scan = assemble(
+            &full_runner(),
+            &Config::default(),
+            true,
+            true,
+            true,
+            false,
+            None,
+        );
+        assert_eq!(scan.cache_sizes.pacman_cache_reclaimable_bytes, None);
+        assert_eq!(scan.cache_sizes.paru_cache_bytes, None);
     }
 
     #[test]
