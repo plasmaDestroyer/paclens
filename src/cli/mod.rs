@@ -76,13 +76,16 @@ pub enum Command {
     },
     /// List detected Flatpak/native overlaps.
     Overlaps,
-    /// Show the migration advisory report for one overlap (read-only).
+    /// Show the migration advisory report for one overlap; --run executes it.
     Migrate {
         /// The overlap to report on: display name, package name, or app id.
         package: String,
         /// Migration direction (default: toward the likely-primary side).
         #[arg(long, value_enum, value_name = "SIDE")]
         to: Option<MigrateTarget>,
+        /// Execute the copy plan (backup, then cp -aT; asks y/N first).
+        #[arg(long)]
+        run: bool,
     },
     /// Print an orphan and cache summary (advisory only).
     Cleanup,
@@ -216,7 +219,7 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
-        Command::Migrate { package, to } => {
+        Command::Migrate { package, to, run } => {
             let out_styles = Styles::resolve(
                 cli.no_color,
                 config.general.color_theme(),
@@ -229,6 +232,8 @@ pub fn run() -> ExitCode {
                     config_path.as_deref(),
                     &package,
                     to.map(Into::into),
+                    run,
+                    std::io::stdin().is_terminal(),
                     &out_styles,
                 ),
                 &err_styles,

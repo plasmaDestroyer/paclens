@@ -89,8 +89,13 @@ impl ExecutionReport {
 }
 
 /// Does this step need privilege escalation? Source-specific (P6, spec §13):
-/// pacman and flatpak-system do; flatpak-user does not.
+/// pacman and flatpak-system do; flatpak-user does not. Migration copy steps
+/// never do — profile data under `~` is user-owned even for system-scope
+/// apps.
 pub fn needs_privilege(step: &ActionStep) -> bool {
+    if step.kind == crate::model::ActionKind::Migrate {
+        return false;
+    }
     // flatpak --user needs nothing; paru must NOT run under sudo (it builds
     // as the user and self-elevates for the install step itself).
     step.source_id != SourceId::flatpak_user() && step.source_id != SourceId::aur()
@@ -189,11 +194,14 @@ pub fn execute(
 
         let argv = effective_command(step, tool);
         let cmd = argv.join(" ");
-        log.line(&format!(
-            "{}: running update ({})",
-            step.source_id,
-            target_noun(&step.source_id, targets)
-        ));
+        let doing = match step.kind {
+            crate::model::ActionKind::Update => {
+                format!("running update ({})", target_noun(&step.source_id, targets))
+            }
+            crate::model::ActionKind::Migrate => format!("copying {}", step.targets.join(", ")),
+            crate::model::ActionKind::Remove => format!("removing {}", step.targets.join(", ")),
+        };
+        log.line(&format!("{}: {doing}", step.source_id));
         tracing::info!(source = %step.source_id, command = %cmd, "executing update step");
         // The TUI is suspended (or we are in plain CLI mode): give the raw
         // terminal a header so the user knows whose output follows (P1).

@@ -33,7 +33,12 @@ pub struct ActionStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Update,
-    // Remove is not generated in v0.x. Listed in the spec for future use.
+    /// Migration copy step (v0.5): backup or `cp -aT` of user-owned profile
+    /// dirs. Never privileged, regardless of source.
+    Migrate,
+    /// Post-migration source removal (v0.5), after the user verified the
+    /// target side works. Privilege follows the source as usual.
+    Remove,
 }
 
 impl ActionPlan {
