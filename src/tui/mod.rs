@@ -23,6 +23,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use crate::config::Config;
 use crate::executor::{self, UpdateLog};
 use crate::model::ScanResult;
+use crate::planner;
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
@@ -234,7 +235,7 @@ fn run_loop(
                         .size()
                         .map(|s| draw::exec_pty_size(s.width, s.height))
                         .unwrap_or((24, 80));
-                    app.start_exec(rows, cols);
+                    app.start_exec(rows, cols, app::ExecKind::Update);
                     exec_session = Some(exec::start(
                         plan,
                         tool.map(String::from),
@@ -243,6 +244,63 @@ fn run_loop(
                     ));
                 }
             }
+            Action::RunMigration => {
+                if !app.is_migrate_open() {
+                    app.set_flash("open the migration report first (enter)");
+                } else if let (Some(report), Some(home)) = (
+                    app.migration_report(),
+                    directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()),
+                ) {
+                    // The candidate exists whenever the report does.
+                    let plan = app
+                        .selected_overlap()
+                        .map(|c| {
+                            let backup = planner::migration_backup_dir(&home, c);
+                            let plan = planner::plan_migration(&report, c, &home, &backup);
+                            let removal = planner::plan_removal(&report, c);
+                            (plan, removal, backup)
+                        })
+                        .filter(|(plan, _, _)| !plan.is_empty());
+                    match plan {
+                        None => app.set_flash("nothing to copy — the source side has no data"),
+                        Some((plan, removal, backup)) => {
+                            app.stage_removal(removal.map(|plan| app::StagedRemoval {
+                                plan,
+                                backup: backup.display().to_string(),
+                            }));
+                            let (rows, cols) = terminal
+                                .size()
+                                .map(|s| draw::exec_pty_size(s.width, s.height))
+                                .unwrap_or((24, 80));
+                            app.start_exec(rows, cols, app::ExecKind::Migrate);
+                            // Copy steps never escalate — no tool.
+                            exec_session = Some(exec::start(plan, None, (rows, cols), None));
+                        }
+                    }
+                }
+            }
+            Action::RemoveSource => match app.armed_removal() {
+                None => app.set_flash("nothing to remove — run a migration first (x)"),
+                Some(staged) => {
+                    let tool = app.privilege_tool();
+                    if staged.plan.requires_sudo && tool.is_none() {
+                        app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot remove");
+                    } else {
+                        let plan = staged.plan.clone();
+                        let (rows, cols) = terminal
+                            .size()
+                            .map(|s| draw::exec_pty_size(s.width, s.height))
+                            .unwrap_or((24, 80));
+                        app.start_exec(rows, cols, app::ExecKind::Removal);
+                        exec_session = Some(exec::start(
+                            plan,
+                            tool.map(String::from),
+                            (rows, cols),
+                            None,
+                        ));
+                    }
+                }
+            },
             Action::FocusLeft => app.focus_sources(),
             Action::FocusRight => app.focus_updates(),
             Action::ExecKey(key) => {
@@ -252,13 +310,18 @@ fn run_loop(
             }
             Action::ExecDismiss => {
                 if let Some(report) = app.take_exec_report() {
-                    // Straight back to a refreshing dashboard with a summary
-                    // flash — no result modal (user decision 2026-07-08).
+                    // Every console lands on a refreshing screen — no result
+                    // modal (user decision 2026-07-08). Migrations return to
+                    // the overlap screen for the verify/remove step.
                     if job.is_none() {
                         app.set_scanning(true);
                         job = Some(spawn_scan(config.clone()));
                     }
-                    app.finish_update(&report);
+                    match app.exec_kind() {
+                        app::ExecKind::Update => app.finish_update(&report),
+                        app::ExecKind::Migrate => app.finish_migration(&report),
+                        app::ExecKind::Removal => app.finish_removal(&report),
+                    }
                 }
             }
             Action::CloseLog => app.close_log(),

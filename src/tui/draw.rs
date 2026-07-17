@@ -659,7 +659,7 @@ fn draw_overlaps(frame: &mut Frame, area: Rect, app: &App) {
                 .alignment(Alignment::Center),
             centered(inner, inner.width, 1),
         );
-        render_overlaps_footer(frame, bottom_line(inner), theme, false);
+        render_overlaps_footer(frame, bottom_line(inner), theme, false, false);
         return;
     }
 
@@ -725,7 +725,13 @@ fn draw_overlaps(frame: &mut Frame, area: Rect, app: &App) {
     } else if let Some(overlap) = app.selected_overlap() {
         render_tradeoff_pane(frame, chunks[1], app, overlap);
     }
-    render_overlaps_footer(frame, chunks[2], theme, app.is_migrate_open());
+    render_overlaps_footer(
+        frame,
+        chunks[2],
+        theme,
+        app.is_migrate_open(),
+        app.is_removal_armed(),
+    );
 }
 
 fn confidence_span(confidence: crate::model::Confidence, theme: &Theme) -> Span<'static> {
@@ -899,34 +905,52 @@ fn render_migrate_pane(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_overlaps_footer(frame: &mut Frame, area: Rect, theme: &Theme, migrate_open: bool) {
+fn render_overlaps_footer(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    migrate_open: bool,
+    removal_armed: bool,
+) {
     let g = theme.glyphs;
     let updown = format!("{}/{}", g.up, g.down);
-    let mut line = if migrate_open {
-        keys_line(
-            theme,
-            &[
-                (&updown, "select"),
-                ("d", "flip direction"),
-                ("enter", "close"),
-                ("esc", "back"),
-            ],
+    let (mut line, note) = if removal_armed {
+        (
+            keys_line(
+                theme,
+                &[("R", "remove source"), ("esc", "keep it"), ("L", "log")],
+            ),
+            "   verify the target launched first",
+        )
+    } else if migrate_open {
+        (
+            keys_line(
+                theme,
+                &[
+                    (&updown, "select"),
+                    ("d", "flip direction"),
+                    ("x", "run"),
+                    ("enter", "close"),
+                    ("esc", "back"),
+                ],
+            ),
+            "   backups first — nothing deleted",
         )
     } else {
-        keys_line(
-            theme,
-            &[
-                (&updown, "select"),
-                ("enter", "migrate report"),
-                ("esc", "back"),
-                ("q", "quit"),
-            ],
+        (
+            keys_line(
+                theme,
+                &[
+                    (&updown, "select"),
+                    ("enter", "migrate report"),
+                    ("esc", "back"),
+                    ("q", "quit"),
+                ],
+            ),
+            "   advisory only — decide, then act yourself",
         )
     };
-    line.spans.push(Span::styled(
-        "   advisory only — decide, then act yourself",
-        theme.dim,
-    ));
+    line.spans.push(Span::styled(note, theme.dim));
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -1560,7 +1584,7 @@ mod tests {
         CacheSizes, FlatpakScope, InstallReason, Package, PendingUpdate, SCHEMA_VERSION,
         ScanResult, Source, SourceId, SourceKind,
     };
-    use crate::tui::app::AppOptions;
+    use crate::tui::app::{AppOptions, ExecKind};
     use crate::tui::theme::Theme;
     use chrono::Utc;
     use ratatui::Terminal;
@@ -2258,6 +2282,41 @@ mod tests {
     }
 
     #[test]
+    fn migrate_footer_offers_run_then_remove() {
+        let mut s = overlap_scan();
+        s.profile_dir_sizes
+            .insert("~/.mozilla".to_string(), 1_200_000_000);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.toggle_why();
+        let text = render(&app, 110, 26);
+        assert!(text.contains("x run"), "{text}");
+        assert!(text.contains("nothing deleted"), "{text}");
+        assert!(!text.contains("R remove source"), "{text}");
+
+        // A successful copy run arms R.
+        app.stage_removal(Some(crate::tui::app::StagedRemoval {
+            plan: crate::model::ActionPlan {
+                created_at: chrono::Utc::now(),
+                steps: Vec::new(),
+                requires_sudo: true,
+            },
+            backup: "/b".to_string(),
+        }));
+        app.start_exec(10, 40, ExecKind::Migrate);
+        app.exec_finish(crate::executor::ExecutionReport {
+            steps: Vec::new(),
+            log_path: std::path::PathBuf::from("/tmp/x.log"),
+        });
+        let report = app.take_exec_report().expect("report");
+        app.finish_migration(&report);
+        let text = render(&app, 110, 26);
+        assert!(text.contains("R remove source"), "{text}");
+        assert!(text.contains("esc keep it"), "{text}");
+        assert!(text.contains("verify the target launched"), "{text}");
+    }
+
+    #[test]
     fn migrate_pane_without_data_says_nothing_to_migrate() {
         let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
         app.open_overlaps();
@@ -2351,7 +2410,7 @@ mod tests {
     fn exec_console_renders_the_vt100_screen_and_swaps_footer_when_done() {
         let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         let (rows, cols) = exec_pty_size(90, 20);
-        app.start_exec(rows, cols);
+        app.start_exec(rows, cols, ExecKind::Update);
         app.exec_feed(b"\x1b[1m:: sudo pacman -Syu\x1b[0m\r\n");
         for i in 0..40 {
             app.exec_feed(format!("downloading package {i}\r\n").as_bytes());
@@ -2386,7 +2445,7 @@ mod tests {
         // pacman redraws progress with bare \r — a real terminal overwrites
         // the line, and so must the console.
         let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        app.start_exec(10, 40);
+        app.start_exec(10, 40, ExecKind::Update);
         app.exec_feed(b"progress:  10%\rprogress: 100%\r\n");
         let text = render(&app, 60, 14);
         assert!(text.contains("progress: 100%"), "{text}");

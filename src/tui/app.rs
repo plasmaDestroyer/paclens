@@ -218,6 +218,28 @@ pub struct App {
     /// `d` direction override; `None` = the report's default (toward the
     /// likely-primary side). Cleared when the cursor moves.
     migrate_direction: Option<Direction>,
+    /// What the running (or just-finished) console session is doing (v0.5) —
+    /// decides where dismissal lands.
+    exec_kind: ExecKind,
+    /// Staged at migration start; armed (offered on `R`) only after the copy
+    /// run succeeds and the user has been told to verify.
+    staged_removal: Option<StagedRemoval>,
+    removal_armed: bool,
+}
+
+/// The follow-up removal a successful migration stages (v0.5).
+pub struct StagedRemoval {
+    pub plan: ActionPlan,
+    /// Backup dir, for the "kept at" flash.
+    pub backup: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecKind {
+    #[default]
+    Update,
+    Migrate,
+    Removal,
 }
 
 impl App {
@@ -261,6 +283,9 @@ impl App {
             overlap_cursor: 0,
             overlap_migrate: false,
             migrate_direction: None,
+            exec_kind: ExecKind::Update,
+            staged_removal: None,
+            removal_armed: false,
         }
     }
 
@@ -359,6 +384,9 @@ impl App {
                 let max = self.overlaps.len().saturating_sub(1);
                 self.overlap_cursor = (self.overlap_cursor + 1).min(max);
                 self.migrate_direction = None; // per-candidate intent
+                if self.removal_armed {
+                    self.disarm_removal();
+                }
             }
             (Screen::Cleanup, _) => {
                 let max = self.orphans.len().saturating_sub(1);
@@ -376,6 +404,9 @@ impl App {
             (Screen::Overlaps, _) => {
                 self.overlap_cursor = self.overlap_cursor.saturating_sub(1);
                 self.migrate_direction = None;
+                if self.removal_armed {
+                    self.disarm_removal();
+                }
             }
             (Screen::Cleanup, _) => {
                 self.cleanup_cursor = self.cleanup_cursor.saturating_sub(1);
@@ -476,9 +507,12 @@ impl App {
     pub fn selected_overlap(&self) -> Option<&OverlapCandidate> {
         self.overlaps.get(self.overlap_cursor)
     }
-    /// Esc unwinds: migration pane first, then back to the dashboard.
+    /// Esc unwinds: armed removal first (keep the source), then the
+    /// migration pane, then back to the dashboard.
     pub fn close_overlaps(&mut self) {
-        if self.overlap_migrate {
+        if self.removal_armed {
+            self.disarm_removal();
+        } else if self.overlap_migrate {
             self.overlap_migrate = false;
             self.migrate_direction = None;
         } else {
@@ -642,11 +676,15 @@ impl App {
         self.exec.as_ref()
     }
     /// Open the console with a vt100 screen matching the pty size.
-    pub fn start_exec(&mut self, rows: u16, cols: u16) {
+    pub fn start_exec(&mut self, rows: u16, cols: u16, kind: ExecKind) {
+        self.exec_kind = kind;
         self.exec = Some(ExecView {
             parser: vt100::Parser::new(rows.max(2), cols.max(20), 0),
             done: None,
         });
+    }
+    pub fn exec_kind(&self) -> ExecKind {
+        self.exec_kind
     }
     /// Feed a chunk of raw pty output into the console's screen.
     pub fn exec_feed(&mut self, bytes: &[u8]) {
@@ -682,6 +720,69 @@ impl App {
             )
         } else {
             format!("update finished — {failed} of {executed} sources FAILED (l for the log)")
+        });
+    }
+
+    // --- migration execution (v0.5) ---
+    /// Stage the follow-up removal before the copy run starts; it is only
+    /// offered once the run succeeds.
+    pub fn stage_removal(&mut self, staged: Option<StagedRemoval>) {
+        self.staged_removal = staged;
+        self.removal_armed = false;
+    }
+    /// Dismissing a migrate console: stay on the overlap screen; a clean run
+    /// arms `R` (roadmap: user confirms removal only after verifying).
+    pub fn finish_migration(&mut self, report: &ExecutionReport) {
+        self.screen = Screen::Overlaps;
+        if report.failed() > 0 {
+            self.staged_removal = None;
+            self.flash = Some(format!(
+                "migration: {} of {} steps FAILED (L for the log) — source data untouched",
+                report.failed(),
+                report.executed()
+            ));
+            return;
+        }
+        let name = self
+            .selected_overlap()
+            .map(|o| o.display_name.clone())
+            .unwrap_or_default();
+        if self.staged_removal.is_some() {
+            self.removal_armed = true;
+            self.flash = Some(format!(
+                "copied — launch {name} and verify, then R removes the source (esc keeps it)"
+            ));
+        } else {
+            self.flash = Some(format!("copied — launch {name} and verify"));
+        }
+    }
+    /// The armed removal plan, if a successful migration staged one.
+    pub fn armed_removal(&self) -> Option<&StagedRemoval> {
+        self.removal_armed.then_some(self.staged_removal.as_ref())?
+    }
+    pub fn is_removal_armed(&self) -> bool {
+        self.removal_armed
+    }
+    /// Keep the source side: disarm and say where the backup lives.
+    pub fn disarm_removal(&mut self) {
+        if let Some(staged) = self.staged_removal.take() {
+            self.removal_armed = false;
+            self.flash = Some(format!("source kept — backup at {}", staged.backup));
+        }
+    }
+    /// Dismissing a removal console: report and disarm; the caller rescans.
+    pub fn finish_removal(&mut self, report: &ExecutionReport) {
+        self.screen = Screen::Overlaps;
+        let backup = self
+            .staged_removal
+            .take()
+            .map(|s| s.backup)
+            .unwrap_or_default();
+        self.removal_armed = false;
+        self.flash = Some(if report.failed() > 0 {
+            "removal FAILED (L for the log) — nothing else was touched".to_string()
+        } else {
+            format!("migration complete — backup kept at {backup}")
         });
     }
 
@@ -1425,6 +1526,119 @@ mod tests {
         assert_eq!(app.screen(), Screen::Dashboard);
     }
 
+    // --- migration execution (v0.5) ---
+    fn failed_report() -> ExecutionReport {
+        use crate::executor::{StepReport, StepStatus};
+        ExecutionReport {
+            steps: vec![StepReport {
+                source_id: SourceId::flatpak_user(),
+                targets: 1,
+                status: StepStatus::Failed {
+                    detail: "exit 1".to_string(),
+                },
+            }],
+            log_path: std::path::PathBuf::from("/tmp/x.log"),
+        }
+    }
+
+    fn staged() -> StagedRemoval {
+        StagedRemoval {
+            plan: crate::model::ActionPlan {
+                created_at: chrono::Utc::now(),
+                steps: Vec::new(),
+                requires_sudo: true,
+            },
+            backup: "/b/firefox/1".to_string(),
+        }
+    }
+
+    #[test]
+    fn successful_migration_arms_removal_on_the_overlap_screen() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.toggle_why();
+        app.stage_removal(Some(staged()));
+        assert!(!app.is_removal_armed(), "staged is not armed yet");
+        app.start_exec(10, 40, ExecKind::Migrate);
+        assert_eq!(app.exec_kind(), ExecKind::Migrate);
+
+        app.finish_migration(&sample_report());
+        assert_eq!(app.screen(), Screen::Overlaps, "stays for the verify step");
+        assert!(app.is_removal_armed());
+        assert!(app.armed_removal().is_some());
+        assert!(
+            app.flash().unwrap().contains("R removes the source"),
+            "{:?}",
+            app.flash()
+        );
+    }
+
+    #[test]
+    fn failed_migration_never_arms_removal() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.stage_removal(Some(staged()));
+        app.finish_migration(&failed_report());
+        assert!(!app.is_removal_armed());
+        assert!(app.armed_removal().is_none());
+        assert!(
+            app.flash().unwrap().contains("source data untouched"),
+            "{:?}",
+            app.flash()
+        );
+    }
+
+    #[test]
+    fn esc_and_cursor_moves_disarm_and_keep_the_source() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.stage_removal(Some(staged()));
+        app.finish_migration(&sample_report());
+        assert!(app.is_removal_armed());
+        // Esc keeps the source and names the backup.
+        app.close_overlaps();
+        assert!(!app.is_removal_armed());
+        assert_eq!(app.screen(), Screen::Overlaps, "esc only disarms first");
+        assert!(
+            app.flash().unwrap().contains("backup at /b/firefox/1"),
+            "{:?}",
+            app.flash()
+        );
+
+        // Cursor movement disarms too — the removal was per-candidate.
+        app.stage_removal(Some(staged()));
+        app.finish_migration(&sample_report());
+        app.on_next();
+        assert!(!app.is_removal_armed());
+    }
+
+    #[test]
+    fn finish_removal_reports_and_clears_everything() {
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.open_overlaps();
+        app.stage_removal(Some(staged()));
+        app.finish_migration(&sample_report());
+        app.start_exec(10, 40, ExecKind::Removal);
+        app.finish_removal(&sample_report());
+        assert!(!app.is_removal_armed());
+        assert!(app.armed_removal().is_none());
+        assert!(
+            app.flash().unwrap().contains("migration complete"),
+            "{:?}",
+            app.flash()
+        );
+
+        // A failed removal reports honestly.
+        let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
+        app.stage_removal(Some(staged()));
+        app.finish_removal(&failed_report());
+        assert!(
+            app.flash().unwrap().contains("removal FAILED"),
+            "{:?}",
+            app.flash()
+        );
+    }
+
     #[test]
     fn flip_does_nothing_while_the_pane_is_closed() {
         let mut app = App::new(overlap_scan(), Theme::none(), AppOptions::test());
@@ -1838,7 +2052,7 @@ mod tests {
         app.close_log();
         assert_eq!(app.input_mode(), InputMode::Dashboard);
 
-        app.start_exec(10, 40);
+        app.start_exec(10, 40, ExecKind::Update);
         assert_eq!(app.input_mode(), InputMode::Exec);
         assert!(!app.exec_is_done());
         app.exec_feed(b"out\r\n");

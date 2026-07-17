@@ -7,7 +7,7 @@
 //! `[y/N]` after the user has verified the target works.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 
@@ -76,7 +76,7 @@ fn execute_flow(
         .context("cannot locate a home directory")?
         .home_dir()
         .to_path_buf();
-    let backup_dir = backup_dir(&home, candidate);
+    let backup_dir = planner::migration_backup_dir(&home, candidate);
     let plan = planner::plan_migration(report, candidate, &home, &backup_dir);
     if plan.is_empty() {
         println!(
@@ -156,18 +156,6 @@ fn execute_flow(
         styles.success(&format!("done — backup kept at {}", backup_dir.display()))
     );
     Ok(())
-}
-
-/// `~/.local/share/paclens/backups/<native-name>/<timestamp>/`.
-fn backup_dir(home: &Path, candidate: &OverlapCandidate) -> PathBuf {
-    let name = candidate
-        .native_package
-        .as_ref()
-        .map(|p| p.name.as_str())
-        .unwrap_or("app");
-    home.join(".local/share/paclens/backups")
-        .join(name)
-        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string())
 }
 
 fn read_answer() -> anyhow::Result<String> {
@@ -549,7 +537,7 @@ mod tests {
 
     #[test]
     fn backup_dir_uses_the_native_name() {
-        let dir = backup_dir(Path::new("/home/t"), &candidate());
+        let dir = crate::planner::migration_backup_dir(Path::new("/home/t"), &candidate());
         let s = dir.display().to_string();
         assert!(
             s.starts_with("/home/t/.local/share/paclens/backups/firefox/"),

@@ -49,6 +49,10 @@ pub enum Action {
     ToggleWhy,
     /// Flip the migration report's direction (overlap screen, v0.4).
     FlipDirection,
+    /// Run the open migration report's copy plan (overlap screen, v0.5).
+    RunMigration,
+    /// Remove the source side after a verified migration (v0.5).
+    RemoveSource,
     /// Filter input → append a character.
     FilterChar(char),
     FilterBackspace,
@@ -97,6 +101,11 @@ pub fn map_overlaps_key(key: KeyEvent) -> Action {
         // Enter/w toggles the migration advisory pane (v0.4).
         KeyCode::Enter | KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
         KeyCode::Char('d') | KeyCode::Char('D') => Action::FlipDirection,
+        // v0.5 execution: x runs the copy plan; R (deliberate shift) removes
+        // the source after the user verified the target.
+        KeyCode::Char('x') | KeyCode::Char('X') => Action::RunMigration,
+        KeyCode::Char('R') => Action::RemoveSource,
+        KeyCode::Char('L') => Action::OpenLog,
         KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
@@ -349,6 +358,17 @@ mod tests {
             map_overlaps_key(plain(KeyCode::Char('d'))),
             Action::FlipDirection
         );
+        assert_eq!(
+            map_overlaps_key(plain(KeyCode::Char('x'))),
+            Action::RunMigration
+        );
+        assert_eq!(
+            map_overlaps_key(plain(KeyCode::Char('R'))),
+            Action::RemoveSource
+        );
+        assert_eq!(map_overlaps_key(plain(KeyCode::Char('L'))), Action::OpenLog);
+        // Lowercase r stays unmapped — removal is a deliberate shift-key.
+        assert_eq!(map_overlaps_key(plain(KeyCode::Char('r'))), Action::Ignore);
     }
 
     #[test]

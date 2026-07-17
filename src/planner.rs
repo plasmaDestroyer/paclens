@@ -216,6 +216,19 @@ pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> O
     })
 }
 
+/// Where a migration's backups land:
+/// `~/.local/share/paclens/backups/<native-name>/<timestamp>/`.
+pub fn migration_backup_dir(home: &Path, candidate: &OverlapCandidate) -> std::path::PathBuf {
+    let name = candidate
+        .native_package
+        .as_ref()
+        .map(|p| p.name.as_str())
+        .unwrap_or("app");
+    home.join(".local/share/paclens/backups")
+        .join(name)
+        .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string())
+}
+
 /// Whose files the copy steps touch, for honest labeling in logs/console.
 fn target_source_id(direction: Direction, candidate: &OverlapCandidate) -> SourceId {
     let side = match direction {
