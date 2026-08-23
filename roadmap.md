@@ -495,56 +495,74 @@ Explicitly deferred. Not forgotten — just not yet.
 
 | Feature | Reason deferred |
 |---|---|
-| paru / AUR integration | adds parser complexity before core is proven |
-| cargo / npm / brew / pipx support | maintenance cost before value is confirmed |
-| migration engine | needs profile mapping DB that does not exist yet |
-| automatic config/data copying | too risky without real-world edge case data |
+| ~~paru / AUR integration~~ | shipped v0.3 |
+| cargo / npm / brew / pipx support | now committed as v0.6 — the tool's stated goal changed |
+| ~~migration engine~~ | advisory shipped v0.4, execution v0.5 |
+| ~~automatic config/data copying~~ | shipped v0.5, behind backups and per-step confirmation |
 | app-level grouping database | requires community contribution or external source |
 | destructive cleanup automation | only after advisory layer is trusted by real users |
-| system doctor (lock issues, broken deps) | useful but scope-creep risk before core is stable |
+| system doctor (lock issues, broken deps) | core is stable now — reframed as the v0.7 system-health cluster |
 | daemon mode | not needed until background sync is a confirmed need |
 | plugin / provider system | premature abstraction |
 | distro support beyond Arch family | out of scope entirely |
-| hands-free updates (auto-answer defaults, like CachyOS arch-update) | `--noconfirm` suppresses pacman's conflict resolution (standing decision); needs a safer design — pty auto-replies the *default* answer per prompt, opt-in via config — user request 2026-07-11 |
-| post-update cache cleanup (paccache, `flatpak uninstall --unused`) | destructive; rides the v0.5 trust ladder — advisory sizes ship first in v0.1.5; user request 2026-07-11 |
+| hands-free updates (auto-answer defaults, like CachyOS arch-update) | `--noconfirm` suppresses pacman's conflict resolution (standing decision); needs a safer design — pty auto-replies the *default* answer per prompt and hands control back on anything else, opt-in via config — user request 2026-07-11; now tracked as an issue |
+| post-update cache cleanup (paccache, `flatpak uninstall --unused`) | destructive; advisory sizes shipped v0.1.5 and honest reclaimable figures v0.5. Execution still pending — the cleanup screen deliberately has no action keys |
 
 ---
 
 # Phase 0.3+ — Extend
 
-These become real only after v0.2 ships and user feedback confirms direction. Not committed. Listed so the shape is visible.
+v0.3, v0.4 and v0.5 have shipped. v0.6 onward stays uncommitted in shape, but the
+work is now tracked as GitHub issues rather than only as bullets here — see the
+`sources`, `system-health`, `update-flow` and `integration` labels.
 
 ---
 
-**v0.3 — paru + AUR**
+**v0.3 — paru + AUR** — shipped 2026-07-12
 - AUR package scanning via paru
 - AUR update detection
 - paru as optional provider, gracefully absent if not installed
 - AUR-specific caveats surfaced in `why` output (VCS packages, manual PKGBUILD review needed)
 - `-git` package update detection (compare upstream HEAD, not version string)
 
-**v0.4 — Migration advisory**
+**v0.4 — Migration advisory** — shipped 2026-07-14
 - structured migration report per detected overlap
 - profile location mapping: show where each source stores data, read-only
 - config/data/cache split shown per app when paths are known
 - "here is what you would need to do manually" — no file ops yet
 
-**v0.5 — Migration execution**
+**v0.5 — Migration execution** — shipped 2026-07-17
 - controlled profile copy with automatic backup before touching anything
-- install target first, verify it launches, then offer to remove source
+- verify the target works, then offer to remove the source — the "install target
+  first" step is moot: an overlap means both sides are already installed
 - full audit log of every file operation
 - rollback instructions shown if something goes wrong
 - never delete source data automatically — user confirms after verifying target works
+- also delivered: honest cleanup figures (reclaimable vs total, AUR build cache)
 
-**v0.6 — Broader sources**
-- cargo installs (`~/.cargo/bin`)
-- npm global packages (`npm list -g`)
-- pipx apps
-- optional: brew/linuxbrew
+**v0.6 — Broader sources** — next, and now a stated goal rather than a maybe:
+paclens should be the one tool for everything that updates on this machine.
+- provider contract generalized for sources with no install reason, no dep
+  graph and no orphan concept — the prerequisite for all of the below
+- cargo installs (`~/.cargo/bin`), rustup toolchains
+- npm global packages, pipx apps
+- fwupd firmware — report-only, never in the executable update plan
+- optional: `go install` binaries, brew/linuxbrew
+- overlap detection extended across sources: the same tool installed via
+  pacman *and* cargo is the same duplicate problem as native-vs-Flatpak, and
+  `PATH` precedence decides which one you actually run
 - each added only after its parser is solid and tested, not as a batch
 
-**v0.7+ — Advanced features (not designed yet)**
-- system doctor (broken deps, lock issues, stale config paths)
+**v0.7+ — System health**
+The chores that break an Arch install between upgrades. Tracked under the
+`system-health` label.
+- Arch news check before an update; stale-mirror / partial-upgrade warning
+- `.pacnew` / `.pacsave` detection and review
+- reboot-required (running kernel != installed kernel); services needing restart
+- pacman db lock detection with the holding process named
+- `pacman.log` transaction history, and a downgrade helper off the cache
+
+**v0.8+ — Advanced features (not designed yet)**
 - interactive cleanup with per-item confirmation
 - app-level grouping database (community-maintained or crowdsourced)
 - optional plugin/provider system for user-contributed sources
@@ -556,7 +574,8 @@ These become real only after v0.2 ships and user feedback confirms direction. No
 | Concern | Crate |
 |---|---|
 | TUI | `ratatui` + `crossterm` |
-| async runtime | `tokio` |
+| concurrency | `std::thread::scope` (no async runtime — tokio dropped in v0.5.0) |
+| exec console | `portable-pty` + `vt100` |
 | CLI parsing | `clap` (derive mode) |
 | dep graph | `petgraph` |
 | config + cache | `serde` + `toml` |

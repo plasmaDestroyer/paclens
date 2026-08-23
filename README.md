@@ -49,14 +49,20 @@ your shell. Everything else is advisory: paclens never removes anything.
   confidence label) and shows a side-by-side tradeoff: versions, profile
   locations and sizes, sandboxing, integration, which install is likely the
   one you actually use.
-- **Migration advisory** — for each overlap, where both sides keep their
-  config/data/cache (curated map at full confidence, XDG-convention guesses
-  labeled as such), which direction consolidation would go, and the exact
-  manual steps — paclens copies and removes nothing (execution lands in
-  v0.5, behind backups).
+- **Migration advisory, then execution** — for each overlap, where both sides
+  keep their config/data/cache (curated map at full confidence, XDG-convention
+  guesses labeled as such), which direction consolidation would go, and the
+  exact steps. `x` runs the copy: existing targets are staged into a
+  timestamped backup directory first, the plan contains no `rm` anywhere, and
+  the rollback commands are printed when it finishes. The source side is
+  removed only after you launch the app and confirm it works — a separate,
+  deliberate `R`.
 - **Cleanup report** — orphan candidates derived from the dependency graph
-  (no `pacman -Qtd`), unused Flatpak runtimes, cache sizes, and the exact
-  commands to reclaim the space — shown as text for *you* to run.
+  (no `pacman -Qtd`), unused Flatpak runtimes, and cache sizes with an
+  *honest* reclaimable figure: an 11 GiB pacman cache that `paccache -rk2`
+  would free nothing from says exactly that, rather than implying the total is
+  cleanable. The AUR build cache (`~/.cache/paru`) gets its own row. Every
+  suggestion is text for *you* to run.
 - **Honest confidence** — every inference is labeled `confirmed`, `inferred`,
   or `unknown`. paclens never presents a guess as a fact.
 - **Fast** — providers scan in parallel; the TUI opens instantly on the
@@ -100,6 +106,8 @@ detection and updates; foreign packages still list without it).
 | `w` | package list | why pane for the selected package |
 | `enter` | overlaps | migration report for the selected overlap |
 | `d` | overlaps | flip the migration direction |
+| `x` | overlaps | run the migration copy — backup first, unprivileged |
+| `R` | overlaps | remove the source side — armed only after a clean copy |
 | `enter` | cleanup | why report for the selected orphan |
 | `esc` | everywhere | back / unwind |
 | `q` | everywhere | quit |
@@ -111,7 +119,8 @@ paclens status            # dashboard summary to stdout
 paclens update            # update all sources (asks y/N first)
 paclens why firefox       # why is this installed, what breaks without it
 paclens overlaps          # Flatpak/native duplicates with tradeoffs
-paclens migrate firefox   # where both sides keep data + manual steps
+paclens migrate firefox         # where both sides keep data + the steps
+paclens migrate firefox --run   # run the copy: plan, y/N, backup, rollback block
 ```
 
 (The cleanup report is TUI-only for now — press `c` on the dashboard.)

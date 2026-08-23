@@ -672,7 +672,9 @@ For each overlap, show:
 
 ### 10.1 Framework
 
-`ratatui` with `crossterm` backend. Event loop runs on the main thread. Async operations (scan, execution) spawn on tokio and send results via `mpsc` channel. The event loop `select!`s between crossterm events and channel messages.
+`ratatui` with `crossterm` backend. Event loop runs on the main thread. Background operations (scan, execution) run on threads and send results via an `mpsc` channel.
+
+> **Superseded (2026-07-08, 2026-07-05).** There is no tokio and no `select!`: scans run on scoped threads, execution runs on a pty. See dev-notes §7.
 
 ### 10.2 Layout model
 
@@ -1025,8 +1027,8 @@ Recommendation: ship bundled + user config extension. No remote fetch in v0.x. A
 **Q4: Flatpak system vs user scope**
 If both user and system Flatpak installs exist for the same app, show as two separate packages with scope labeled. Do not merge.
 
-**Q5: Scan parallelism**
-pacman and Flatpak scans run concurrently via `tokio::join!`. Dep graph construction runs after both complete (needs both datasets). Overlap detection runs after graph is built.
+**Q5: Scan parallelism** — *resolved 2026-07-05*
+Scans run concurrently on scoped threads (`std::thread::scope`), not `tokio::join!`; wall time is the slowest lane. Dep graph construction runs after all lanes complete (needs every dataset). Overlap detection runs after the graph is built.
 
 **Q6: `--noconfirm` for pacman**
 `pacman -Syu --noconfirm` suppresses pacman's own prompts — including conflict resolution. This is dangerous: if pacman encounters a file conflict or package replacement, `--noconfirm` may cause it to skip or fail silently.
