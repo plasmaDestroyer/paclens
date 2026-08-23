@@ -62,7 +62,9 @@ The output is tab-separated when `--columns` is used. Handle:
 
 `flatpak info --show-metadata <app-id>` returns GLib keyfile format (INI-like). It is NOT TOML or JSON. The `[Application]` section has `name=` for the display name. Parse with a simple line-by-line approach: find `[Application]` header, then scan for `name=` key. Do not use a TOML parser on this — it will fail.
 
-`flatpak remote-ls --updates` can be slow if remotes are unreachable. Always run with a 10-second timeout (`tokio::time::timeout`). If it times out, log a warning and fall back to the cached update list. Never block the UI waiting for a remote.
+`flatpak remote-ls --updates` can be slow if remotes are unreachable. Always time it out, log a warning, and fall back to the cached update list. Never block the UI waiting for a remote.
+
+> **Superseded (2026-07-12).** The timeout is not `tokio::time::timeout` — `SystemCommandRunner` is sync. It spawns with piped stdio, drains on threads, and polls `try_wait`, killing past `scan.provider_timeout_secs`. It applies to *every* provider command, not just `remote-ls`. See §7.
 
 ### 2.3 Dep graph from `pacman -Qi` (not pactree)
 
@@ -146,6 +148,8 @@ This only works if `sudo` is configured with a credential timeout (default: 15 m
 Recommendation: start with Option A. It is simple and always works. Move to B or C only if users report the screen-switching as a pain point.
 
 ### 2.6 Streaming command output
+
+> **Superseded (2026-07-08).** Execution runs on a real pty (`portable-pty` + `vt100`), not piped stdio, and there is no async runtime. Both the code sketch below and the `tokio::select!` loop in §5 are spec-era design, kept for context only. See §7.
 
 When NOT using the TUI-suspend approach (e.g., for Flatpak which doesn't need sudo), you can stream output into the TUI:
 
@@ -260,7 +264,7 @@ Every provider must:
 
 The scanner:
 - detects available providers (checks PATH)
-- runs providers concurrently via `tokio::join!`
+- runs providers concurrently on scoped threads (`std::thread::scope`)
 - assembles the combined `ScanResult`
 - writes the result to cache
 - never analyzes data — that is the analyzer's job
@@ -565,10 +569,12 @@ YYYY-MM-DD | no --noconfirm for pacman
            | Showing "11 GB · run paccache -rk2" implies the total is
            | cleanable. Fix when cleanup grows: parse paccache -d dry-run
            | output for the honest reclaimable number, show both.
+           | → delivered 2026-07-17.
 
 2026-07-14 | AUR build cache belongs on the cleanup screen (v0.5 req)
            | ~/.cache/paru was 9 GB on the reference system and paclens
            | doesn't surface it. Suggest `paru -Sc --aur` (clone dir only).
+           | → delivered 2026-07-17.
 
 2026-07-14 | cleanup execution: paccache + paru -Sc --aur, never pacman -Sc
            | pacman >=7's sandboxed downloader (DownloadUser=alpm) leaves
@@ -600,6 +606,57 @@ YYYY-MM-DD | no --noconfirm for pacman
            | with an explicit "primary side unclear" warning — never a
            | silent guess. Rows appear only when at least one side exists;
            | cache rows always advise "skip — regenerates".
+
+2026-07-17 | the migration copy plan never contains an rm (v0.5)
+           | plan_migration only ever mkdirs and cp -aT: existing targets
+           | are staged into a timestamped backup dir first, then each
+           | actionable pair is copied. Source data is never deleted, so
+           | rollback stays possible — rollback_lines renders the restore
+           | commands from the same pair indices. Roadmap v0.5's "never
+           | delete source data automatically" is therefore structural, not
+           | a rule the executor has to remember. Cache pairs and empty
+           | sources are skipped outright.
+
+2026-07-17 | ActionKind::Migrate is never privileged; Remove follows the source
+           | profile data under ~ is user-owned even when the app is a
+           | system-scope flatpak, so the copy always runs unprivileged.
+           | Only the removal plan escalates: sudo pacman -Rns for the
+           | native side (pacman removes AUR packages too), flatpak
+           | uninstall --user/--system for the flatpak side. cp -aT, not
+           | cp -a — plain cp -a nests into an existing target directory.
+
+2026-07-17 | removal is armed by a clean copy, never offered alongside it
+           | (v0.5, user decision) x runs the copy plan in the console; only
+           | a zero-exit run arms R, and the pane then reads "launch <app>
+           | and verify, then R removes the source". esc or moving the
+           | cursor disarms and names the backup dir. A failed copy never
+           | arms removal. The CLI has the same shape: --run prints the
+           | exact commands, asks y/N, copies, prints the rollback block,
+           | then asks a second y/N for the removal after telling the user
+           | to verify. This is roadmap v0.5's "install target first, verify
+           | it launches, then offer to remove source" — the install step is
+           | moot because an overlap means both sides are already installed.
+
+2026-07-17 | cleanup shows reclaimable next to the total (v0.5; req 2026-07-14)
+           | the scanner runs the matching paccache -dk2 dry run and parses
+           | its figure into CacheSizes.pacman_cache_reclaimable_bytes
+           | (SCHEMA_VERSION 7), so the pane reads "11 GiB (0 B
+           | reclaimable)" instead of implying the total is cleanable. The
+           | paccache suggestion hides itself when it would free nothing.
+           | ~/.cache/paru gets its own row with paru -Sc --aur (clone dir
+           | only); pacman -Sc is still never suggested (2026-07-14
+           | sandboxed-download partials decision).
+
+2026-08-23 | tokio dropped — it was never used (v0.5.0)
+           | the dependency survived from the spec-era design (tokio::join!
+           | lanes, tokio::select! event loop, tokio::process streaming) but
+           | every one of those was superseded: scan lanes went to
+           | std::thread::scope (2026-07-05), the provider timeout to a sync
+           | runner (2026-07-12), and execution to a pty (2026-07-08). Zero
+           | async fn, zero .await, zero tokio references in src/ or tests/;
+           | nothing else pulled it in. Removing it drops tokio, tokio-macros
+           | and bytes from the lock. Do not reintroduce without a concrete
+           | need — the codebase is deliberately sync.
 ```
 
 ---

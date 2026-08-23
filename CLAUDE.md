@@ -1,24 +1,28 @@
 # paclens
 
-A TUI-first system inspection and update tool for **Arch Linux**. It unifies pacman and Flatpak into one interface and layers on advisory features: a `why` dependency inspector, a Flatpak/native overlap detector, and an orphan/cache reporter.
+A TUI-first system inspection and update tool for **Arch Linux**. It unifies pacman, the AUR and Flatpak into one interface and layers on advisory features: a `why` dependency inspector, a Flatpak/native overlap detector with migration advisory and execution, and an orphan/cache reporter.
 
-paclens is **not** a package manager. It wraps pacman and Flatpak, reads their state, and presents it. It never acts without confirmation and never guesses package relationships.
+paclens is **not** a package manager. It wraps pacman, paru and Flatpak, reads their state, and presents it. It never acts without confirmation and never guesses package relationships.
 
 ## Status
 
-Pre-implementation. The design docs are complete; no Rust code is written yet. Build proceeds in the locked order below — do not reorder.
+**v0.5.0 — working tool, daily-driveable.** ~16k lines of Rust across `src/`. 389 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+
+Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, pty exec console, log viewer), pacman + AUR + Flatpak providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`.
+
+The build-order milestones v0.0.1 → v0.5.0 are **history, not a plan**. Do not treat the roadmap's early phases as upcoming work.
 
 ## Source-of-truth documents
 
-Read these before doing non-trivial work. They are authoritative for design intent.
+Read these before doing non-trivial work.
 
-- `spec.md` — canonical technical spec: architecture, data model (`src/model/`), provider/cache/graph/overlap specs, confidence model, CLI/TUI specs, error handling, open questions.
-- `roadmap.md` — milestone deliverables and "done when" criteria, v0.0.1 → v0.2.0.
-- `dev-notes.md` — implementation guidance, hard parsing problems, module contracts, fixtures, decisions log. **Read before writing non-trivial code.**
+- `dev-notes.md` — implementation guidance, hard parsing problems, module contracts, fixtures, and the **decisions log (§7)**. Read before writing non-trivial code.
+- `spec.md` — the original technical spec: architecture, data model, provider/cache/graph/overlap specs, confidence model, CLI/TUI specs, error handling.
+- `roadmap.md` — milestone deliverables and "done when" criteria.
 - `config.default.toml` — default config schema.
 - `overlap_map.toml` — bundled Flatpak-ID → pacman-name map (`include_str!()` into the binary).
 
-The data model in spec.md §4 is canonical; `src/model/` must match it. When an implementation choice arises, check spec.md §18 (open questions) and dev-notes.md §7 (decisions log) first.
+**Where `spec.md` and the dev-notes decisions log conflict, the decisions log wins.** It is dated and records why. Several spec sections have been deliberately superseded (see below). `spec.md` §18 lists the original open questions; most are resolved in §7.
 
 ## Design principles (hard constraints, not guidelines)
 
@@ -26,8 +30,8 @@ The data model in spec.md §4 is canonical; `src/model/` must match it. When an 
 2. **Safety over aggression.** When in doubt, do nothing. Never remove more than asked.
 3. **Honest confidence.** Every inference carries a `Confirmed`, `Inferred`, or `Unknown` label. Never present inference as fact. Never promote a label — an `Unknown` edge in a path caps the verdict at `Unknown`.
 4. **Pipeline:** scan → analyze → plan → confirm → execute. No shortcuts, no "fix all" button.
-5. **One source of truth:** the scan cache. The TUI, `why`, and overlap detector all read from it. Nothing re-derives what a scan already computed.
-6. **Source-specific logic.** pacman and Flatpak differ in every respect. No generic cross-source shortcuts.
+5. **One source of truth:** the scan cache. The TUI, `why`, and the overlap detector all read from it. Nothing re-derives what a scan already computed.
+6. **Source-specific logic.** pacman and Flatpak differ in every respect. No generic cross-source shortcuts. *(Under active review — see "What's next".)*
 
 ## Architecture
 
@@ -37,20 +41,27 @@ CLI/TUI  →  Application core (state, planner, event bus)
          →  Cache layer (scan cache; graph & overlaps recomputed on load)
 ```
 
-Module layout (see spec.md §3 for the full tree): `main.rs`, `cli/`, `tui/`, `model/`, `providers/`, `scanner/`, `analyzer/`, `executor/`, `config/`.
+Modules: `main.rs`, `cli/`, `tui/`, `model/`, `providers/`, `scanner/`, `analyzer/`, `executor/`, `config/`, plus `planner.rs`, `format.rs`, `fuzzy.rs`, `glyphs.rs`, `logging.rs`.
 
-Module contracts (dev-notes.md §3):
+Module contracts (dev-notes §3):
 - **Provider** — accepts an injectable `CommandRunner` (the testing seam); returns `Ok(vec![])` when nothing is installed; `Err` only when the binary exists but the command failed; never calls sudo; never knows about other providers.
-- **Scanner** — detects providers, runs them concurrently (`tokio::join!`), assembles `ScanResult`, writes cache. Never analyzes.
+- **Scanner** — detects providers, runs them concurrently on scoped threads (`std::thread::scope`), assembles `ScanResult`, writes cache. Never analyzes. One exception, made explicit in the 2026-07-14 decision: it asks the pure analyzer *which* paths to measure, then measures them.
 - **Analyzer** — pure: same `ScanResult` → same output. Never calls subprocesses, never writes disk. Builds dep graph, overlaps, orphan list from `ScanResult`.
 - **Executor** — only runs pre-built `ActionPlan`s. Never decides what to do. Logs every command. Reports exit codes without interpretation.
 
 ## Key technical decisions
 
-- **Dep graph from one `pacman -Qi` call**, not per-package `pactree`. Parse `Depends On` / `Required By`; all graph queries run in-memory on `petgraph`. pactree is not a dependency.
-- **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`. The dep graph and overlaps are recomputed on load, never serialized (avoids petgraph version fragility). Atomic writes: write `.tmp`, then `rename()`.
-- **Sudo in TUI:** suspend the TUI (`LeaveAlternateScreen` + disable raw mode), run the command in the raw terminal so the user handles the sudo/pacman prompts directly, then restore. No `--noconfirm` for pacman (it suppresses conflict resolution).
+These supersede the corresponding spec sections. Full reasoning in dev-notes §7.
+
+- **Dep graph from one `pacman -Qi` call**, not per-package `pactree`. All graph queries run in-memory on `petgraph`.
+- **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`, currently `SCHEMA_VERSION = 7`. The dep graph and overlaps are recomputed on load, never serialized. Atomic writes: write `.tmp`, then `rename()`.
+- **Execution runs on a real pty** (`portable-pty` + `vt100`) inside the TUI. The child sees a genuine terminal, so sudo/doas/pkexec/pacman/paru prompt, colour and redraw natively; every key including Ctrl-C passes through. This replaced both the piped-stdio console and the spec §13.2 suspend/restore flow.
+- **No `--noconfirm` for pacman**, ever. It suppresses conflict resolution.
+- **The dashboard *is* the plan view.** There is no separate update screen (spec §10.2 superseded). `space` toggles a source, `u` runs the plan, the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
+- **AUR is the libalpm split, not a second scan.** Foreign packages already carry full `pacman -Qi` metadata; the scanner relabels them via `pacman -Qm`. paru only does what pacman can't: update detection (`-Qua`) and the update step (`paru -Sua`). **paru is never run under sudo** — it self-elevates.
 - **Overlap matching** in priority order: known map → reverse-DNS suffix → display-name match, each with a decreasing confidence label. A generic blocklist suppresses false positives. A false negative is better than a false positive.
+- **Migration copy plans contain no `rm` anywhere.** Backups are staged into a timestamped dir, then targets are copied with `cp -aT`. Source removal is a separate plan, armed only by a clean copy and a user's explicit verification. `ActionKind::Migrate` is never privileged; `ActionKind::Remove` follows the source.
+- **Cleanup figures are honest.** The reclaimable number comes from the matching `paccache -dk2` dry run, shown next to the total — an 11 GiB cache that reclaims nothing says so. `pacman -Sc` is never suggested (it trips over pacman ≥7's sandboxed-download partials); `paccache` and `paru -Sc --aur` are.
 
 ## Conventions
 
@@ -59,38 +70,49 @@ Module contracts (dev-notes.md §3):
 - TUI: rendering fns take `&App` (never mutate); event handlers take `&mut App` (the only mutators). No global mutable state.
 - Colors are centralized per render target: TUI styles in `src/tui/theme.rs`, CLI text styling in `src/cli/style.rs`; both follow one semantic palette (green = available, yellow = pending updates, dim = secondary, bold = emphasis) and share glyphs from `src/glyphs.rs`. Color is suppressed by `--no-color`, by `color_theme = "none"`, and (for the CLI) when the stream is not a TTY; the no-color path also switches to ASCII box drawing and ASCII glyphs.
 - Every parser has unit tests against real-output fixtures in `tests/fixtures/`, driven by a mock `CommandRunner`. Capture fixtures from a real Arch system.
-- **Testing is a hard requirement, not an afterthought.** Every module carries unit tests; every feature ships with tests. Keep them small, granular, and specific — test pure helpers directly, not just via their callers. Make logic hermetically testable by injecting the `CommandRunner` seam and passing environment-derived inputs (availability flags, mtimes) into pure cores rather than reading PATH/filesystem inside the logic (see `scan`→`assemble`, `staleness`→`staleness_with`). Integration tests in `tests/` drive the built binary (`CARGO_BIN_EXE_paclens`) sandboxed with temp `XDG_*` dirs; grow them as the surface stabilizes. `cargo test`, `clippy -- -D warnings -D clippy::unwrap_used`, and `fmt --check` stay green on every commit.
+- **Every config knob must be consumed.** A knob that exists in the schema but changes no behaviour is a bug (v0.2.0 audit).
+- **Git:** work on `main` directly — this is a solo repo, no feature branches. Commits are authored by the repo owner alone: **no `Co-Authored-By` or `Claude-Session` trailers.** Keep the existing message style — a `type(scope):` subject line, then prose explaining *why*, not a bullet list of what changed.
+- **Testing is a hard requirement, not an afterthought.** Every module carries unit tests; every feature ships with tests. Keep them small, granular, and specific — test pure helpers directly, not just via their callers. Make logic hermetically testable by injecting the `CommandRunner` seam and passing environment-derived inputs (availability flags, mtimes) into pure cores rather than reading PATH/filesystem inside the logic (see `scan`→`assemble`, `staleness`→`staleness_with`). Integration tests in `tests/` drive the built binary (`CARGO_BIN_EXE_paclens`) sandboxed with temp `XDG_*` dirs. `cargo test`, `clippy -- -D warnings -D clippy::unwrap_used`, and `fmt --check` stay green on every commit.
 
-## Build order (locked — see roadmap.md / dev-notes.md §1)
+## What shipped
 
 ```
-v0.0.1 skeleton       CLI + empty TUI + config + logging
-v0.0.2 providers      pacman -Q, flatpak list → parse
-v0.0.3 cache + model  pacman -Qi (full metadata), ScanResult, cache r/w
-v0.0.4 dashboard      wire cached data into TUI
-v0.0.5 update dry run  show plan, no execution
-v0.0.6 first action    execute Flatpak update (no sudo), TUI suspend/restore
-v0.0.7 dep graph + why build graph, reverse-dep lookup, verdicts
-v0.0.8 overlap detect  cross-reference pacman + Flatpak
-v0.0.9 usability       keyboard, colors, speed, errors
+v0.0.x  engine        CLI, TUI skeleton, config, logging, providers, cache, model
+v0.1.0  foundation    dashboard wired to cached data
+v0.1.1  detection     checkupdates, flatpak runtimes as packages, parallel lanes
+v0.1.2  why in TUI    reverse-dep chain tree with labeled edges
+v0.1.3  relationships why unified across sources; flatpak app→runtime edges
+v0.1.4  overlaps      overlap screen, profile sizes, primary-install heuristic
+v0.1.5  cleanup       orphans from the graph, unused runtimes, cache sizes
+v0.2.0  stable core   every config knob consumed, provider timeouts
+v0.3.0  AUR           foreign packages as their own source; paru integration
+v0.4.0  migration     advisory: profile paths, direction, manual steps
+v0.5.0  migration+    execution behind backups; honest cleanup figures
 ```
 
-Do not build out TUI layout/theming/widgets before v0.0.4 — get data flowing through the model first.
+## What's next
+
+Tracked as GitHub issues, labeled by theme (`sources`, `system-health`, `update-flow`, `integration`, `cleanup`, `aur`), area (`area:*`), and `priority:*`. `needs-design` marks the ones with open questions to settle first.
+
+**v0.6 — broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
+
+Before any of them: **the provider contract needs generalizing** for sources with no install reason, no dependency metadata and no orphan concept. This presses directly on principle 6 and on the "no extension points for deferred features" rule below — both were written when there were two sources. Settle it deliberately and record it in dev-notes §7 rather than drifting into it one provider at a time.
+
+The payoff that keeps this from becoming "topgrade with a TUI": overlap detection extended across sources. The same tool installed via pacman *and* cargo is the same duplicate problem as native-vs-Flatpak, and `PATH` precedence decides which one you actually run.
+
+**v0.7 — system health.** Arch news before an update, `.pacnew`/`.pacsave`, reboot-required, services needing restart, db lock detection, stale mirrors, `pacman.log` history, downgrade-from-cache.
 
 ## Tech stack
 
-ratatui + crossterm (TUI), tokio (async), clap derive (CLI), petgraph (graph), serde + toml (config/cache), anyhow + thiserror (errors), tracing + tracing-subscriber (logging), directories (paths). Single binary, no daemon, sudo only for pacman updates.
+ratatui + crossterm (TUI), portable-pty + vt100 (exec console), clap derive (CLI), petgraph (graph), serde + toml + serde_ignored (config/cache), anyhow + thiserror (errors), tracing + tracing-subscriber + tracing-appender (logging), chrono (timestamps), directories (paths).
 
-## Out of scope (do not design for these)
+**No async runtime.** The scanner uses `std::thread::scope`; there is no `async fn` in the codebase. tokio was a spec-era dependency and was removed in v0.5.0 — do not reintroduce it without a concrete need.
 
-AUR/paru (v0.3+), migration advisory/execution (v0.4–0.5), cargo/npm/brew/pipx (v0.6+), destructive cleanup (v0.5+), daemon/plugin system (post-1.0), any non-Arch distro (never). Do not add extension points for deferred features.
+Single binary, no daemon, sudo only for pacman updates.
 
-## Common commands
+## Out of scope
 
-```
-cargo build
-cargo test
-cargo fmt --check
-cargo clippy -- -D warnings -D clippy::unwrap_used
-cargo build --release
-```
+- **Never:** any non-Arch distro.
+- **Not without a decision first:** a daemon or resident process (a systemd *user timer* invoking a short-lived run is fine; a daemon is not), a plugin system, remote/multi-host operation.
+- **Do not add extension points for deferred features.** Build for what exists. *(The v0.6 source work is the one sanctioned exception — see above.)*
+- Destructive cleanup automation stays behind the trust ladder: the cleanup screen deliberately has **no action keys**. Suggestions are copiable text until that changes deliberately.
