@@ -16,9 +16,9 @@ your system uninvited.
 | |    -  flatpak-user   12    0 || ...                                 ||
 | +------------------------------++-------------------------------------+|
 | + system ----------------------++ keys -------------------------------+|
-| | - plan          62 packages  || ^/v move   ←/→ pane   enter packages||
-| | - pacman cache  7.6 GiB      || space toggle   u update   r refresh ||
-| | - orphans       3            || o overlaps   c cleanup   L log      ||
+| | - plan          62 packages  || ^/v move   ←/→ pane   i packages    ||
+| | - pacman cache  7.6 GiB      || space toggle   enter update   L log ||
+| | - orphans       3            || o overlaps   c cleanup   r refresh  ||
 | +------------------------------++-------------------------------------+|
 +-------------------------------------------------------------------------+
 ```
@@ -97,8 +97,8 @@ detection and updates; foreign packages still list without it).
 | `↑/↓` `j/k` | everywhere | move |
 | `←/→` `h/l` | dashboard | switch pane focus |
 | `space` | dashboard | toggle a source in/out of the update plan |
-| `u` | dashboard | run the update (pty console; sudo/pacman prompt as usual) |
-| `enter` | dashboard | open the selected source's package list |
+| `enter` / `u` | dashboard | run the update (pty console; sudo/pacman prompt as usual) |
+| `i` | dashboard | open the selected source's package list |
 | `o` / `c` | dashboard | overlap screen / cleanup screen |
 | `r` / `L` | dashboard | refresh scan / view the update log |
 | `/` | package list | fuzzy filter |

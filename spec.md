@@ -727,6 +727,11 @@ Detail pane: toggled with `D`. Right side, ~35% width. Shows context for selecte
 
 ### 10.5 Screen-specific keybindings
 
+> **Superseded (2026-07-11, 2026-08-24).** The update screen was deleted — the
+> dashboard is the plan view — so `U` has no target. Live dashboard keys are
+> `space` toggle, `enter` run (alias `u`), `i` package list, `o` overlaps,
+> `c` cleanup, `r` refresh, `L` log. See dev-notes §7 and the README key table.
+
 | Screen | Key | Action |
 |---|---|---|
 | Dashboard | `U` | go to update screen |

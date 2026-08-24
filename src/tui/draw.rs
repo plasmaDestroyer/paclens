@@ -305,8 +305,8 @@ fn draw_dashboard_flat(frame: &mut Frame, inner: Rect, app: &App) {
             theme,
             &[
                 (&updown, "move"),
-                ("enter", "packages"),
-                ("u", "update"),
+                ("enter", "update"),
+                ("i", "packages"),
                 ("r", "refresh"),
                 ("q", "quit"),
             ],
@@ -338,11 +338,11 @@ fn dashboard_key_rows(theme: &Theme) -> Vec<Line<'static>> {
     vec![
         keys_line(
             theme,
-            &[(&updown, "move"), ("←/→", "pane"), ("enter", "packages")],
+            &[(&updown, "move"), ("←/→", "pane"), ("i", "packages")],
         ),
         keys_line(
             theme,
-            &[("space", "toggle"), ("u", "update"), ("r", "refresh")],
+            &[("space", "toggle"), ("enter", "update"), ("r", "refresh")],
         ),
         keys_line(
             theme,
@@ -1720,7 +1720,11 @@ mod tests {
         let text = render(&app, 70, 14);
         assert!(text.contains("paclens"));
         assert!(text.contains("SOURCE"));
-        assert!(text.contains("u update"), "footer hint missing:\n{text}");
+        assert!(
+            text.contains("enter update"),
+            "footer hint missing:\n{text}"
+        );
+        assert!(text.contains("i packages"), "footer hint missing:\n{text}");
     }
 
     // --- quadrant dashboard (rendered at a comfortable size) ---
@@ -1960,7 +1964,8 @@ mod tests {
         assert!(text.contains("[x] pacman"), "toggle missing:\n{text}");
         assert!(text.contains("-  flatpak-user"), "dash missing:\n{text}");
         assert!(text.contains("space toggle"), "footer missing:\n{text}");
-        assert!(text.contains("u update"), "{text}");
+        assert!(text.contains("enter update"), "{text}");
+        assert!(text.contains("i packages"), "{text}");
 
         app.toggle_selected(); // pacman off
         let text = render(&app, 96, 24);

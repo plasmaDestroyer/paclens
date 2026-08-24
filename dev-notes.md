@@ -657,6 +657,19 @@ YYYY-MM-DD | no --noconfirm for pacman
            | nothing else pulled it in. Removing it drops tokio, tokio-macros
            | and bytes from the lock. Do not reintroduce without a concrete
            | need — the codebase is deliberately sync.
+
+2026-08-24 | enter runs the update; the package list moves to i (user decision)
+           | updating is what you open paclens to do, so it belongs on the
+           | most default key. enter was drilling into the selected source's
+           | package list — an inspection detour — while the primary action
+           | sat on u. Swapped: enter executes the plan (u kept as an alias
+           | so muscle memory and the docs' older wording still work), and
+           | the package list moved to i for "info". d was the other
+           | candidate and was rejected: in a package tool d reads as
+           | "delete", and paclens should never put a destructive-sounding
+           | key on a purely inspective action. P1/P4 are untouched — the
+           | dashboard still shows the whole plan before enter runs it, and
+           | an empty plan still just flashes "you're up to date".
 ```
 
 ---

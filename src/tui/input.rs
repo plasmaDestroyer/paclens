@@ -68,8 +68,12 @@ fn is_quit(key: &KeyEvent) -> bool {
         || (key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')))
 }
 
-/// Dashboard key map: nav, toggle, run, refresh, quit. The dashboard owns
-/// the update flow — Space toggles the selected source, `u` runs the plan.
+/// Dashboard key map: nav, toggle, run, inspect, refresh, quit. The dashboard
+/// owns the update flow — Space toggles the selected source and Enter runs the
+/// plan, because updating is what you open paclens to do (user decision
+/// 2026-08-24). `u` stays as an alias. Drilling into a source's package list
+/// moved to `i` (info); `d` was avoided because it reads as "delete" in a
+/// package tool.
 pub fn map_dashboard_key(key: KeyEvent) -> Action {
     if is_quit(&key) {
         return Action::Quit;
@@ -81,11 +85,11 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Right | KeyCode::Char('l') => Action::FocusRight,
         KeyCode::Char(' ') => Action::Toggle,
         KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Char('u') => Action::Execute,
+        KeyCode::Enter | KeyCode::Char('u') => Action::Execute,
+        KeyCode::Char('i') | KeyCode::Char('I') => Action::OpenPackages,
         KeyCode::Char('o') | KeyCode::Char('O') => Action::OpenOverlaps,
         KeyCode::Char('c') | KeyCode::Char('C') => Action::OpenCleanup,
         KeyCode::Char('L') => Action::OpenLog,
-        KeyCode::Enter => Action::OpenPackages,
         _ => Action::Ignore,
     }
 }
@@ -260,14 +264,21 @@ mod tests {
             map_dashboard_key(plain(KeyCode::Char('r'))),
             Action::Refresh
         );
-        // The dashboard owns the update flow: space toggles, u runs.
+        // The dashboard owns the update flow: space toggles, enter runs.
         assert_eq!(map_dashboard_key(plain(KeyCode::Char(' '))), Action::Toggle);
+        assert_eq!(map_dashboard_key(plain(KeyCode::Enter)), Action::Execute);
+        // u stays as an alias for enter.
         assert_eq!(
             map_dashboard_key(plain(KeyCode::Char('u'))),
             Action::Execute
         );
+        // The package list moved off enter onto i (info).
         assert_eq!(
-            map_dashboard_key(plain(KeyCode::Enter)),
+            map_dashboard_key(plain(KeyCode::Char('i'))),
+            Action::OpenPackages
+        );
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('I'))),
             Action::OpenPackages
         );
         assert_eq!(
