@@ -16,14 +16,19 @@ Shipped milestones are **history, not a plan** — see "What shipped" below. All
 
 Read these before doing non-trivial work.
 
+- **`design.md` — what paclens will and will not do to a user's system, and why. Outranks every other document here.** Read it first.
 - `dev-notes.md` — implementation guidance, hard parsing problems, module contracts, fixtures, and the **decisions log (§7)**. Read before writing non-trivial code.
 - `spec.md` — the original technical spec: architecture, data model, provider/cache/graph/overlap specs, confidence model, CLI/TUI specs, error handling.
 - `config.default.toml` — default config schema.
 - `overlap_map.toml` — bundled Flatpak-ID → pacman-name map (`include_str!()` into the binary).
 
-**Where `spec.md` and the dev-notes decisions log conflict, the decisions log wins.** It is dated and records why. Several spec sections have been deliberately superseded (see below). `spec.md` §18 lists the original open questions; most are resolved in §7.
+**Precedence when documents disagree: `design.md` > dev-notes §7 > `spec.md`.** `design.md` states the rules; the decisions log is dated and records why each was made; the spec is the original design and has been superseded in several places (marked in place). `spec.md` §18 lists the original open questions; most are resolved in §7.
 
-## Design principles (hard constraints, not guidelines)
+## Design principles
+
+Summary only — **`design.md` is authoritative**, and carries the concrete rules
+each principle produces (no `--noconfirm`, no partial upgrades, no removal
+without an explanation, no misleading numbers, and the rest).
 
 1. **Explain before acting.** No action runs without showing exactly what will happen.
 2. **Safety over aggression.** When in doubt, do nothing. Never remove more than asked.
@@ -31,6 +36,11 @@ Read these before doing non-trivial work.
 4. **Pipeline:** scan → analyze → plan → confirm → execute. No shortcuts, no "fix all" button.
 5. **One source of truth:** the scan cache. The TUI, `why`, and the overlap detector all read from it. Nothing re-derives what a scan already computed.
 6. **Source-specific logic.** pacman and Flatpak differ in every respect. No generic cross-source shortcuts. *(Under active review — see "What's next".)*
+
+`design.md` also carries **the test** that decides whether something becomes a
+rule at all: *can you state the harm?* If yes, it is a rule and it holds. If the
+only objection is taste, it is a **default** — off, warned, available — not a
+prohibition.
 
 ## Architecture
 
@@ -64,6 +74,7 @@ These supersede the corresponding spec sections. Full reasoning in dev-notes §7
 
 ## Conventions
 
+- **Hold the line on `design.md`.** If a request conflicts with a rule there — whoever it comes from, including the repo owner — say so *before* doing the work, name the rule, and ask. A rule changing is a fine outcome; a rule eroding quietly because it was inconvenient one afternoon is not. Apply the test first: if the request touches a **default** rather than a rule, just do it — defaults exist to be flipped, and pushing back on one is noise.
 - **No `unwrap()` / `expect()` in production paths** — `#![deny(clippy::unwrap_used)]`. Use `anyhow::Result` for app code, `thiserror` for provider error types.
 - Provider errors are isolated: one source failing must not abort others.
 - TUI: rendering fns take `&App` (never mutate); event handlers take `&mut App` (the only mutators). No global mutable state.

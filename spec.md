@@ -34,6 +34,10 @@ It is not a package manager. It does not replace pacman or Flatpak. It wraps the
 
 ## 2. Design principles
 
+> **Superseded (2026-08-25).** `design.md` is now the authoritative statement of
+> the principles and the concrete rules they produce. This section is the
+> original wording, kept for context; where the two differ, `design.md` wins.
+
 These are not guidelines. They are constraints. Every design decision must satisfy them.
 
 ### P1 — Explain before acting

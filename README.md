@@ -140,7 +140,12 @@ and extra mappings, orphan ignore list, color theme, log level.
 1. **Explain before acting.** Nothing runs without showing exactly what will.
 2. **Safety over aggression.** When in doubt, do nothing.
 3. **Honest confidence.** Inference is labeled, never promoted.
-4. **One source of truth.** Every view reads from the same scan.
+4. **The pipeline.** scan → analyze → plan → confirm → execute. No "fix all" button.
+5. **One source of truth.** Every view reads from the same scan.
+
+[`design.md`](design.md) is the full statement — what paclens will and will not
+do to your system, and the reasoning behind each rule. Worth reading before you
+let anything near your package manager.
 
 ## License
 
