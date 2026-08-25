@@ -703,6 +703,25 @@ YYYY-MM-DD | no --noconfirm for pacman
            | uncommitted months after they shipped. Source comments that
            | cite "roadmap vX.Y" stay as provenance — they resolve against
            | the shipped table. Do not recreate the file.
+
+2026-08-24 | milestones renumbered; 0.3.0 is the first tagged release
+           | the old scheme mixed granularities: 0.1.0-0.1.5 took a patch
+           | bump per feature, then 0.2.0-0.5.0 took a whole minor each for
+           | the same size of work, so the number said more about when a
+           | milestone happened than how much it carried. The original
+           | v0.0.1-v0.4.0 tags existed on the remote but were never
+           | published to the AUR or crates.io, so nothing outside this
+           | repo consumed them; they were deleted rather than left to
+           | contradict the new numbering (user decision, since moving
+           | published refs is otherwise off the table).
+           | Regrouped into three capability blocks — 0.1.0 see,
+           | 0.2.0 understand, 0.3.0 extend — which is chronological and
+           | thematic at once. Going forward a minor is a capability you
+           | can point at and a patch is fixes; unshipped work gets no
+           | number at all, since pre-assigning them is what drifted last
+           | time. Old labels in commits, decision entries above and source
+           | comments are left alone as contemporaneous record; CLAUDE.md
+           | carries the mapping forward.
 ```
 
 ---

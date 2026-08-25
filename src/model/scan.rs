@@ -12,13 +12,13 @@ use super::{Package, PendingUpdate, Source};
 
 /// Bump on any breaking change to `ScanResult`. A cache with a mismatched
 /// version is discarded and re-scanned (spec §6.5).
-/// v2: `Source.accurate_updates` + `Package.runtime` (v0.1.1).
-/// v3: `flatpak_profile_sizes` (v0.1.4).
-/// v4: flatpak `Package.size_bytes` populated (v0.1.5) — data enrichment;
+/// v2: `Source.accurate_updates` + `Package.runtime` (0.1.0).
+/// v3: `flatpak_profile_sizes` (0.2.0).
+/// v4: flatpak `Package.size_bytes` populated (0.2.0) — data enrichment;
 /// bumped so stale caches rescan instead of showing unknown sizes.
-/// v5: foreign packages split into the `aur` source (v0.3).
-/// v6: `profile_dir_sizes` — migration advisory probe (v0.4).
-/// v7: `CacheSizes` reclaimable + paru build cache (v0.5 cleanup honesty).
+/// v5: foreign packages split into the `aur` source (0.3.0).
+/// v6: `profile_dir_sizes` — migration advisory probe (0.3.0).
+/// v7: `CacheSizes` reclaimable + paru build cache (0.3.0, cleanup honesty).
 pub const SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

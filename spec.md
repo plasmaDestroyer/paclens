@@ -2,7 +2,9 @@
 
 > Version: 0.2 (pre-implementation, revised)
 > Last updated: 2026-05
-> Covers: v0.0.1 through v0.2.0
+> Covers: the original v0.0.1–v0.2.0 milestones, which were renumbered on
+> 2026-08-24 into 0.1.0 and 0.2.0 — see the mapping in CLAUDE.md. Version
+> labels below are the ones used at the time of writing.
 
 ---
 
@@ -989,6 +991,13 @@ cargo build --release
 ---
 
 ## 17. Deferred features
+
+> **Largely overtaken.** paru/AUR, migration advisory and migration execution
+> all shipped (now 0.3.0); destructive cleanup, the app-grouping DB, the
+> broader sources and the system doctor are open GitHub issues rather than
+> deferred ideas. The "Earliest" column uses the pre-2026-08-24 numbering.
+> The two lines that still hold as written are the daemon and the plugin
+> system, both of which CLAUDE.md keeps behind an explicit decision.
 
 Out of scope for v0.0.x through v0.2.0. Do not design for them. Do not add extension points unless they emerge naturally.
 

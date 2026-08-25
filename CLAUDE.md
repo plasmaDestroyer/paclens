@@ -6,11 +6,11 @@ paclens is **not** a package manager. It wraps pacman, paru and Flatpak, reads t
 
 ## Status
 
-**v0.5.0 — working tool, daily-driveable.** ~16k lines of Rust across `src/`. 389 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+**0.3.0 — working tool, daily-driveable.** ~16k lines of Rust across `src/`. 398 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
 
 Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, pty exec console, log viewer), pacman + AUR + Flatpak providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`.
 
-The build-order milestones v0.0.1 → v0.5.0 are **history, not a plan** — see "What shipped" below. All open work lives in GitHub issues; there is no roadmap file.
+Shipped milestones are **history, not a plan** — see "What shipped" below. All open work lives in GitHub issues; there is no roadmap file.
 
 ## Source-of-truth documents
 
@@ -70,23 +70,36 @@ These supersede the corresponding spec sections. Full reasoning in dev-notes §7
 - Colors are centralized per render target: TUI styles in `src/tui/theme.rs`, CLI text styling in `src/cli/style.rs`; both follow one semantic palette (green = available, yellow = pending updates, dim = secondary, bold = emphasis) and share glyphs from `src/glyphs.rs`. Color is suppressed by `--no-color`, by `color_theme = "none"`, and (for the CLI) when the stream is not a TTY; the no-color path also switches to ASCII box drawing and ASCII glyphs.
 - Every parser has unit tests against real-output fixtures in `tests/fixtures/`, driven by a mock `CommandRunner`. Capture fixtures from a real Arch system.
 - **Every config knob must be consumed.** A knob that exists in the schema but changes no behaviour is a bug (v0.2.0 audit).
+- **Versioning:** a minor is a capability you can point at; a patch is fixes and polish. Every release gets a `vX.Y.Z` git tag — the PKGBUILD builds from `#tag=v$pkgver` and cannot build without one.
 - **Git:** work on `main` directly — this is a solo repo, no feature branches. Commits are authored by the repo owner alone: **no `Co-Authored-By` or `Claude-Session` trailers.** Keep the existing message style — a `type(scope):` subject line, then prose explaining *why*, not a bullet list of what changed.
 - **Testing is a hard requirement, not an afterthought.** Every module carries unit tests; every feature ships with tests. Keep them small, granular, and specific — test pure helpers directly, not just via their callers. Make logic hermetically testable by injecting the `CommandRunner` seam and passing environment-derived inputs (availability flags, mtimes) into pure cores rather than reading PATH/filesystem inside the logic (see `scan`→`assemble`, `staleness`→`staleness_with`). Integration tests in `tests/` drive the built binary (`CARGO_BIN_EXE_paclens`) sandboxed with temp `XDG_*` dirs. `cargo test`, `clippy -- -D warnings -D clippy::unwrap_used`, and `fmt --check` stay green on every commit.
 
 ## What shipped
 
+Three capability blocks, one minor each:
+
 ```
-v0.0.x  engine        CLI, TUI skeleton, config, logging, providers, cache, model
-v0.1.0  foundation    dashboard wired to cached data
-v0.1.1  detection     checkupdates, flatpak runtimes as packages, parallel lanes
-v0.1.2  why in TUI    reverse-dep chain tree with labeled edges
-v0.1.3  relationships why unified across sources; flatpak app→runtime edges
-v0.1.4  overlaps      overlap screen, profile sizes, primary-install heuristic
-v0.1.5  cleanup       orphans from the graph, unused runtimes, cache sizes
-v0.2.0  stable core   every config knob consumed, provider timeouts
-v0.3.0  AUR           foreign packages as their own source; paru integration
-v0.4.0  migration     advisory: profile paths, direction, manual steps
-v0.5.0  migration+    execution behind backups; honest cleanup figures
+0.1.0  see        CLI + TUI, config, logging, pacman/flatpak providers, scan
+                  cache, data model, dep graph, quadrant dashboard, accurate
+                  update detection, updates executed on a real pty
+0.2.0  understand why with labeled reverse-dep chains, app→runtime edges,
+                  overlap detection and the tradeoff screen, cleanup report,
+                  every config knob consumed, provider timeouts
+0.3.0  extend     AUR as its own source via paru, migration advisory and
+                  execution behind backups, honest reclaimable cleanup figures
+```
+
+**Renumbered 2026-08-24.** The old scheme mixed granularities — 0.1.x took a
+patch bump per feature, then 0.2.0–0.5.0 took a whole minor each for the same
+size of work. The original `v0.0.1`–`v0.4.0` tags were deleted in the same
+change: they were never published to the AUR or crates.io and nothing outside
+this repo consumed them. Older labels in commit messages, `dev-notes` decision
+entries and source comments map forward like this:
+
+```
+v0.0.1 – v0.1.1  →  0.1.0
+v0.1.2 – v0.2.0  →  0.2.0
+v0.3.0 – v0.5.0  →  0.3.0
 ```
 
 ## What's next
@@ -95,19 +108,23 @@ v0.5.0  migration+    execution behind backups; honest cleanup figures
 
 Issues are labeled by theme (`sources`, `system-health`, `update-flow`, `integration`, `cleanup`, `aur`), area (`area:*`), and `priority:*`. `needs-design` marks the ones with open questions to settle first.
 
-**v0.6 — broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
+**Broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
 
 Before any of them: **the provider contract needs generalizing** for sources with no install reason, no dependency metadata and no orphan concept. This presses directly on principle 6 and on the "no extension points for deferred features" rule below — both were written when there were two sources. Settle it deliberately and record it in dev-notes §7 rather than drifting into it one provider at a time.
 
 The payoff that keeps this from becoming "topgrade with a TUI": overlap detection extended across sources. The same tool installed via pacman *and* cargo is the same duplicate problem as native-vs-Flatpak, and `PATH` precedence decides which one you actually run.
 
-**v0.7 — system health.** Arch news before an update, `.pacnew`/`.pacsave`, reboot-required, services needing restart, db lock detection, stale mirrors, `pacman.log` history, downgrade-from-cache.
+**System health.** Arch news before an update, `.pacnew`/`.pacsave`, reboot-required, services needing restart, db lock detection, stale mirrors, `pacman.log` history, downgrade-from-cache.
+
+These are the two large themes, in no fixed order — whichever lands first takes the next minor. **Do not assign version numbers to unshipped work**; pre-assigning them is exactly what made the old scheme drift, and issues carry the plan now.
+
+**1.0 means the stated goal is real:** paclens is the one tool for everything that updates on this machine, and the advisory layer — `why`, overlaps, migration — covers every source it knows about. Nothing short of that gets a 1.
 
 ## Tech stack
 
 ratatui + crossterm (TUI), portable-pty + vt100 (exec console), clap derive (CLI), petgraph (graph), serde + toml + serde_ignored (config/cache), anyhow + thiserror (errors), tracing + tracing-subscriber + tracing-appender (logging), chrono (timestamps), directories (paths).
 
-**No async runtime.** The scanner uses `std::thread::scope`; there is no `async fn` in the codebase. tokio was a spec-era dependency and was removed in v0.5.0 — do not reintroduce it without a concrete need.
+**No async runtime.** The scanner uses `std::thread::scope`; there is no `async fn` in the codebase. tokio was a spec-era dependency and was removed in 0.3.0 — do not reintroduce it without a concrete need.
 
 Single binary, no daemon, sudo only for pacman updates.
 
