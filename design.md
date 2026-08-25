@@ -1374,6 +1374,22 @@ YYYY-MM-DD | no --noconfirm for pacman
            | cite "roadmap vX.Y" stay as provenance — they resolve against
            | the shipped table. Do not recreate the file.
 
+2026-08-25 | design.md is one document on purpose — do not split it by length
+           | spec.md and dev-notes.md did not fail because there were two of
+           | them. They failed because neither said which won when they
+           | disagreed, and because the habit was to mark a stale section
+           | "superseded" and leave it — which grows a document while
+           | shrinking how much of it is true. Merging fixed both: one file,
+           | stated precedence over CLAUDE.md, the README and every code
+           | comment, and ~650 lines deleted outright rather than annotated.
+           | The rule that replaces "keep docs small": split by whether the
+           | content can drift, never by how long the file is. §1-12 describe
+           | the current state and can go stale, so they live together under
+           | one precedence rule. §13 is append-only and dated and therefore
+           | cannot drift — which makes it safe to keep here, not a reason to
+           | move it out. Splitting for volume is how the last arrangement
+           | happened.
+
 2026-08-24 | milestones renumbered; 0.3.0 is the first tagged release
            | the old scheme mixed granularities: 0.1.0-0.1.5 took a patch
            | bump per feature, then 0.2.0-0.5.0 took a whole minor each for
