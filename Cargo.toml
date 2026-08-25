@@ -23,3 +23,16 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 vt100 = "0.16.2"
+
+# Release builds are what users install, so they optimize for a small, fast
+# single binary rather than for build time. `strip` is the biggest single win
+# — a default release build ships its symbol table.
+#
+# `panic = "abort"` is deliberately NOT set: it would shave a little more, but
+# the TUI holds a live pty child, and aborting instead of unwinding out of
+# portable-pty while that child is running is a worse failure than the bytes
+# are worth. ratatui's panic hook restores the terminal either way.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
