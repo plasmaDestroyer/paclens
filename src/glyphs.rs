@@ -11,6 +11,9 @@ pub struct Glyphs {
     pub bullet: &'static str,
     pub up: &'static str,
     pub down: &'static str,
+    /// Horizontal navigation, as in the dashboard's pane-focus hint.
+    pub left: &'static str,
+    pub right: &'static str,
     /// Leading marker for a selected/active row.
     pub pointer: &'static str,
     /// Version-transition arrow (`current → new`).
@@ -34,6 +37,8 @@ pub const UNICODE: Glyphs = Glyphs {
     bullet: "·",
     up: "↑",
     down: "↓",
+    left: "←",
+    right: "→",
     pointer: "▶ ",
     arrow: "→",
     check: "✓",
@@ -51,6 +56,8 @@ pub const ASCII: Glyphs = Glyphs {
     bullet: "-",
     up: "^",
     down: "v",
+    left: "<",
+    right: ">",
     pointer: "> ",
     arrow: "->",
     check: "x",
@@ -85,6 +92,38 @@ mod tests {
     fn ascii_cross_is_distinct_from_ascii_check() {
         // `[x]` means an enabled toggle, so a failed step must not also be `x`.
         assert_ne!(ASCII.cross, ASCII.check);
+    }
+
+    #[test]
+    fn ascii_set_is_entirely_ascii() {
+        // The no-color path must never emit a glyph a plain terminal renders
+        // as tofu — arrows included.
+        for g in [
+            ASCII.available,
+            ASCII.unavailable,
+            ASCII.bullet,
+            ASCII.up,
+            ASCII.down,
+            ASCII.left,
+            ASCII.right,
+            ASCII.pointer,
+            ASCII.arrow,
+            ASCII.check,
+            ASCII.cross,
+            ASCII.tree_branch,
+            ASCII.tree_last,
+            ASCII.tree_pipe,
+            ASCII.tree_blank,
+        ] {
+            assert!(g.is_ascii(), "non-ascii glyph in the ASCII set: {g:?}");
+        }
+    }
+
+    #[test]
+    fn horizontal_glyphs_are_one_column_in_both_sets() {
+        for g in [UNICODE.left, UNICODE.right, ASCII.left, ASCII.right] {
+            assert_eq!(g.chars().count(), 1, "{g:?} is not one column");
+        }
     }
 
     #[test]

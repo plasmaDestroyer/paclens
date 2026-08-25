@@ -274,7 +274,14 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let keys_pane = subpane(theme, " keys ");
     let keys_inner = keys_pane.inner(right[1]);
     frame.render_widget(keys_pane, right[1]);
-    frame.render_widget(Paragraph::new(dashboard_key_rows(theme)), keys_inner);
+    frame.render_widget(
+        Paragraph::new(dashboard_key_rows(
+            theme,
+            keys_inner.width as usize,
+            keys_inner.height as usize,
+        )),
+        keys_inner,
+    );
 }
 
 /// The pre-quadrant layout, kept for small terminals.
@@ -298,18 +305,11 @@ fn draw_dashboard_flat(frame: &mut Frame, inner: Rect, app: &App) {
         cols[1],
     );
     render_table(frame, chunks[2], app);
-    let g = theme.glyphs;
-    let updown = format!("{}/{}", g.up, g.down);
     frame.render_widget(
-        Paragraph::new(keys_line(
+        Paragraph::new(dashboard_key_rows(
             theme,
-            &[
-                (&updown, "move"),
-                ("enter", "update"),
-                ("i", "packages"),
-                ("r", "refresh"),
-                ("q", "quit"),
-            ],
+            chunks[3].width as usize,
+            chunks[3].height as usize,
         )),
         chunks[3],
     );
@@ -331,29 +331,107 @@ fn keys_line(theme: &Theme, pairs: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The dashboard key hints, split into two tidy rows for the keys pane.
-fn dashboard_key_rows(theme: &Theme) -> Vec<Line<'static>> {
+/// One key hint: the key as displayed, and what it does.
+type KeyHint<'a> = (&'a str, &'a str);
+
+/// Columns between two hints on a row — the padded bullet `keys_line` draws.
+const HINT_SEP: usize = 5;
+
+/// Columns one hint occupies: key + space + label.
+fn hint_width((key, label): KeyHint<'_>) -> usize {
+    key.chars().count() + 1 + label.chars().count()
+}
+
+/// Wrap hints across rows of `width` columns, preserving their order. A hint
+/// wider than the pane on its own is skipped — there is nothing sensible to
+/// render for it.
+fn wrap_hints<'a>(hints: &[KeyHint<'a>], width: usize) -> Vec<Vec<KeyHint<'a>>> {
+    let mut rows: Vec<Vec<KeyHint<'a>>> = Vec::new();
+    let mut row: Vec<KeyHint<'a>> = Vec::new();
+    let mut used = 0;
+    for &hint in hints {
+        let w = hint_width(hint);
+        if w > width {
+            continue;
+        }
+        if row.is_empty() {
+            row.push(hint);
+            used = w;
+        } else if used + HINT_SEP + w <= width {
+            row.push(hint);
+            used += HINT_SEP + w;
+        } else {
+            rows.push(std::mem::take(&mut row));
+            row.push(hint);
+            used = w;
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+/// Fit ranked hints into at most `max_rows` rows, dropping the least useful
+/// first (highest rank goes first).
+///
+/// Hints keep their *display* order — only which ones survive depends on the
+/// rank — so a narrow pane reads the same way a wide one does, with fewer
+/// entries. Nothing is ever clipped: a dropped hint beats half a word.
+fn fit_hints<'a>(
+    ranked: &[(u8, KeyHint<'a>)],
+    width: usize,
+    max_rows: usize,
+) -> Vec<Vec<KeyHint<'a>>> {
+    let mut keep = ranked.to_vec();
+    loop {
+        let hints: Vec<KeyHint<'a>> = keep.iter().map(|&(_, hint)| hint).collect();
+        let rows = wrap_hints(&hints, width);
+        if rows.len() <= max_rows {
+            return rows;
+        }
+        let Some(at) = keep
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, (rank, _))| *rank)
+            .map(|(i, _)| i)
+        else {
+            return Vec::new();
+        };
+        keep.remove(at);
+    }
+}
+
+/// The dashboard key hints in display order, each with a drop rank.
+///
+/// `enter update` is rank 0 and never drops — running the update is what the
+/// tool is for. `q quit` is next safest to keep, since a user who cannot find
+/// the exit is stuck. `L log` goes first: it is the least urgent thing on the
+/// screen and the log is reachable again from anywhere.
+fn dashboard_hints<'a>(updown: &'a str, leftright: &'a str) -> [(u8, KeyHint<'a>); 10] {
+    [
+        (4, (updown, "move")),
+        (6, (leftright, "pane")),
+        (3, ("i", "packages")),
+        (2, ("space", "toggle")),
+        (0, ("enter", "update")),
+        (5, ("r", "refresh")),
+        (7, ("o", "overlaps")),
+        (8, ("c", "cleanup")),
+        (9, ("L", "log")),
+        (1, ("q", "quit")),
+    ]
+}
+
+/// The dashboard key hints, wrapped to whatever the keys pane actually has.
+fn dashboard_key_rows(theme: &Theme, width: usize, max_rows: usize) -> Vec<Line<'static>> {
     let g = theme.glyphs;
     let updown = format!("{}/{}", g.up, g.down);
-    vec![
-        keys_line(
-            theme,
-            &[(&updown, "move"), ("←/→", "pane"), ("i", "packages")],
-        ),
-        keys_line(
-            theme,
-            &[("space", "toggle"), ("enter", "update"), ("r", "refresh")],
-        ),
-        keys_line(
-            theme,
-            &[
-                ("o", "overlaps"),
-                ("c", "cleanup"),
-                ("L", "log"),
-                ("q", "quit"),
-            ],
-        ),
-    ]
+    let leftright = format!("{}/{}", g.left, g.right);
+    fit_hints(&dashboard_hints(&updown, &leftright), width, max_rows)
+        .iter()
+        .map(|row| keys_line(theme, row))
+        .collect()
 }
 
 /// Bordered inner pane with a dim border and a bold-dim title.
@@ -1725,6 +1803,115 @@ mod tests {
             "footer hint missing:\n{text}"
         );
         assert!(text.contains("i packages"), "footer hint missing:\n{text}");
+    }
+
+    // --- key-hint wrapping ---
+
+    /// Columns a wrapped row actually occupies once `keys_line` draws it.
+    fn row_width(row: &[KeyHint<'_>]) -> usize {
+        row.iter().map(|&h| hint_width(h)).sum::<usize>() + HINT_SEP * row.len().saturating_sub(1)
+    }
+
+    fn ranked() -> [(u8, KeyHint<'static>); 10] {
+        dashboard_hints("^/v", "</>")
+    }
+
+    #[test]
+    fn wrapped_rows_never_exceed_the_width() {
+        let r = ranked();
+        let hints: Vec<KeyHint<'_>> = r.iter().map(|&(_, h)| h).collect();
+        for width in 10..=120 {
+            for row in wrap_hints(&hints, width) {
+                assert!(
+                    row_width(&row) <= width,
+                    "row {row:?} is {} wide at width {width}",
+                    row_width(&row)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fit_hints_respects_max_rows_at_every_width() {
+        let r = ranked();
+        for width in 6..=140 {
+            for max_rows in 1..=4 {
+                let rows = fit_hints(&r, width, max_rows);
+                assert!(
+                    rows.len() <= max_rows,
+                    "{} rows at width {width}, max {max_rows}",
+                    rows.len()
+                );
+                for row in &rows {
+                    assert!(row_width(row) <= width, "clipped at width {width}: {row:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_update_key_survives_every_width_that_can_show_anything() {
+        let r = ranked();
+        for width in 12..=140 {
+            let rows = fit_hints(&r, width, 1);
+            let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
+            assert!(
+                shown.contains(&"enter"),
+                "enter dropped at width {width}: {shown:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_log_hint_drops_before_quit_and_update() {
+        let r = ranked();
+        // One narrow row: only the highest-priority hints can survive.
+        let rows = fit_hints(&r, 26, 1);
+        let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
+        assert!(!shown.contains(&"L"), "log should have dropped: {shown:?}");
+        assert!(shown.contains(&"enter"), "{shown:?}");
+    }
+
+    #[test]
+    fn a_wide_pane_shows_every_hint() {
+        let r = ranked();
+        let rows = fit_hints(&r, 48, 3);
+        let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
+        assert_eq!(shown.len(), 10, "not all hints shown: {shown:?}");
+    }
+
+    #[test]
+    fn hints_keep_their_display_order_as_they_drop() {
+        let r = ranked();
+        let order: Vec<&str> = r.iter().map(|&(_, (k, _))| k).collect();
+        for width in 12..=120 {
+            let rows = fit_hints(&r, width, 3);
+            let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
+            let mut expected = order.clone();
+            expected.retain(|k| shown.contains(k));
+            assert_eq!(shown, expected, "order scrambled at width {width}");
+        }
+    }
+
+    #[test]
+    fn dashboard_key_rows_fit_the_width_they_are_given() {
+        // Both glyph sets: the unicode arrows and their ASCII fallbacks are
+        // the same column count, so neither may overflow where the other fits.
+        for theme in [Theme::none(), Theme::dark()] {
+            for width in 8..=140 {
+                for max_rows in 1..=3 {
+                    let rows = dashboard_key_rows(&theme, width, max_rows);
+                    assert!(rows.len() <= max_rows, "too many rows at {width}");
+                    for line in &rows {
+                        assert!(
+                            line.width() <= width,
+                            "line {} wide at width {width}: {line:?}",
+                            line.width()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // --- quadrant dashboard (rendered at a comfortable size) ---

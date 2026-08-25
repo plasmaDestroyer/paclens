@@ -9,18 +9,18 @@ orphans and caches are eating your disk — all without paclens ever touching
 your system uninvited.
 
 ```
-+ paclens · dashboard ---------------------------------------------------+
-| + sources ---------------------++ pending updates · pacman (62) ------+|
-| |       SOURCE       INST  UPD || linux    6.9.1  -> 6.9.2            ||
-| | > [x] pacman       1832   62 || mesa     24.0   -> 24.1             ||
-| |    -  flatpak-user   12    0 || ...                                 ||
-| +------------------------------++-------------------------------------+|
-| + system ----------------------++ keys -------------------------------+|
-| | - plan          62 packages  || ^/v move   ←/→ pane   i packages    ||
-| | - pacman cache  7.6 GiB      || space toggle   enter update   L log ||
-| | - orphans       3            || o overlaps   c cleanup   r refresh  ||
-| +------------------------------++-------------------------------------+|
-+-------------------------------------------------------------------------+
++ paclens · dashboard -------------------------------------------------------+
+| + sources ---------------------++ pending updates · pacman (62) ----------+|
+| |       SOURCE       INST  UPD || linux    6.9.1  -> 6.9.2                ||
+| | > [x] pacman       1832   62 || mesa     24.0   -> 24.1                 ||
+| |    -  flatpak-user   12    0 || ...                                     ||
+| +------------------------------++-----------------------------------------+|
+| + system ----------------------++ keys -----------------------------------+|
+| | - plan          62 packages  || ^/v move   ←/→ pane   i packages        ||
+| | - pacman cache  7.6 GiB      || space toggle   enter update   r refresh ||
+| | - orphans       3            || o overlaps   c cleanup   L log   q quit ||
+| +------------------------------++-----------------------------------------+|
++----------------------------------------------------------------------------+
 ```
 
 paclens is **not** a package manager. It wraps `pacman` and `flatpak`, reads

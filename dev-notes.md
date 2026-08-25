@@ -670,6 +670,22 @@ YYYY-MM-DD | no --noconfirm for pacman
            | key on a purely inspective action. P1/P4 are untouched — the
            | dashboard still shows the whole plan before enter runs it, and
            | an empty plan still just flashes "you're up to date".
+
+2026-08-24 | key hints wrap to the pane and drop by rank, never clip
+           | the keys pane rendered three hardcoded rows, so anything wider
+           | than the pane was truncated mid-word — "r refr", "q qui". The
+           | rows are now computed: hints carry a display order and a drop
+           | rank, wrap_hints packs them into the width the pane actually
+           | has, and fit_hints drops the lowest-ranked hint and re-wraps
+           | until they fit the available rows. Display order is independent
+           | of rank, so a narrow pane reads like a wide one with fewer
+           | entries rather than a reshuffled one. enter update is rank 0 and
+           | never drops; q quit is rank 1 (a user who cannot find the exit
+           | is stuck); L log drops first. Both dashboard layouts share the
+           | list — the flat one just passes max_rows = 1. Also added
+           | Glyphs::left/right: the pane-focus hint hardcoded ←/→ even in
+           | the ASCII path, which is exactly the tofu the no-color glyph
+           | set exists to prevent.
 ```
 
 ---
