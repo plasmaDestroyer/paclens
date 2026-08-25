@@ -90,13 +90,15 @@ even when paclens just checked for updates and "knows" the answer. A half-synced
 system breaks later, somewhere unrelated, in a way that looks like a different
 bug entirely.
 
-**paru is never run under sudo.**
-It builds as you and elevates only for the install step. Running the build as
-root is the failure that PKGBUILD review exists to protect you from.
+**An AUR helper is never run under sudo.**
+Whichever one is in use — paru, yay, pikaur — it builds as you and elevates only
+for the install step. Running a build as root is the failure that PKGBUILD
+review exists to protect you from, and it is not paru-specific.
 
 **`pacman -Sc` is never suggested.**
 Since pacman 7 it trips over partial downloads owned by the sandbox user.
-`paccache` and `paru -Sc --aur` are suggested instead.
+`paccache` and the AUR helper's own clean (`paru -Sc --aur` or its equivalent)
+are suggested instead.
 
 ### Removing things
 
@@ -171,8 +173,8 @@ If you find yourself wanting to *forbid* one of these, re-read the test above.
 
 ## 5. Not in scope
 
-**paclens is not a package manager.** It wraps pacman, paru and Flatpak, reads
-their state, and explains it. Where it acts, it acts by running the real tools
+**paclens is not a package manager.** It wraps pacman, whichever AUR helper you
+already use, and Flatpak; it reads their state and explains it. Where it acts, it acts by running the real tools
 in a real terminal, visibly. It does not reimplement them and does not want to
 replace them.
 
@@ -1389,6 +1391,23 @@ YYYY-MM-DD | no --noconfirm for pacman
            | cannot drift — which makes it safe to keep here, not a reason to
            | move it out. Splitting for volume is how the last arrangement
            | happened.
+
+2026-08-25 | pacman-contrib is a hard dependency; the AUR helper is not
+           | (user decision) these look like the same question and are not.
+           | pacman-contrib has no alternative and nothing to choose between:
+           | checkupdates is what makes an update count accurate instead of a
+           | reading of a possibly-stale local sync db, and paccache is what
+           | makes the reclaimable figure honest. Both are promises §3 makes
+           | about paclens's numbers, so shipping a default install that
+           | cannot keep them was the wrong trade — it is now in depends.
+           | An AUR helper genuinely is a choice, and paclens is distributed
+           | on the AUR, so every user already has one. Demanding a second
+           | is rude and would exclude yay users outright. paru, yay and
+           | pikaur are all supported, autodetected in that order, with a
+           | config knob to pin one; none is required. The never-under-sudo
+           | rule was reworded to cover all three — it was never really
+           | paru-specific, every helper builds as the user and self-elevates
+           | for the install step.
 
 2026-08-24 | milestones renumbered; 0.3.0 is the first tagged release
            | the old scheme mixed granularities: 0.1.0-0.1.5 took a patch

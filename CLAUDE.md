@@ -2,7 +2,7 @@
 
 A TUI-first system inspection and update tool for **Arch Linux**. It unifies pacman, the AUR and Flatpak into one interface and layers on advisory features: a `why` dependency inspector, a Flatpak/native overlap detector with migration advisory and execution, and an orphan/cache reporter.
 
-paclens is **not** a package manager. It wraps pacman, paru and Flatpak, reads their state, and presents it. It never acts without confirmation and never guesses package relationships.
+paclens is **not** a package manager. It wraps pacman, whichever AUR helper you already use, and Flatpak; it reads their state and presents it. It never acts without confirmation and never guesses package relationships.
 
 ## Status
 
@@ -65,7 +65,7 @@ Orientation only — **design §3 carries the rules and §13 the dated reasoning
 - **Execution runs on a real pty** (`portable-pty` + `vt100`) inside the TUI. The child sees a genuine terminal, so sudo/doas/pkexec/pacman/paru prompt, colour and redraw natively; every key including Ctrl-C passes through. This replaced both the piped-stdio console and the original suspend/restore flow.
 - **No `--noconfirm` for pacman**, ever. It suppresses conflict resolution.
 - **The dashboard *is* the plan view.** There is no separate update screen. `space` toggles a source, **`enter` runs the plan** (`u` is an alias), `i` opens the selected source's package list, and the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
-- **AUR is the libalpm split, not a second scan.** Foreign packages already carry full `pacman -Qi` metadata; the scanner relabels them via `pacman -Qm`. paru only does what pacman can't: update detection (`-Qua`) and the update step (`paru -Sua`). **paru is never run under sudo** — it self-elevates.
+- **AUR is the libalpm split, not a second scan.** Foreign packages already carry full `pacman -Qi` metadata; the scanner relabels them via `pacman -Qm`. the helper only does what pacman can't: update detection (`-Qua`) and the update step (`-Sua`). paru, yay and pikaur are autodetected in that order. **An AUR helper is never run under sudo** — they self-elevate.
 - **Overlap matching** in priority order: known map → reverse-DNS suffix → display-name match, each with a decreasing confidence label. A generic blocklist suppresses false positives. A false negative is better than a false positive.
 - **Migration copy plans contain no `rm` anywhere.** Backups are staged into a timestamped dir, then targets are copied with `cp -aT`. Source removal is a separate plan, armed only by a clean copy and a user's explicit verification. `ActionKind::Migrate` is never privileged; `ActionKind::Remove` follows the source.
 - **Cleanup figures are honest.** The reclaimable number comes from the matching `paccache -dk2` dry run, shown next to the total — an 11 GiB cache that reclaims nothing says so. `pacman -Sc` is never suggested (it trips over pacman ≥7's sandboxed-download partials); `paccache` and `paru -Sc --aur` are.

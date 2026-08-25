@@ -84,9 +84,18 @@ cd paclens
 cargo install --path . --locked
 ```
 
-Optional dependencies: `pacman-contrib` (for `checkupdates` — accurate
-update counts without touching your sync DB) and `paru` (AUR update
-detection and updates; foreign packages still list without it).
+`pacman-contrib` is a hard dependency — `checkupdates` is what makes the update
+counts accurate rather than a reading of a possibly-stale sync DB, and
+`paccache` is what makes the reclaimable cache figure honest.
+
+**AUR helper — optional, and your choice.** paclens uses whichever of `paru`,
+`yay` or `pikaur` it finds, preferring them in that order, and you can pin one
+in the config. paru is the one I use and the one best tested; the others are
+supported because forcing a second AUR helper on someone who already has one
+would be rude. Without any of them, AUR packages still *list* — only update
+detection and the update step go away.
+
+`flatpak` is optional too; without it the Flatpak sources simply do not appear.
 
 ## Usage
 

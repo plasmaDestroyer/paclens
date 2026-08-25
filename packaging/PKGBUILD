@@ -6,12 +6,20 @@ pkgdesc="A TUI-first pacman + AUR + Flatpak inspection and update tool for Arch 
 arch=('x86_64')
 url="https://github.com/plasmaDestroyer/paclens"
 license=('MIT')
-depends=('gcc-libs' 'glibc' 'pacman')
+# pacman-contrib is not optional: checkupdates is what makes update counts
+# accurate rather than a reading of a possibly-stale local sync db, and
+# paccache is what makes the reclaimable cache figure honest. Both are
+# promises paclens makes about its numbers (design §3), so the tool should
+# not ship in a state where it cannot keep them.
+depends=('gcc-libs' 'glibc' 'pacman' 'pacman-contrib')
 makedepends=('cargo' 'git')
+# An AUR helper is genuinely a choice, so none of these is required and none
+# is privileged at install time — paclens detects whichever is present.
 optdepends=(
-  'pacman-contrib: accurate update detection via checkupdates'
   'flatpak: Flatpak app and runtime scanning'
-  'paru: AUR update detection and updates'
+  'paru: AUR update detection and updates (preferred)'
+  'yay: AUR update detection and updates'
+  'pikaur: AUR update detection and updates'
 )
 source=("git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
