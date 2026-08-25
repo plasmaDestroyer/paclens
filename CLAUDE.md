@@ -10,7 +10,7 @@ paclens is **not** a package manager. It wraps pacman, paru and Flatpak, reads t
 
 Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, pty exec console, log viewer), pacman + AUR + Flatpak providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`.
 
-The build-order milestones v0.0.1 → v0.5.0 are **history, not a plan**. Do not treat the roadmap's early phases as upcoming work.
+The build-order milestones v0.0.1 → v0.5.0 are **history, not a plan** — see "What shipped" below. All open work lives in GitHub issues; there is no roadmap file.
 
 ## Source-of-truth documents
 
@@ -18,7 +18,6 @@ Read these before doing non-trivial work.
 
 - `dev-notes.md` — implementation guidance, hard parsing problems, module contracts, fixtures, and the **decisions log (§7)**. Read before writing non-trivial code.
 - `spec.md` — the original technical spec: architecture, data model, provider/cache/graph/overlap specs, confidence model, CLI/TUI specs, error handling.
-- `roadmap.md` — milestone deliverables and "done when" criteria.
 - `config.default.toml` — default config schema.
 - `overlap_map.toml` — bundled Flatpak-ID → pacman-name map (`include_str!()` into the binary).
 
@@ -92,7 +91,9 @@ v0.5.0  migration+    execution behind backups; honest cleanup figures
 
 ## What's next
 
-Tracked as GitHub issues, labeled by theme (`sources`, `system-health`, `update-flow`, `integration`, `cleanup`, `aur`), area (`area:*`), and `priority:*`. `needs-design` marks the ones with open questions to settle first.
+**GitHub issues are the only plan.** `roadmap.md` was retired on 2026-08-24 once every forward-looking item in it had an issue; the version history it recorded is summarized above and preserved in git. Do not recreate it — a second planning surface is how the last one went stale.
+
+Issues are labeled by theme (`sources`, `system-health`, `update-flow`, `integration`, `cleanup`, `aur`), area (`area:*`), and `priority:*`. `needs-design` marks the ones with open questions to settle first.
 
 **v0.6 — broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
 

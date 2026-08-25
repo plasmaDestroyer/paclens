@@ -7,7 +7,10 @@
 
 ## 1. Build order
 
-This matches the roadmap milestones. Do not reorder.
+**History.** This is how the engine was built, v0.0.1 through v0.0.9; all of it
+shipped. Kept as the record of why the modules are shaped the way they are —
+it is not upcoming work, and the closing advice below is addressed to a
+codebase that no longer exists.
 
 ```
 v0.0.1  skeleton        CLI + empty TUI + config + logging
@@ -686,6 +689,20 @@ YYYY-MM-DD | no --noconfirm for pacman
            | Glyphs::left/right: the pane-focus hint hardcoded ←/→ even in
            | the ASCII path, which is exactly the tofu the no-color glyph
            | set exists to prevent.
+
+2026-08-24 | roadmap.md retired; GitHub issues are the only plan
+           | every forward-looking item in it now has an issue (#1-#45),
+           | including the ones that had quietly never shipped: the ? help
+           | overlay from the v0.1.6 polish pass, interactive cleanup, the
+           | app-grouping database, the plugin-system question, and the AUR
+           | and crates.io publishing steps outstanding since v0.2.0. What
+           | the file uniquely held was history — per-milestone deliverables
+           | and done-when criteria — and that is summarized in CLAUDE.md's
+           | shipped table and preserved in git. Two planning surfaces is
+           | how this one went stale: it still described v0.3-v0.5 as
+           | uncommitted months after they shipped. Source comments that
+           | cite "roadmap vX.Y" stay as provenance — they resolve against
+           | the shipped table. Do not recreate the file.
 ```
 
 ---
