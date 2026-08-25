@@ -1,5 +1,5 @@
 //! Immediate-mode rendering. Every function here takes `&App` and never mutates
-//! it (dev-notes §5): each frame rebuilds the whole UI from current state.
+//! it: each frame rebuilds the whole UI from current state.
 //!
 //! `draw` dispatches on the active screen after the overlays (exec console,
 //! log viewer). The dashboard owns the update flow: quadrant panes with
@@ -445,7 +445,7 @@ fn subpane(theme: &Theme, title: &'static str) -> Block<'static> {
 }
 
 /// System pane: cache size, orphans, overlaps, scan age — the analyzer's
-/// dashboard debut (dev-notes §7 "dashboard enrichment").
+/// dashboard debut (design §13 "dashboard enrichment").
 fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let pane = subpane(theme, " system ");
@@ -710,7 +710,7 @@ fn bottom_line(area: Rect) -> Rect {
 }
 
 // ---------------------------------------------------------------------------
-// Overlap screen (spec §10.3, roadmap v0.1.4) — advisory only, no actions
+// Overlap screen (roadmap v0.1.4) — advisory only, no actions
 // ---------------------------------------------------------------------------
 
 fn draw_overlaps(frame: &mut Frame, area: Rect, app: &App) {
@@ -822,7 +822,7 @@ fn confidence_span(confidence: crate::model::Confidence, theme: &Theme) -> Span<
     Span::styled(confidence.to_string(), style)
 }
 
-/// The spec §9.5 tradeoff table for the selected overlap, plus the primary
+/// The design §9 tradeoff table for the selected overlap, plus the primary
 /// heuristic and the flatpak profile path/size when one exists.
 fn render_tradeoff_pane(
     frame: &mut Frame,
@@ -1033,7 +1033,7 @@ fn render_overlaps_footer(
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup screen (spec §10.3, roadmap v0.1.5) — advisory only, no actions
+// Cleanup screen (roadmap v0.1.5) — advisory only, no actions
 // ---------------------------------------------------------------------------
 
 fn draw_cleanup(frame: &mut Frame, area: Rect, app: &App) {
@@ -1261,7 +1261,7 @@ fn render_cleanup_why_pane(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 // ---------------------------------------------------------------------------
-// Package list (spec §10.3) + why side pane
+// Package list + why side pane
 // ---------------------------------------------------------------------------
 
 /// Table body rows of the packages screen for a terminal `height` — mirrors

@@ -1,9 +1,9 @@
-//! The assembled result of a scan (spec §4.7).
+//! The assembled result of a scan (design §7).
 //!
 //! This is the single source of truth (principle P5): the TUI, `why`, and the
 //! overlap detector all read from a `ScanResult`. The dependency graph and
 //! overlap results are *not* stored here — they are recomputed from this on
-//! load (spec §6.6).
+//! load (design §7).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::{Package, PendingUpdate, Source};
 
 /// Bump on any breaking change to `ScanResult`. A cache with a mismatched
-/// version is discarded and re-scanned (spec §6.5).
+/// version is discarded and re-scanned (design §7).
 /// v2: `Source.accurate_updates` + `Package.runtime` (0.1.0).
 /// v3: `flatpak_profile_sizes` (0.2.0).
 /// v4: flatpak `Package.size_bytes` populated (0.2.0) — data enrichment;
@@ -30,7 +30,7 @@ pub struct ScanResult {
     pub updates: Vec<PendingUpdate>,
     pub cache_sizes: CacheSizes,
     /// `~/.var/app/<id>` size per Flatpak app that has one — user data the
-    /// overlap tradeoff weighs (spec §9.4 heuristic 2). Apps without a
+    /// overlap tradeoff weighs (design §9 heuristic 2). Apps without a
     /// profile dir are absent.
     #[serde(default)]
     pub flatpak_profile_sizes: std::collections::HashMap<String, u64>,

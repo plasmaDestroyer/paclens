@@ -3,7 +3,7 @@
 //!
 //! Scans run on a worker thread and land through an mpsc channel; the loop
 //! polls for key events with a short timeout so the spinner animates and the
-//! UI never blocks on a scan (spec §10.1, roadmap v0.0.9). Scan failures flash
+//! UI never blocks on a scan (roadmap v0.0.9). Scan failures flash
 //! inline — they never take the TUI down.
 
 mod app;

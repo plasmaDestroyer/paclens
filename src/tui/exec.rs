@@ -1,13 +1,13 @@
 //! The inline execution console's engine: runs a plan on a worker thread with
 //! a **pty**, streaming the raw byte stream to the TUI (which feeds a vt100
 //! screen) and forwarding typed keys verbatim — exact passthrough, no
-//! terminal suspend (user decision 2026-07-08, dev-notes §7).
+//! terminal suspend (user decision 2026-07-08, design §13).
 //!
 //! A pty means sudo, doas, pkexec and pacman all see a real terminal: their
 //! own prompts, echo control, colors and progress bars work untouched. The
-//! password is handled by the child's echo-off, never stored (spec §13.5).
+//! password is handled by the child's echo-off, never stored (design §11).
 //!
-//! Logging records commands and exit codes (spec §14.4); the output stream
+//! Logging records commands and exit codes (design §11); the output stream
 //! itself is terminal noise (escape codes, progress redraws) and stays out.
 
 use std::io::{Read, Write};

@@ -34,9 +34,9 @@ pub enum Action {
     ExecDismiss,
     /// Dashboard → open the selected source's package list.
     OpenPackages,
-    /// Dashboard → open the overlap screen (spec §10.5).
+    /// Dashboard → open the overlap screen.
     OpenOverlaps,
-    /// Dashboard → open the cleanup screen (spec §10.5).
+    /// Dashboard → open the cleanup screen.
     OpenCleanup,
     /// Package list → jump a page of rows.
     NextPage,

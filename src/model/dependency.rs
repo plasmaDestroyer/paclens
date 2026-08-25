@@ -1,4 +1,4 @@
-//! Dependency-edge and confidence types (spec §4.5, §8).
+//! Dependency-edge and confidence types (design §7, §8).
 //!
 //! `DependencyEdge` is the edge *weight* in the analyzer's petgraph — the
 //! endpoints are the graph nodes, so the edge carries only metadata. Every
@@ -18,7 +18,7 @@ pub enum EdgeKind {
     /// From pacman dep data. Ground truth.
     Real,
     /// Heuristic. Cross-source or appstream-derived — flatpak app → runtime
-    /// grouping edges wear this (spec §7.4, v0.1.3).
+    /// grouping edges wear this (design §8, v0.1.3).
     Inferred,
 }
 

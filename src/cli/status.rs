@@ -1,4 +1,4 @@
-//! `paclens status` — print a dashboard summary to stdout (spec §11.3).
+//! `paclens status` — print a dashboard summary to stdout.
 //!
 //! Loads from the scan cache when fresh (else re-scans), then prints a headline
 //! (total pending updates) and an aligned per-source table: installed/update

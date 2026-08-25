@@ -144,7 +144,7 @@ and extra mappings, orphan ignore list, color theme, log level.
 5. **One source of truth.** Every view reads from the same scan.
 
 [`design.md`](design.md) is the full statement — what paclens will and will not
-do to your system, and the reasoning behind each rule. Worth reading before you
+do to your system, and the reasoning behind every rule. Worth reading before you
 let anything near your package manager.
 
 ## License

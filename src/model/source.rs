@@ -1,4 +1,4 @@
-//! Package source identity (spec §4.1, §4.2).
+//! Package source identity (design §7, §4.2).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,7 @@ pub struct Source {
     pub last_scanned: Option<DateTime<Utc>>,
     /// False when update counts came from a possibly-stale local DB (pacman
     /// without pacman-contrib's checkupdates). Spec §4.2 deviation, recorded
-    /// in dev-notes §7.
+    /// in design §13.
     #[serde(default = "default_true")]
     pub accurate_updates: bool,
 }

@@ -1,4 +1,4 @@
-//! `paclens why <package>` — print the dependency explanation (spec §11.4).
+//! `paclens why <package>` — print the dependency explanation.
 //!
 //! Reads the scan cache, builds the graph, and renders the analyzer's
 //! `WhyReport` through the shared `Styles` so the CLI and the TUI why pane

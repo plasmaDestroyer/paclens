@@ -1,7 +1,7 @@
-//! Privilege escalation model (spec §13.4): check for `sudo`, `doas`,
+//! Privilege escalation model (design §11): check for `sudo`, `doas`,
 //! `pkexec` in that order and use the first one found. If none exists,
 //! privileged steps are skipped with a clear reason — paclens never guesses,
-//! never caches credentials, never runs a privileged daemon (spec §13.5).
+//! never caches credentials, never runs a privileged daemon (design §11).
 
 const CANDIDATES: [&str; 3] = ["sudo", "doas", "pkexec"];
 

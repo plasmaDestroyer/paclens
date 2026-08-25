@@ -1,4 +1,4 @@
-//! `paclens overlaps` — list detected Flatpak/native overlaps (spec §11.4).
+//! `paclens overlaps` — list detected Flatpak/native overlaps.
 //!
 //! Advisory only (roadmap v0.0.8): no suggested actions, no remove prompts.
 //! Rendering goes through the shared `Styles`; the confidence label sits

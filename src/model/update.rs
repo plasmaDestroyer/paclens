@@ -1,4 +1,4 @@
-//! Pending update representation (spec §4.4).
+//! Pending update representation (design §7).
 
 use serde::{Deserialize, Serialize};
 

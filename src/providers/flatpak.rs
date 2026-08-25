@@ -1,9 +1,9 @@
-//! flatpak provider (spec §5.3).
+//! flatpak provider (design §10).
 //!
 //! Scans installed apps across both user and system scope in one call; each
 //! package is tagged with its scoped source id from the `installation` column.
 //! Columns are always requested explicitly — flatpak's default column order is
-//! not stable across versions (dev-notes §2.2).
+//! not stable across versions (design §10).
 
 use crate::model::{FlatpakScope, InstallReason, Package, PendingUpdate, SourceId};
 
@@ -14,7 +14,7 @@ pub const FLATPAK_BIN: &str = "flatpak";
 const LIST_COLUMNS: &str = "--columns=application,name,version,origin,installation,runtime,size";
 const UPDATE_COLUMNS: &str = "--columns=application,version";
 
-/// The argv for a scoped Flatpak update (spec §5.3, §13.3). `--noninteractive`
+/// The argv for a scoped Flatpak update (design §10, §13.3). `--noninteractive`
 /// suppresses Flatpak's own prompts; paclens gates on its own confirm first.
 /// User scope needs no sudo; system scope does (added by the executor in v0.0.6).
 /// Pure — building the command never runs anything.
@@ -133,7 +133,7 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
             let installation = cols.next().unwrap_or_default();
             // Apps carry their runtime as "org.gnome.Platform/x86_64/50" —
             // the app's one real dependency (rendered as an Inferred edge,
-            // spec §7.4). Runtime rows leave the column empty.
+            // design §8). Runtime rows leave the column empty.
             let runtime_dep = cols
                 .next()
                 .unwrap_or_default()

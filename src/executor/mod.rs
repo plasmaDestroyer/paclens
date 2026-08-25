@@ -1,14 +1,14 @@
 //! Execution layer: runs pre-built `ActionPlan`s (the *execute* step of P4).
 //!
-//! Contract (dev-notes §3): the executor never decides what to do — all
+//! Contract (design §6): the executor never decides what to do — all
 //! decisions come from the user via the TUI/CLI. It logs every command before
 //! and after execution, and reports exit codes without interpretation (the
 //! renderers interpret). Privileged steps (pacman, flatpak-system) run through
-//! the detected privilege tool ([`sudo`], spec §13); with no tool on PATH they
+//! the detected privilege tool ([`sudo`], design §11); with no tool on PATH they
 //! come back as `Skipped` with an explicit reason, never silently dropped.
 //!
 //! Commands run with inherited stdio in the raw terminal — the user sees and
-//! interacts with the tool's own output directly (spec §13.2). The
+//! interacts with the tool's own output directly (design §11). The
 //! [`StepRunner`] trait is the testing seam, mirroring the providers'
 //! `CommandRunner`.
 
@@ -88,7 +88,7 @@ impl ExecutionReport {
     }
 }
 
-/// Does this step need privilege escalation? Source-specific (P6, spec §13):
+/// Does this step need privilege escalation? Source-specific (P6, design §11):
 /// pacman and flatpak-system do; flatpak-user does not. Migration copy steps
 /// never do — profile data under `~` is user-owned even for system-scope
 /// apps.
@@ -102,7 +102,7 @@ pub fn needs_privilege(step: &ActionStep) -> bool {
 }
 
 /// Why a step cannot run, or `None` if it is executable. Since v0.1.0 the only
-/// blocker is a privileged step with no privilege tool on PATH (spec §13.4:
+/// blocker is a privileged step with no privilege tool on PATH (design §11:
 /// "show error, do not proceed with privileged operations").
 pub fn skip_reason(step: &ActionStep, tool: Option<&str>) -> Option<&'static str> {
     if needs_privilege(step) && tool.is_none() {

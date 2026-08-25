@@ -1,9 +1,9 @@
-//! The `why` query (spec §7.3, roadmap v0.0.7): why is this package installed,
+//! The `why` query (design §8, roadmap v0.0.7): why is this package installed,
 //! what happens if it is removed, with a cautious verdict.
 //!
 //! Pure — reads only the scan and the pre-built graph. Decision recorded in
-//! dev-notes §7: **zero reverse deps over confirmed data ⇒ `likely safe`
-//! regardless of install reason** (spec §11.4's canonical example shows an
+//! design §13: **zero reverse deps over confirmed data ⇒ `likely safe`
+//! regardless of install reason** ('s canonical example shows an
 //! explicit leaf as likely safe; §7.3's dependency-only wording lost). When
 //! data is incomplete the verdict is `unclear` — never guessed (P2/P3).
 
@@ -54,7 +54,7 @@ pub struct WhyDetail {
     pub depth_from_explicit: Option<u32>,
     /// Direct deps that would be orphaned (their only requirer is this).
     pub would_remove: Vec<String>,
-    /// Reverse-dep chain as a tree (spec §10.3 / roadmap v0.1.2): each root is
+    /// Reverse-dep chain as a tree ( / roadmap v0.1.2): each root is
     /// a direct requirer, children are *their* requirers, every edge labeled.
     pub tree: Vec<TreeNode>,
     /// Source-specific warnings (roadmap v0.3): AUR PKGBUILD review, VCS

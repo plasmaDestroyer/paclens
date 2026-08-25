@@ -1,11 +1,11 @@
-//! Overlap detection (spec §9): find applications installed both natively and
+//! Overlap detection (design §9): find applications installed both natively and
 //! as Flatpaks. Pure — reads only the scan plus config-derived inputs; the
 //! bundled map ships inside the binary via `include_str!()`.
 //!
 //! Matching runs in priority order — known map (`Confirmed`) → reverse-DNS
 //! suffix (`Inferred`) → display-name match (`Unknown`) — first hit wins, and
 //! a generic-name blocklist suppresses false positives. A missed overlap is
-//! better than a wrong one (dev-notes §2.8).
+//! better than a wrong one (design §10).
 
 use std::collections::HashMap;
 
@@ -17,8 +17,8 @@ use crate::model::{
     PrimaryHeuristic, ScanResult, Tradeoff,
 };
 
-/// Generic pacman names that must never be overlap targets (spec §9.3 +
-/// dev-notes §2.8). Shipped in the binary, not configurable.
+/// Generic pacman names that must never be overlap targets (design §9 +
+/// design §10). Shipped in the binary, not configurable.
 const BLOCKLIST: [&str; 11] = [
     "base",
     "linux",
@@ -118,7 +118,7 @@ pub fn detect_overlaps(
     out
 }
 
-/// The spec §9.2 pipeline: first match wins.
+/// The design §9 pipeline: first match wins.
 fn match_app<'a>(
     app: &Package,
     native: &HashMap<&str, &'a Package>,

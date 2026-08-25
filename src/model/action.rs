@@ -1,4 +1,4 @@
-//! The update action plan (spec §4.8).
+//! The update action plan (design §7).
 //!
 //! An `ActionPlan` is the output of the *plan* step (P4: scan → analyze → plan →
 //! confirm → execute). It is built by `crate::planner` from a `ScanResult` and a

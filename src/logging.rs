@@ -16,7 +16,7 @@ use crate::config::Config;
 ///
 /// Level comes from `config.general.log_level`, unless `debug` is set, which
 /// forces DEBUG and adds a stderr layer. Old tracing logs beyond
-/// `config.general.log_keep_count` are pruned on startup (spec §14.3); the
+/// `config.general.log_keep_count` are pruned on startup (design §11); the
 /// per-day update logs are the user's audit trail and are never touched.
 pub fn init(config: &Config, debug: bool) -> anyhow::Result<()> {
     let log_dir = log_dir()?;

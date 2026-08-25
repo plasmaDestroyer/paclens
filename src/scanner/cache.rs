@@ -1,8 +1,8 @@
-//! Scan cache (spec §6): the on-disk `ScanResult` and its invalidation rules.
+//! Scan cache (design §7): the on-disk `ScanResult` and its invalidation rules.
 //!
 //! The cache is a TOML-serialized `ScanResult` at `~/.cache/paclens/scan.toml`.
 //! The dependency graph and overlaps are *not* stored — they are recomputed on
-//! load (spec §6.6). Writes are atomic: write `.tmp`, then `rename`.
+//! load (design §7). Writes are atomic: write `.tmp`, then `rename`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,7 +66,7 @@ impl Cache {
     }
 
     /// Atomically write the scan: serialize, write `.tmp`, then `rename`
-    /// (dev-notes §2.7).
+    /// (design §10).
     pub fn write(&self, scan: &ScanResult) -> anyhow::Result<()> {
         let text = toml::to_string(scan).context("failed to serialize scan cache")?;
         fs::write(&self.tmp, text)
@@ -96,7 +96,7 @@ pub fn staleness(
     )
 }
 
-/// Pure invalidation logic, checked in the order from spec §6.3. Times are
+/// Pure invalidation logic, checked in the order from design §7. Times are
 /// passed in so this is deterministic and unit-testable.
 fn staleness_with(
     scan: &ScanResult,

@@ -1,7 +1,7 @@
-//! pacman provider (spec §5.2).
+//! pacman provider (design §10).
 //!
 //! `scan_installed` parses full metadata from a single `pacman -Qi` call (the
-//! source of the dependency graph, dev-notes §2.3). `scan_updates` prefers
+//! source of the dependency graph, design §10). `scan_updates` prefers
 //! `checkupdates` (pacman-contrib) — it syncs a temp DB copy, so pending
 //! updates are accurate even when the local sync DB is stale, which is exactly
 //! where `pacman -Qu` silently reports zero. Without pacman-contrib it falls
@@ -147,7 +147,7 @@ fn parse_qi(stdout: &str) -> Vec<Package> {
 /// Parse one record into a `Package`. Returns `None` if it has no `Name`.
 ///
 /// Field lines start in column 0 as `Key : Value`; a line beginning with
-/// whitespace is a continuation of the previous field's value (dev-notes §2.1).
+/// whitespace is a continuation of the previous field's value (design §10).
 fn parse_record(lines: &[&str]) -> Option<Package> {
     let mut fields: HashMap<String, Vec<String>> = HashMap::new();
     let mut current: Option<String> = None;

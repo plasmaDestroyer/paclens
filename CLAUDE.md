@@ -16,13 +16,11 @@ Shipped milestones are **history, not a plan** — see "What shipped" below. All
 
 Read these before doing non-trivial work.
 
-- **`design.md` — what paclens will and will not do to a user's system, and why. Outranks every other document here.** Read it first.
-- `dev-notes.md` — implementation guidance, hard parsing problems, module contracts, fixtures, and the **decisions log (§7)**. Read before writing non-trivial code.
-- `spec.md` — the original technical spec: architecture, data model, provider/cache/graph/overlap specs, confidence model, CLI/TUI specs, error handling.
+- **`design.md` — the whole design document, and the only one.** What paclens will and will not do to a user's system (§1–5), how it is built (§6–12), and the dated decisions log (§13) that explains why any of it is the way it is. Read §1–5 before proposing anything; read the rest before writing non-trivial code.
 - `config.default.toml` — default config schema.
 - `overlap_map.toml` — bundled Flatpak-ID → pacman-name map (`include_str!()` into the binary).
 
-**Precedence when documents disagree: `design.md` > dev-notes §7 > `spec.md`.** `design.md` states the rules; the decisions log is dated and records why each was made; the spec is the original design and has been superseded in several places (marked in place). `spec.md` §18 lists the original open questions; most are resolved in §7.
+**`design.md` outranks this file, the README, and every comment in the code.** It absorbed `spec.md` and `dev-notes.md` on 2026-08-25 — those files no longer exist, and the parts of them that had drifted past the code were dropped rather than carried over. Source comments cite it as `design §N`.
 
 ## Design principles
 
@@ -52,7 +50,7 @@ CLI/TUI  →  Application core (state, planner, event bus)
 
 Modules: `main.rs`, `cli/`, `tui/`, `model/`, `providers/`, `scanner/`, `analyzer/`, `executor/`, `config/`, plus `planner.rs`, `format.rs`, `fuzzy.rs`, `glyphs.rs`, `logging.rs`.
 
-Module contracts (dev-notes §3):
+Module contracts (design §6):
 - **Provider** — accepts an injectable `CommandRunner` (the testing seam); returns `Ok(vec![])` when nothing is installed; `Err` only when the binary exists but the command failed; never calls sudo; never knows about other providers.
 - **Scanner** — detects providers, runs them concurrently on scoped threads (`std::thread::scope`), assembles `ScanResult`, writes cache. Never analyzes. One exception, made explicit in the 2026-07-14 decision: it asks the pure analyzer *which* paths to measure, then measures them.
 - **Analyzer** — pure: same `ScanResult` → same output. Never calls subprocesses, never writes disk. Builds dep graph, overlaps, orphan list from `ScanResult`.
@@ -60,13 +58,13 @@ Module contracts (dev-notes §3):
 
 ## Key technical decisions
 
-These supersede the corresponding spec sections. Full reasoning in dev-notes §7.
+Orientation only — **design §3 carries the rules and §13 the dated reasoning.**
 
 - **Dep graph from one `pacman -Qi` call**, not per-package `pactree`. All graph queries run in-memory on `petgraph`.
 - **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`, currently `SCHEMA_VERSION = 7`. The dep graph and overlaps are recomputed on load, never serialized. Atomic writes: write `.tmp`, then `rename()`.
-- **Execution runs on a real pty** (`portable-pty` + `vt100`) inside the TUI. The child sees a genuine terminal, so sudo/doas/pkexec/pacman/paru prompt, colour and redraw natively; every key including Ctrl-C passes through. This replaced both the piped-stdio console and the spec §13.2 suspend/restore flow.
+- **Execution runs on a real pty** (`portable-pty` + `vt100`) inside the TUI. The child sees a genuine terminal, so sudo/doas/pkexec/pacman/paru prompt, colour and redraw natively; every key including Ctrl-C passes through. This replaced both the piped-stdio console and the original suspend/restore flow.
 - **No `--noconfirm` for pacman**, ever. It suppresses conflict resolution.
-- **The dashboard *is* the plan view.** There is no separate update screen (spec §10.2 superseded). `space` toggles a source, **`enter` runs the plan** (`u` is an alias), `i` opens the selected source's package list, and the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
+- **The dashboard *is* the plan view.** There is no separate update screen. `space` toggles a source, **`enter` runs the plan** (`u` is an alias), `i` opens the selected source's package list, and the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
 - **AUR is the libalpm split, not a second scan.** Foreign packages already carry full `pacman -Qi` metadata; the scanner relabels them via `pacman -Qm`. paru only does what pacman can't: update detection (`-Qua`) and the update step (`paru -Sua`). **paru is never run under sudo** — it self-elevates.
 - **Overlap matching** in priority order: known map → reverse-DNS suffix → display-name match, each with a decreasing confidence label. A generic blocklist suppresses false positives. A false negative is better than a false positive.
 - **Migration copy plans contain no `rm` anywhere.** Backups are staged into a timestamped dir, then targets are copied with `cp -aT`. Source removal is a separate plan, armed only by a clean copy and a user's explicit verification. `ActionKind::Migrate` is never privileged; `ActionKind::Remove` follows the source.
@@ -104,7 +102,7 @@ Three capability blocks, one minor each:
 patch bump per feature, then 0.2.0–0.5.0 took a whole minor each for the same
 size of work. The original `v0.0.1`–`v0.4.0` tags were deleted in the same
 change: they were never published to the AUR or crates.io and nothing outside
-this repo consumed them. Older labels in commit messages, `dev-notes` decision
+this repo consumed them. Older labels in commit messages, decision-log
 entries and source comments map forward like this:
 
 ```
@@ -121,7 +119,7 @@ Issues are labeled by theme (`sources`, `system-health`, `update-flow`, `integra
 
 **Broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
 
-Before any of them: **the provider contract needs generalizing** for sources with no install reason, no dependency metadata and no orphan concept. This presses directly on principle 6 and on the "no extension points for deferred features" rule below — both were written when there were two sources. Settle it deliberately and record it in dev-notes §7 rather than drifting into it one provider at a time.
+Before any of them: **the provider contract needs generalizing** for sources with no install reason, no dependency metadata and no orphan concept. This presses directly on principle 6 and on the "no extension points for deferred features" rule below — both were written when there were two sources. Settle it deliberately and record it in design §13 rather than drifting into it one provider at a time.
 
 The payoff that keeps this from becoming "topgrade with a TUI": overlap detection extended across sources. The same tool installed via pacman *and* cargo is the same duplicate problem as native-vs-Flatpak, and `PATH` precedence decides which one you actually run.
 

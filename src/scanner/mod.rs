@@ -3,7 +3,7 @@
 //! Detects available providers, runs them concurrently on scoped threads
 //! (spec Q5 — one lane each for pacman, flatpak, and `du`), assembles a
 //! `ScanResult`, and persists it to the cache ([`cache`]). Never analyzes
-//! data (dev-notes §3).
+//! data (design §6).
 
 pub mod cache;
 
@@ -28,7 +28,7 @@ const PACMAN_CACHE_DIR: &str = "/var/cache/pacman/pkg/";
 /// new scan that is then written back to the cache.
 ///
 /// `refresh` forces a re-scan. A failed cache write is logged but non-fatal —
-/// the in-memory result is still returned (spec §15 recovery table).
+/// the in-memory result is still returned (design §11 recovery table).
 pub fn load_or_scan(
     runner: &dyn CommandRunner,
     config: &Config,
@@ -64,7 +64,7 @@ pub fn load_cached(
 
 /// The slow half: run the providers and write the cache. A failed cache write
 /// is logged but non-fatal — the in-memory result is still returned
-/// (spec §15 recovery table).
+/// (design §11 recovery table).
 pub fn scan_and_store(runner: &dyn CommandRunner, config: &Config) -> anyhow::Result<ScanResult> {
     let cache = cache::Cache::locate()?;
     let scan = scan(runner, config);
@@ -101,7 +101,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
 /// The three independent lanes — pacman, flatpak, and `du` cache sizing — run
 /// on scoped threads (spec Q5): wall time is the slowest lane, not the sum.
 /// Provider failures are isolated: a source that errors is logged and skipped,
-/// never aborting the others (dev-notes §3).
+/// never aborting the others (design §6).
 fn assemble(
     runner: &dyn CommandRunner,
     config: &Config,
@@ -366,7 +366,7 @@ fn parse_paccache_saved(output: &str) -> Option<u64> {
     Some((number * factor as f64) as u64)
 }
 
-/// Size of `~/.var/app/<id>` per scanned Flatpak app (spec §9.4 heuristic 2:
+/// Size of `~/.var/app/<id>` per scanned Flatpak app (design §9 heuristic 2:
 /// user data weighs into the overlap tradeoff). Apps without a profile dir
 /// (du fails or prints nothing) are simply absent. Runtimes have no profile.
 fn gather_profile_sizes(

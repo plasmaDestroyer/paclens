@@ -2,7 +2,7 @@
 //!
 //! `CommandRunner` is the injectable seam used for testing; `Provider` is the
 //! per-source trait. Providers never call sudo and never know about each other
-//! (dev-notes §3).
+//! (design §6).
 //!
 //! Built in v0.0.2 (probing) and v0.0.3 (full `pacman -Qi` parser).
 
@@ -31,7 +31,7 @@ pub trait CommandRunner: Send + Sync {
 }
 
 /// Runs commands via [`std::process::Command`], killing anything that runs
-/// past the timeout (config `scan.provider_timeout_secs`; spec §2.2 — a hung
+/// past the timeout (config `scan.provider_timeout_secs`; design §2 — a hung
 /// `flatpak remote-ls` on an unreachable remote must never hang paclens).
 pub struct SystemCommandRunner {
     timeout: std::time::Duration,
@@ -111,7 +111,7 @@ impl CommandRunner for SystemCommandRunner {
 /// sudo and never knows about other providers.
 ///
 /// The update-related methods (`source_id`, `build_update_command`,
-/// `requires_sudo_for_update` from spec §5.1) are added with the executor in
+/// `requires_sudo_for_update` from design §10) are added with the executor in
 /// v0.0.6 — this milestone only scans.
 pub trait Provider {
     /// Is the source's binary present on PATH?
@@ -153,7 +153,7 @@ pub(crate) mod test_support {
     use super::{CommandOutput, CommandRunner};
     use std::collections::HashMap;
 
-    /// Fixture-backed runner keyed by `"program arg1 arg2"` (dev-notes §8).
+    /// Fixture-backed runner keyed by `"program arg1 arg2"` (design §12).
     pub(crate) struct MockRunner {
         responses: HashMap<String, CommandOutput>,
     }

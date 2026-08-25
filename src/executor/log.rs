@@ -1,4 +1,4 @@
-//! The update log writer (spec §14.4, roadmap v0.0.6): a per-day, append-only
+//! The update log writer (design §11, roadmap v0.0.6): a per-day, append-only
 //! record of every update session at `~/.local/share/paclens/logs/YYYY-MM-DD.log`.
 //!
 //! Separate from the tracing log: this file is the user-facing audit trail of

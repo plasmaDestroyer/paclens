@@ -1,4 +1,4 @@
-//! Overlap types (spec §4.6): a pacman package and a Flatpak app that are the
+//! Overlap types (design §7): a pacman package and a Flatpak app that are the
 //! same application installed twice. Advisory only — computed by the analyzer
 //! on every load, never cached, never acted on.
 
@@ -62,7 +62,7 @@ pub struct Tradeoff {
 pub enum PrimaryHeuristic {
     Native,
     /// A >10 MiB `~/.var/app/<id>` profile — the user has data there
-    /// (spec §9.4 heuristic 2, live since v0.1.4).
+    /// (design §9 heuristic 2, live since v0.1.4).
     Flatpak,
     #[default]
     Unknown,

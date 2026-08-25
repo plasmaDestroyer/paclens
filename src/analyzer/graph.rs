@@ -1,9 +1,9 @@
-//! The in-memory dependency graph (spec §7), built from one scan — never from
-//! pactree, never serialized (rebuilt on every load; dev-notes §7).
+//! The in-memory dependency graph (design §8), built from one scan — never from
+//! pactree, never serialized (rebuilt on every load; design §13).
 //!
 //! Nodes are package names; edges are `package → dependency` weighted with
 //! `DependencyEdge`. pacman edges are `Real`/`Confirmed`; flatpak app →
-//! runtime grouping edges are `Inferred`/`Inferred` (spec §7.4). Virtual
+//! runtime grouping edges are `Inferred`/`Inferred` (design §8). Virtual
 //! names from `Provides` are resolved through an alias map so a dep on `sh`
 //! lands on `bash` (pacman only). All queries run in-memory.
 
@@ -31,7 +31,7 @@ pub struct DepGraph {
 impl DepGraph {
     /// Build from the scan's packages: pacman deps as `Real`/`Confirmed`
     /// edges, flatpak app → runtime grouping as `Inferred`/`Inferred` edges
-    /// (spec §7.4, v0.1.3). Pure — no IO.
+    /// (design §8, v0.1.3). Pure — no IO.
     pub fn build(scan: &ScanResult) -> Self {
         // Provides alias map (pacman only — flatpaks have no provides):
         // virtual name → real provider. First provider wins on the rare
@@ -212,7 +212,7 @@ impl DepGraph {
             .collect()
     }
 
-    /// Orphan candidates (spec §7.2): installed as a dependency, nothing
+    /// Orphan candidates (design §8): installed as a dependency, nothing
     /// requires them. Replaces `pacman -Qtd`.
     /// Spec §7.2 deliverable; feeds the dashboard's system pane.
     pub fn orphans(&self, scan: &ScanResult) -> Vec<String> {

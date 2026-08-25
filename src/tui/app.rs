@@ -1,6 +1,6 @@
 //! Application state for the multi-screen TUI.
 //!
-//! `App` owns everything the screens draw (dev-notes §5): the `ScanResult`, the
+//! `App` owns everything the screens draw: the `ScanResult`, the
 //! resolved `Theme`, which `Screen` is active, the dashboard cursor + update
 //! toggles, and a transient flash message. Rendering borrows `&App` and never
 //! mutates; the event loop is the only mutator.
@@ -20,7 +20,7 @@ use crate::tui::theme::Theme;
 pub struct AppOptions {
     /// `config.why.max_depth`.
     pub why_depth: u32,
-    /// The privilege tool detected at startup (spec §13.4), if any.
+    /// The privilege tool detected at startup (design §11), if any.
     pub privilege_tool: Option<&'static str>,
     /// `config.overlap.ignore`, for the dashboard's overlap count.
     pub overlap_ignore: Vec<String>,
@@ -69,11 +69,11 @@ pub enum DashPane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Dashboard,
-    /// Per-source package list (spec §10.3), entered with Enter on a dashboard row.
+    /// Per-source package list, entered with Enter on a dashboard row.
     Packages,
-    /// Overlap candidates (spec §10.3, roadmap v0.1.4), entered with `o`.
+    /// Overlap candidates (roadmap v0.1.4), entered with `o`.
     Overlaps,
-    /// Cleanup summary (spec §10.3, roadmap v0.1.5), entered with `c`.
+    /// Cleanup summary (roadmap v0.1.5), entered with `c`.
     Cleanup,
 }
 
@@ -208,7 +208,7 @@ pub struct App {
     cleanup_cursor: usize,
     /// Cleanup screen: the why side pane is open for the selected orphan.
     cleanup_why: bool,
-    /// Detected overlaps, recomputed per scan (never cached — spec §6.6).
+    /// Detected overlaps, recomputed per scan (never cached — design §7).
     overlaps: Vec<OverlapCandidate>,
     /// Overlap screen: cursor over `overlaps`.
     overlap_cursor: usize,
@@ -489,7 +489,7 @@ impl App {
         self.scan.sources.get(self.dash_selected?)
     }
 
-    // --- overlap screen (spec §10.3, v0.1.4) ---
+    // --- overlap screen (v0.1.4) ---
     pub fn open_overlaps(&mut self) {
         self.overlap_cursor = self
             .overlap_cursor
