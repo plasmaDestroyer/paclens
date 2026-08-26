@@ -70,10 +70,16 @@ your shell. Everything else is advisory: paclens never removes anything.
 
 ## Install
 
-From the AUR (once published):
+From the AUR:
 
 ```sh
 paru -S paclens
+```
+
+From crates.io — the same binary, built locally, without the AUR helper:
+
+```sh
+cargo install paclens --locked
 ```
 
 From source:

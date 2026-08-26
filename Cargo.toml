@@ -2,9 +2,18 @@
 name = "paclens"
 version = "0.3.0"
 edition = "2024"
-description = "A TUI-first pacman + AUR + Flatpak inspection and update tool for Arch Linux."
+description = "A TUI-first pacman + AUR + Flatpak inspection and update tool for Arch Linux. Installs a binary; there is no library API."
 license = "MIT"
 repository = "https://github.com/plasmaDestroyer/paclens"
+readme = "README.md"
+keywords = ["arch-linux", "pacman", "aur", "flatpak", "tui"]
+categories = ["command-line-utilities", "os::linux-apis"]
+# The published crate carries what is needed to build and to *test* the build.
+# `tests/fixtures/` stays: the unit tests in `src/**` pull it in through
+# `include_str!()`, so dropping it would make `cargo test` fail on the crate
+# people actually download. What goes is what only makes sense from a git
+# checkout — CI config and the AUR PKGBUILD, which builds from a git tag.
+exclude = [".github/", "packaging/"]
 
 [dependencies]
 anyhow = "1.0.102"
