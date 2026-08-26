@@ -19,7 +19,9 @@ use super::{Package, PendingUpdate, Source};
 /// v5: foreign packages split into the `aur` source (0.3.0).
 /// v6: `profile_dir_sizes` — migration advisory probe (0.3.0).
 /// v7: `CacheSizes` reclaimable + paru build cache (0.3.0, cleanup honesty).
-pub const SCHEMA_VERSION: u32 = 7;
+/// v8: `aur_helper` — which helper the scan used, so the planner builds the
+/// update step for the one actually installed rather than assuming paru.
+pub const SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -40,6 +42,12 @@ pub struct ScanResult {
     /// `analyzer::migrate::probe_paths`; the scanner just measures them.
     #[serde(default)]
     pub profile_dir_sizes: std::collections::HashMap<String, u64>,
+    /// The AUR helper this scan used, or `None` if none is installed. Recorded
+    /// rather than re-detected because the planner is pure over a
+    /// `ScanResult` (P5) — it cannot look at `PATH`, and a plan that names a
+    /// helper the scan did not use would be a plan for a different machine.
+    #[serde(default)]
+    pub aur_helper: Option<crate::providers::aur::AurHelper>,
 }
 
 impl ScanResult {
@@ -55,6 +63,7 @@ impl ScanResult {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
+            aur_helper: None,
         }
     }
 }

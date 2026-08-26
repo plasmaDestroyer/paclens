@@ -18,6 +18,13 @@ log_keep_count = 10
 # "debug" is very verbose — use only for troubleshooting.
 log_level = "info"
 
+# Which AUR helper to use: "", "paru", "yay" or "pikaur".
+# Empty autodetects, preferring paru, then yay, then pikaur — the first one
+# found on PATH wins. Set a name to pin one.
+# A pinned helper that is not installed falls back to autodetection and says
+# so in the log; a stale config is not a fatal error.
+aur_helper = ""
+
 # Color theme: "dark", "light", "none"
 # "none" disables colors and uses ASCII box drawing.
 color_theme = "dark"

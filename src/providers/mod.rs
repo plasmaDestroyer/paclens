@@ -143,7 +143,19 @@ pub enum ProviderError {
 /// Is `name` an executable file on any `PATH` entry?
 pub fn binary_on_path(name: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+        .map(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(name))))
+        .unwrap_or(false)
+}
+
+/// A regular file with at least one execute bit set.
+///
+/// The mode check is not pedantry: detection decides which AUR helper paclens
+/// will hand a plan to, so a non-executable file named `paru` sitting on
+/// `PATH` must not answer that question. `is_file()` alone would say yes.
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
 }
 
@@ -233,6 +245,34 @@ mod tests {
     #[test]
     fn binary_on_path_rejects_nonsense() {
         assert!(!binary_on_path("paclens-definitely-not-a-real-binary"));
+    }
+
+    #[test]
+    fn a_non_executable_file_is_not_a_binary() {
+        // Detection decides which AUR helper gets handed a plan, so a plain
+        // file named like one must not answer that question.
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("paclens-exec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("paru");
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(b"not a program"))
+            .expect("write");
+
+        assert!(!is_executable(&path), "mode 0644 must not count");
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert!(is_executable(&path), "mode 0755 must count");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_is_not_a_binary() {
+        // Directories carry execute bits meaning "traversable"; `/usr/bin/sh`
+        // being a dir would not make `sh` runnable.
+        assert!(!is_executable(std::path::Path::new("/usr/bin")));
     }
 
     #[test]

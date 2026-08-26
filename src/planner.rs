@@ -35,9 +35,19 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
         }
         let (command, needs_sudo) = match &source.kind {
             SourceKind::Pacman => (pacman::update_command(), true),
-            // paru is never run under sudo — it self-elevates for the
+            // An AUR helper is never run under sudo — it self-elevates for the
             // install step after building as the user.
-            SourceKind::Aur => (aur::update_command(), false),
+            //
+            // The helper comes from the scan rather than from `PATH`: this
+            // function is pure (P5), and a plan naming a helper the scan did
+            // not use would be a plan for a different machine. `None` should
+            // be unreachable here, since a scan with no helper marks the aur
+            // source unavailable and the loop already skipped it — but the
+            // plan is what the user is asked to confirm, so it invents nothing.
+            SourceKind::Aur => match scan.aur_helper {
+                Some(helper) => (aur::update_command(helper), false),
+                None => continue,
+            },
             SourceKind::Flatpak { scope } => (
                 flatpak::update_command(*scope),
                 *scope == FlatpakScope::System,
@@ -294,11 +304,68 @@ mod tests {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
+            aur_helper: Some(crate::providers::aur::AurHelper::Paru),
         }
     }
 
     fn enable_all(_: &SourceId) -> bool {
         true
+    }
+
+    /// A scan with one pending AUR update, driven by `helper`.
+    fn aur_scan(helper: Option<crate::providers::aur::AurHelper>) -> ScanResult {
+        let mut scan = scan();
+        scan.sources
+            .push(source(SourceId::aur(), SourceKind::Aur, true));
+        scan.updates.push(upd("timr-bin", SourceId::aur()));
+        scan.aur_helper = helper;
+        scan
+    }
+
+    fn aur_step(plan: &ActionPlan) -> Option<ActionStep> {
+        plan.steps
+            .iter()
+            .find(|s| s.source_id == SourceId::aur())
+            .cloned()
+    }
+
+    #[test]
+    fn the_aur_step_uses_the_helper_the_scan_recorded() {
+        use crate::providers::aur::AurHelper;
+        for (helper, bin) in [
+            (AurHelper::Paru, "paru"),
+            (AurHelper::Yay, "yay"),
+            (AurHelper::Pikaur, "pikaur"),
+        ] {
+            let plan = plan_updates(&aur_scan(Some(helper)), enable_all);
+            let step = aur_step(&plan).expect("aur step");
+            assert_eq!(step.command, vec![bin, "-Sua"], "helper {bin}");
+            assert_eq!(step.targets, vec!["timr-bin"]);
+        }
+    }
+
+    #[test]
+    fn no_recorded_helper_means_no_aur_step_rather_than_a_guess() {
+        // The scan found no helper. Defaulting to paru here would put a
+        // command in front of the user for a binary they do not have.
+        let plan = plan_updates(&aur_scan(None), enable_all);
+        assert!(aur_step(&plan).is_none());
+        // The other sources are unaffected — one bad source never aborts the rest.
+        assert_eq!(plan.source_count(), 2);
+    }
+
+    #[test]
+    fn the_aur_step_is_never_privileged() {
+        use crate::providers::aur::AurHelper;
+        for helper in AurHelper::ALL {
+            let plan = plan_updates(&aur_scan(Some(helper)), |id| id == &SourceId::aur());
+            assert_eq!(plan.source_count(), 1);
+            assert!(
+                !plan.requires_sudo,
+                "{} must self-elevate, never be run under sudo",
+                helper.bin()
+            );
+        }
     }
 
     #[test]
@@ -373,6 +440,7 @@ mod tests {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
+            aur_helper: Some(crate::providers::aur::AurHelper::Paru),
         };
         let plan = plan_updates(&empty, enable_all);
         assert!(plan.is_empty());

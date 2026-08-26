@@ -190,4 +190,36 @@ mod tests {
         );
         assert!(loaded.config.validation_warnings().is_empty());
     }
+
+    #[test]
+    fn aur_helper_defaults_to_autodetect() {
+        // Empty means autodetect. Shipping a name here would pin every user to
+        // it and go stale the moment they install a different helper.
+        assert!(
+            parse_config("")
+                .unwrap()
+                .config
+                .general
+                .aur_helper
+                .is_empty()
+        );
+        assert!(
+            parse_config(DEFAULT_CONFIG)
+                .unwrap()
+                .config
+                .general
+                .aur_helper
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn aur_helper_can_be_pinned() {
+        let loaded = parse_config("[general]\naur_helper = \"yay\"\n").unwrap();
+        assert_eq!(loaded.config.general.aur_helper, "yay");
+        assert!(
+            loaded.unknown_keys.is_empty(),
+            "the knob must be a known key"
+        );
+    }
 }

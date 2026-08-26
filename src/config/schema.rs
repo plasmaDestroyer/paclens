@@ -23,6 +23,14 @@ pub struct Config {
 #[serde(default)]
 pub struct General {
     pub cache_ttl: u64,
+    /// Which AUR helper to drive. Empty means autodetect, walking `PATH` in
+    /// the order paru → yay → pikaur and taking the first hit. A name pins it.
+    ///
+    /// Empty-means-autodetect rather than recording the detected helper on
+    /// first run, because a persisted value goes stale: install paru later and
+    /// paclens would keep using the yay it wrote down months ago, for no
+    /// reason visible from the outside.
+    pub aur_helper: String,
     pub log_keep_count: u32,
     pub log_level: String,
     pub color_theme: String,
@@ -86,6 +94,7 @@ impl Default for General {
     fn default() -> Self {
         Self {
             cache_ttl: 3600,
+            aur_helper: String::new(),
             log_keep_count: 10,
             log_level: "info".to_string(),
             color_theme: "dark".to_string(),
