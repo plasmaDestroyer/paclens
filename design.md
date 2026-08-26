@@ -10,7 +10,7 @@ disagrees with what follows, this wins and the other one is wrong.
 It absorbed `spec.md` and `dev-notes.md` on 2026-08-25. Sections 1–5 are what the
 tool promises. Sections 6–12 are how it is built, and the things that were
 painful to learn. Section 13 is the dated record of every decision, which is why
-the rest says what it says.
+the rest says what it says. Sections 14–15 are how the project itself is run.
 
 **Contents**
 
@@ -19,7 +19,7 @@ the rest says what it says.
 | 1–5 | [The test](#1-the-test) · [Principles](#2-principles) · [Rules](#3-rules) · [Defaults](#4-defaults-not-rules) · [Not in scope](#5-not-in-scope) |
 | 6–9 | [Architecture](#6-architecture-and-module-contracts) · [Data and cache](#7-data-cache-and-schema) · [Graph and confidence](#8-dependency-graph-and-the-confidence-model) · [Overlaps](#9-overlap-detection) |
 | 10–12 | [Providers and parsing](#10-providers--commands-parsing-and-gotchas) · [Privilege, logging, errors](#11-privilege-logging-and-errors) · [Testing](#12-testing) |
-| 13–14 | [Decisions log](#13-decisions-log) · [Amending this](#14-amending-this) |
+| 13–15 | [Decisions log](#13-decisions-log) · [Releases](#14-releases) · [Amending this](#15-amending-this) |
 
 ---
 
@@ -1427,11 +1427,82 @@ YYYY-MM-DD | no --noconfirm for pacman
            | time. Old labels in commits, decision entries above and source
            | comments are left alone as contemporaneous record; CLAUDE.md
            | carries the mapping forward.
+
+2026-08-26 | releases are cut per capability, not per milestone (§14)
+           | the renumbering above settled what a version means and left
+           | open when one happens, and the obvious reading — a milestone
+           | closes, a minor ships — is wrong for these milestones. They
+           | were grouped by theme, so they are wildly uneven: Broader
+           | sources is eighteen issues, Headless is five. Cutting on that
+           | boundary means months between tags and a release nobody can
+           | read the notes for. So a minor is cut per describable
+           | capability instead, several to a milestone, and the milestone
+           | keeps carrying membership and progress without ever carrying
+           | a number. That preserves the thing the renumbering fixed: no
+           | version is assigned before the work it names exists.
+           | Publishing is ordered ahead of all of it, because until the
+           | AUR package and the crates.io entry exist, every capability
+           | added lands in front of the same zero users.
 ```
 
 ---
 
-## 14. Amending this
+## 14. Releases
+
+`CLAUDE.md` says what the numbers mean — a minor is a capability you can point
+at, a patch is fixes and polish. This is when each one happens.
+
+**A milestone is not a release.** The milestones are deliberately different
+sizes; one theme is eighteen issues and another is five. Tying a tag to a
+milestone boundary therefore means months with nothing to install, followed by
+a release too large for anyone to read the notes for. A milestone is a theme
+you work through. A minor is a sentence you can write once some slice of it is
+finished.
+
+Broader sources alone should produce several minors:
+
+- *"paclens now works with yay and pikaur, not just paru."*
+- *"paclens now sees cargo-installed binaries."*
+- *"overlaps now span every source, not just Flatpak against pacman."*
+
+None of those is a milestone boundary and every one of them is a release.
+
+The test for a minor has the same shape as the one in §1: **can you say what it
+does in one sentence with no "except" in it?** If the sentence needs a caveat —
+the source is detected but not updatable, the overlap is found but not
+explained — it is not done. Shipping it spends the single impression a new user
+gives you on something visibly half-built.
+
+**A patch ships whenever there are fixes worth having and nothing new.** There
+is no minimum size. One wrong number is enough on its own: §3 says a number that
+would mislead is not shown, and a number that ships wrong is the same defect a
+release later.
+
+### What forces a release rather than invites one
+
+- **A parser break.** Upstream changes its output, paclens reads it wrong, and
+  everything downstream is wrong with it — the update count, the graph, the
+  reclaimable figure. §10 lists the fragile points. When one of them goes, the
+  tool is lying until a tag ships, so it ships the same day.
+- **Anything touching privilege.** A defect in what runs as root, or in what
+  the AUR helper is handed, does not wait for company.
+
+Everything else is judgement, with one guardrail: **do not let `main` sit far
+ahead of a tag while it carries something user-visible.** Unreleased work helps
+nobody, and once paclens is on the AUR the tag is the only thing most people
+ever see. A month is roughly where that starts costing something.
+
+### Publishing outranks features
+
+Until paclens is installable — an AUR package and a crates.io entry, not just a
+git tag — the version number is a private note to yourself, and every capability
+added before then reaches exactly the same zero users. Distribution is not the
+reward for finishing the features; it is the thing that makes finishing them
+matter.
+
+---
+
+## 15. Amending this
 
 Rules move to defaults, and defaults become rules, when the evidence changes.
 That is fine — it is what the decisions log in §13 is for. What is not fine is a rule

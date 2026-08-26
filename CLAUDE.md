@@ -16,7 +16,7 @@ Shipped milestones are **history, not a plan** — see "What shipped" below. All
 
 Read these before doing non-trivial work.
 
-- **`design.md` — the whole design document, and the only one.** What paclens will and will not do to a user's system (§1–5), how it is built (§6–12), and the dated decisions log (§13) that explains why any of it is the way it is. Read §1–5 before proposing anything; read the rest before writing non-trivial code.
+- **`design.md` — the whole design document, and the only one.** What paclens will and will not do to a user's system (§1–5), how it is built (§6–12), the dated decisions log (§13) that explains why any of it is the way it is, and how the project is run (§14–15). Read §1–5 before proposing anything; read the rest before writing non-trivial code.
 - `config.default.toml` — default config schema.
 - `overlap_map.toml` — bundled Flatpak-ID → pacman-name map (`include_str!()` into the binary).
 
@@ -79,7 +79,7 @@ Orientation only — **design §3 carries the rules and §13 the dated reasoning
 - Colors are centralized per render target: TUI styles in `src/tui/theme.rs`, CLI text styling in `src/cli/style.rs`; both follow one semantic palette (green = available, yellow = pending updates, dim = secondary, bold = emphasis) and share glyphs from `src/glyphs.rs`. Color is suppressed by `--no-color`, by `color_theme = "none"`, and (for the CLI) when the stream is not a TTY; the no-color path also switches to ASCII box drawing and ASCII glyphs.
 - Every parser has unit tests against real-output fixtures in `tests/fixtures/`, driven by a mock `CommandRunner`. Capture fixtures from a real Arch system.
 - **Every config knob must be consumed.** A knob that exists in the schema but changes no behaviour is a bug (v0.2.0 audit).
-- **Versioning:** a minor is a capability you can point at; a patch is fixes and polish. Every release gets a `vX.Y.Z` git tag — the PKGBUILD builds from `#tag=v$pkgver` and cannot build without one.
+- **Versioning:** a minor is a capability you can point at; a patch is fixes and polish. Every release gets a `vX.Y.Z` git tag — the PKGBUILD builds from `#tag=v$pkgver` and cannot build without one. **design §14 says when each one ships** — a minor is cut per describable capability, several to a milestone, never on a milestone boundary.
 - **Git:** work on `main` directly — this is a solo repo, no feature branches. Commits are authored by the repo owner alone: **no `Co-Authored-By` or `Claude-Session` trailers.** Keep the existing message style — a `type(scope):` subject line, then prose explaining *why*, not a bullet list of what changed.
 - **Testing is a hard requirement, not an afterthought.** Every module carries unit tests; every feature ships with tests. Keep them small, granular, and specific — test pure helpers directly, not just via their callers. Make logic hermetically testable by injecting the `CommandRunner` seam and passing environment-derived inputs (availability flags, mtimes) into pure cores rather than reading PATH/filesystem inside the logic (see `scan`→`assemble`, `staleness`→`staleness_with`). Integration tests in `tests/` drive the built binary (`CARGO_BIN_EXE_paclens`) sandboxed with temp `XDG_*` dirs. `cargo test`, `clippy -- -D warnings -D clippy::unwrap_used`, and `fmt --check` stay green on every commit.
 
