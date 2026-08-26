@@ -16,6 +16,6 @@ pkgbase = paclens-bin
 	provides = paclens=0.3.2
 	conflicts = paclens
 	source = paclens-0.3.2.tar.gz::https://github.com/plasmaDestroyer/paclens/releases/download/v0.3.2/paclens-x86_64-unknown-linux-gnu.tar.gz
-	sha256sums = 0000000000000000000000000000000000000000000000000000000000000000
+	sha256sums = 32618ff990d6e19c0989c33b4cc81abefd4a89eb3e654f43c66fc36dc4ecbb7a
 
 pkgname = paclens-bin

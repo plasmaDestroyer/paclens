@@ -26,9 +26,9 @@ optdepends=(
 source=("$_pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/paclens-x86_64-unknown-linux-gnu.tar.gz")
 # Deliberately not 'SKIP'. A binary package is one someone installs without
 # reading what they are installing, so the one thing it must do is verify that
-# what arrived is what was published. This placeholder is invalid on purpose —
-# it fails closed, and `updpkgsums` replaces it once the release exists.
-sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+# what arrived is what was published. Refresh with `updpkgsums` on every
+# version bump; it must match the sha256sums.txt attached to that release.
+sha256sums=('32618ff990d6e19c0989c33b4cc81abefd4a89eb3e654f43c66fc36dc4ecbb7a')
 
 package() {
   install -Dm755 "$srcdir/paclens" "$pkgdir/usr/bin/$_pkgname"
