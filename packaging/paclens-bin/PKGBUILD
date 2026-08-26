@@ -28,7 +28,7 @@ source=("$_pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/paclens-x86_6
 # reading what they are installing, so the one thing it must do is verify that
 # what arrived is what was published. Refresh with `updpkgsums` on every
 # version bump; it must match the sha256sums.txt attached to that release.
-sha256sums=('32618ff990d6e19c0989c33b4cc81abefd4a89eb3e654f43c66fc36dc4ecbb7a')
+sha256sums=('dbb9e7efb0eeaabc3e5a4aa5e2a6dbcd9ad6036717db36d32b3d5aee2141ec41')
 
 package() {
   install -Dm755 "$srcdir/paclens" "$pkgdir/usr/bin/$_pkgname"
