@@ -1,1 +1,9 @@
 /target
+/artifacts
+
+# makepkg leftovers — build artifacts, never sources
+packaging/*/src/
+packaging/*/pkg/
+packaging/**/*.pkg.tar.zst
+packaging/**/*.tar.gz
+packaging/**/*.log

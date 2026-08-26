@@ -70,15 +70,20 @@ your shell. Everything else is advisory: paclens never removes anything.
 
 ## Install
 
-From the AUR:
+From the AUR. `paclens-bin` is the prebuilt binary and installs in seconds;
+`paclens` compiles from source, which needs a Rust toolchain and a few minutes.
+They are the same program — pick whichever you would rather wait for:
 
 ```sh
-paru -S paclens
+paru -S paclens-bin   # prebuilt
+paru -S paclens       # from source
 ```
 
-From crates.io — the same binary, built locally, without the AUR helper:
+From crates.io, without an AUR helper. Same split — `binstall` fetches the
+prebuilt binary, `install` compiles it:
 
 ```sh
+cargo binstall paclens   # prebuilt
 cargo install paclens --locked
 ```
 

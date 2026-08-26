@@ -1,0 +1,51 @@
+name: Release
+
+# Every `vX.Y.Z` tag produces the prebuilt binary that `paclens-bin` and
+# `cargo binstall` both consume. Without this, the only way to install paclens
+# is to compile it, which means a Rust toolchain (77 MiB down, 292 MiB
+# installed) and a fat-LTO build for a 1 MiB program.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  binary:
+    name: Build and attach the release binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Deliberately a stock runner, not an Arch container and never the
+      # maintainer's machine. `/etc/makepkg.conf` here carries `-march=native`
+      # and `-C target-cpu=native`, which would emit instructions that fault on
+      # any older CPU — a crash the person who built it can never reproduce.
+      # The runner's glibc is also older than Arch's, and glibc is forward
+      # compatible, so a binary linked here runs on a current Arch system while
+      # the reverse would not hold.
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Assemble the tarball
+        run: |
+          install -Dm755 target/release/paclens        dist/paclens
+          install -Dm644 LICENSE                       dist/LICENSE
+          install -Dm644 README.md                     dist/README.md
+          install -Dm644 config.default.toml           dist/config.default.toml
+          tar -czf paclens-x86_64-unknown-linux-gnu.tar.gz -C dist .
+          sha256sum paclens-x86_64-unknown-linux-gnu.tar.gz | tee sha256sums.txt
+
+      # The checksum is published alongside the tarball because the
+      # `paclens-bin` PKGBUILD verifies against it — `updpkgsums` refetches and
+      # recomputes rather than trusting this file, but a published sum is what
+      # makes a mismatch something anyone can notice.
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            paclens-x86_64-unknown-linux-gnu.tar.gz
+            sha256sums.txt

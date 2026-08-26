@@ -1,6 +1,6 @@
 [package]
 name = "paclens"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "A TUI-first pacman + AUR + Flatpak inspection and update tool for Arch Linux. Installs a binary; there is no library API."
 license = "MIT"
@@ -14,6 +14,14 @@ categories = ["command-line-utilities", "os::linux-apis"]
 # people actually download. What goes is what only makes sense from a git
 # checkout — CI config and the AUR PKGBUILD, which builds from a git tag.
 exclude = [".github/", "packaging/"]
+
+# `cargo install paclens` compiles from source, which for this crate means a
+# fat-LTO release build and a Rust toolchain. `cargo binstall paclens` fetches
+# the release tarball that .github/workflows/release.yml already builds, so the
+# fast path costs nothing beyond pointing at an artifact that exists anyway.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+pkg-fmt = "tgz"
 
 [dependencies]
 anyhow = "1.0.102"
