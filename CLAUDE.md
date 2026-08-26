@@ -115,7 +115,16 @@ v0.3.0 – v0.5.0  →  0.3.0
 
 **GitHub issues are the only plan.** `roadmap.md` was retired on 2026-08-24 once every forward-looking item in it had an issue; the version history it recorded is summarized above and preserved in git. Do not recreate it — a second planning surface is how the last one went stale.
 
-Issues are labeled by theme (`sources`, `system-health`, `update-flow`, `integration`, `cleanup`, `aur`), area (`area:*`), and `priority:*`. `needs-design` marks the ones with open questions to settle first.
+**Issue #75 is the roadmap — start there.** It is the only surface that sequences work across themes: what is next, what is after that, and what is deliberately unscheduled. Everything else groups rather than orders:
+
+| surface | answers |
+|---|---|
+| **#75** | what do I do next, and then what |
+| milestones | which theme this belongs to, how far along it is |
+| `Tracking:` issues (#69–#74) | order *within* one theme, and what blocks what |
+| labels | everything touching one area — theme (`sources`, `system-health`, `update-flow`, `integration`, `cleanup`, `aur`), area (`area:*`), `priority:*`, `needs-design` |
+
+Where #75 and a tracking issue disagree, #75 wins on order and the tracking issue wins on detail. #75 carries no version numbers, and must not start doing so — see design §14.
 
 **Broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
 
