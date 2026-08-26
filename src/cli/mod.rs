@@ -25,7 +25,11 @@ use style::Styles;
 #[command(
     name = "paclens",
     version,
-    about,
+    // Spelled out rather than taken from the Cargo manifest. The manifest
+    // description also serves the crates.io listing, where it has to say that
+    // this is a binary and not a library — a sentence that means nothing in
+    // `--help`.
+    about = "A TUI-first pacman + AUR + Flatpak inspection and update tool for Arch Linux.",
     long_about = None,
     disable_version_flag = true
 )]
