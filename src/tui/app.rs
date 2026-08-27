@@ -512,7 +512,7 @@ impl App {
     pub fn selected_aur_note(&self) -> Option<String> {
         let source = self.dash_source()?;
         (source.id == SourceId::aur())
-            .then(|| self.scan.aur_helper.note())
+            .then(|| self.scan.aur_helper.compact_note())
             .flatten()
     }
 

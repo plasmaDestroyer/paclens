@@ -120,6 +120,29 @@ impl HelperChoice {
             HelperChoice::None => Some(format!("aur: {INSTALL}")),
         }
     }
+
+    /// [`note`](Self::note) squeezed onto one line for the dashboard's system
+    /// pane, which has exactly one row to spare.
+    ///
+    /// A separate string rather than a wrapped one: wrapping pushes the last
+    /// row out of a fixed-height pane, and a note clipped at "aur: config asks
+    /// for yay, which is not" has lost the half that matters. Kept short
+    /// enough that the pane truncates only on genuinely narrow terminals,
+    /// where every other row truncates too.
+    ///
+    /// The long form stays in `paclens status`, which has the width for it.
+    pub fn compact_note(&self) -> Option<String> {
+        match self {
+            HelperChoice::Detected(_) | HelperChoice::Pinned(_) => Option::None,
+            HelperChoice::FellBack { configured, to } => {
+                Some(format!("aur: no {configured}, using {}", to.bin()))
+            }
+            HelperChoice::ConfiguredMissing { configured } => {
+                Some(format!("aur: no {configured}, no helper at all"))
+            }
+            HelperChoice::None => Some("aur: no helper - install paru/yay/pikaur".to_string()),
+        }
+    }
 }
 
 /// Pick a helper from the config value and what is installed.
@@ -368,6 +391,77 @@ mod tests {
     #[derive(Serialize, Deserialize)]
     struct Wrapper {
         choice: HelperChoice,
+    }
+
+    /// The dashboard's system pane has exactly one row to spare and does not
+    /// wrap, so a compact note that outgrows the pane gets clipped — losing
+    /// the half that says what to do. 44 is the usable width of that pane on a
+    /// 100-column terminal; anything longer needs the pane rethought, not the
+    /// sentence quietly truncated.
+    #[test]
+    fn compact_notes_fit_one_row_of_the_system_pane() {
+        const MAX: usize = 44;
+        let choices = [
+            HelperChoice::None,
+            HelperChoice::FellBack {
+                configured: "pikaur".to_string(),
+                to: AurHelper::Paru,
+            },
+            HelperChoice::ConfiguredMissing {
+                configured: "pikaur".to_string(),
+            },
+        ];
+        for c in choices {
+            let note = c.compact_note().expect("degraded");
+            assert!(
+                note.len() <= MAX,
+                "compact note is {} chars, over {MAX}: {note:?}",
+                note.len()
+            );
+            assert!(note.is_ascii(), "must be ASCII: {note:?}");
+        }
+        assert_eq!(HelperChoice::Detected(AurHelper::Paru).compact_note(), None);
+        assert_eq!(HelperChoice::Pinned(AurHelper::Yay).compact_note(), None);
+    }
+
+    /// The compact form is shorter, not different: whatever the long note
+    /// names, the short one names too. Two strings that drift would have the
+    /// dashboard and `paclens status` disagreeing about the same machine.
+    #[test]
+    fn the_compact_note_names_whatever_the_long_one_does() {
+        let fell_back = HelperChoice::FellBack {
+            configured: "yay".to_string(),
+            to: AurHelper::Paru,
+        };
+        let short = fell_back.compact_note().expect("degraded");
+        assert!(short.contains("yay"), "must name the stale pin: {short}");
+        assert!(short.contains("paru"), "must name what is used: {short}");
+
+        let missing = HelperChoice::ConfiguredMissing {
+            configured: "trizen".to_string(),
+        };
+        let short = missing.compact_note().expect("degraded");
+        assert!(short.contains("trizen"), "{short}");
+
+        // Both forms exist for exactly the same set of states.
+        for c in [
+            HelperChoice::None,
+            HelperChoice::Detected(AurHelper::Paru),
+            HelperChoice::Pinned(AurHelper::Yay),
+            HelperChoice::FellBack {
+                configured: "yay".to_string(),
+                to: AurHelper::Paru,
+            },
+            HelperChoice::ConfiguredMissing {
+                configured: "trizen".to_string(),
+            },
+        ] {
+            assert_eq!(
+                c.note().is_some(),
+                c.compact_note().is_some(),
+                "long and short disagree about whether {c:?} needs a note"
+            );
+        }
     }
 
     #[test]

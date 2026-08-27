@@ -255,17 +255,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
 
     let cols =
         Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).split(inner);
-    // The system pane grows to fit the helper note rather than clipping it.
-    // A note cut off mid-sentence loses exactly the actionable half — "install
-    // paru, yay or" tells you nothing — so the rows come out of the sources
-    // table, which is `Min` and can spare them.
-    let system_height = if app.selected_aur_note().is_some() {
-        10
-    } else {
-        8
-    };
-    let left =
-        Layout::vertical([Constraint::Min(5), Constraint::Length(system_height)]).split(cols[0]);
+    let left = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(cols[0]);
     let right = Layout::vertical([Constraint::Min(5), Constraint::Length(5)]).split(cols[1]);
 
     let sources_focused = app.dash_focus() == crate::tui::app::DashPane::Sources;
@@ -515,10 +505,10 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(note) = app.selected_aur_note() {
         lines.push(Line::from(Span::styled(note, theme.accent)));
     }
-    frame.render_widget(
-        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
-        inner,
-    );
+    // Deliberately unwrapped: the pane has exactly one row to spare and the
+    // compact note is written to fit it. Wrapping would push the last row out
+    // of a fixed-height pane, which is how a clipped half-sentence happens.
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Pending-updates pane: grouped per source, capped per group.
@@ -2631,14 +2621,14 @@ mod tests {
         let text = render(&app, 110, 30);
         assert!(text.contains("no helper"), "status column:\n{text}");
         assert!(
-            !text.contains("install paru, yay or pikaur"),
+            !text.contains("install paru/yay/pikaur"),
             "note must wait for the aur row to be selected:\n{text}"
         );
 
         select_aur(&mut app);
         let text = render(&app, 110, 30);
         assert!(
-            text.contains("install paru, yay or pikaur"),
+            text.contains("install paru/yay/pikaur"),
             "note missing once aur is selected:\n{text}"
         );
     }
@@ -2674,14 +2664,13 @@ mod tests {
         });
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         assert!(
-            !render(&app, 110, 30).contains("config asks for yay"),
+            !render(&app, 110, 30).contains("no yay, using paru"),
             "a stale pin must not interrupt the pacman row"
         );
 
         select_aur(&mut app);
         let text = render(&app, 110, 30);
-        assert!(text.contains("config asks for yay"), "{text}");
-        assert!(text.contains("using paru"), "{text}");
+        assert!(text.contains("no yay, using paru"), "{text}");
     }
 
     /// Selecting a healthy source must not carry the aur note along with it —
@@ -2700,11 +2689,11 @@ mod tests {
         });
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         select_aur(&mut app);
-        assert!(render(&app, 110, 30).contains("install paru, yay or pikaur"));
+        assert!(render(&app, 110, 30).contains("install paru/yay/pikaur"));
 
         app.on_prev();
         assert!(
-            !render(&app, 110, 30).contains("install paru, yay or pikaur"),
+            !render(&app, 110, 30).contains("install paru/yay/pikaur"),
             "note should be gone once another source is selected"
         );
     }
