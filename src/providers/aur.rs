@@ -69,7 +69,8 @@ impl AurHelper {
 
 /// What [`choose`] decided, and why — the "why" exists so the caller can say
 /// so rather than silently doing something other than what the config asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HelperChoice {
     /// Nothing configured; this is the first helper found on `PATH`.
     Detected(AurHelper),
@@ -81,6 +82,7 @@ pub enum HelperChoice {
     /// Configured but not installed, and nothing else is either.
     ConfiguredMissing { configured: String },
     /// Nothing configured and no helper on `PATH`.
+    #[default]
     None,
 }
 
@@ -91,6 +93,31 @@ impl HelperChoice {
             HelperChoice::Detected(h) | HelperChoice::Pinned(h) => Some(*h),
             HelperChoice::FellBack { to, .. } => Some(*to),
             HelperChoice::ConfiguredMissing { .. } | HelperChoice::None => None,
+        }
+    }
+
+    /// The one-line explanation the dashboard and `paclens status` both print,
+    /// or `None` when there is nothing to explain.
+    ///
+    /// Shared rather than written twice so the two surfaces cannot drift (P5).
+    /// It names the capability that is missing and what restores it — design
+    /// §3 rules out a bare "optional dependency missing", because a source
+    /// reading "not found" tells you nothing about what to do next.
+    ///
+    /// Deliberately plain ASCII: `--no-color` also switches to ASCII glyphs,
+    /// and a note is no place for a character that renders as a box.
+    pub fn note(&self) -> Option<String> {
+        const INSTALL: &str = "install paru, yay or pikaur for update detection";
+        match self {
+            HelperChoice::Detected(_) | HelperChoice::Pinned(_) => Option::None,
+            HelperChoice::FellBack { configured, to } => Some(format!(
+                "aur: config asks for {configured}, which is not installed; using {}",
+                to.bin()
+            )),
+            HelperChoice::ConfiguredMissing { configured } => Some(format!(
+                "aur: config asks for {configured}, which is not installed; {INSTALL}"
+            )),
+            HelperChoice::None => Some(format!("aur: {INSTALL}")),
         }
     }
 }
@@ -266,6 +293,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A working helper has nothing to explain; every degraded state does, and
+    /// the sentence has to name what is missing and what restores it rather
+    /// than leaving a bare "not found" (design §3).
+    #[test]
+    fn only_degraded_choices_carry_a_note() {
+        assert_eq!(HelperChoice::Detected(AurHelper::Paru).note(), None);
+        assert_eq!(HelperChoice::Pinned(AurHelper::Yay).note(), None);
+
+        let none = HelperChoice::None.note().expect("no helper needs a note");
+        assert!(none.contains("paru"), "{none}");
+        assert!(none.contains("yay"), "{none}");
+        assert!(none.contains("pikaur"), "{none}");
+        assert!(none.contains("update detection"), "{none}");
+
+        let fell_back = HelperChoice::FellBack {
+            configured: "yay".to_string(),
+            to: AurHelper::Paru,
+        }
+        .note()
+        .expect("a stale pin needs a note");
+        assert!(fell_back.contains("yay"), "must name what was configured");
+        assert!(fell_back.contains("paru"), "must name what is being used");
+
+        let missing = HelperChoice::ConfiguredMissing {
+            configured: "trizen".to_string(),
+        }
+        .note()
+        .expect("an unusable pin needs a note");
+        assert!(missing.contains("trizen"), "{missing}");
+        assert!(missing.contains("update detection"), "{missing}");
+    }
+
+    /// `--no-color` also switches to ASCII glyphs, so a note carrying an em
+    /// dash or any other non-ASCII character would render as a box there.
+    #[test]
+    fn notes_are_plain_ascii() {
+        let choices = [
+            HelperChoice::None,
+            HelperChoice::FellBack {
+                configured: "yay".to_string(),
+                to: AurHelper::Paru,
+            },
+            HelperChoice::ConfiguredMissing {
+                configured: "trizen".to_string(),
+            },
+        ];
+        for c in choices {
+            let note = c.note().expect("degraded");
+            assert!(note.is_ascii(), "note must be ASCII: {note:?}");
+        }
+    }
+
+    /// The cache round-trips the whole choice, not just the resolved helper —
+    /// dropping the configured name is what would make the stale-pin note
+    /// impossible to write on a cached scan.
+    #[test]
+    fn a_stale_pin_survives_the_cache_round_trip() {
+        let original = HelperChoice::FellBack {
+            configured: "yay".to_string(),
+            to: AurHelper::Paru,
+        };
+        let toml = toml::to_string(&Wrapper {
+            choice: original.clone(),
+        })
+        .expect("serialize");
+        let back: Wrapper = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(back.choice, original);
+        assert_eq!(back.choice.helper(), Some(AurHelper::Paru));
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Wrapper {
+        choice: HelperChoice,
     }
 
     #[test]

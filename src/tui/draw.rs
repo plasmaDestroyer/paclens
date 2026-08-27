@@ -626,6 +626,35 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let rows = app.rows();
 
+    // Why the aur source is degraded, and what fixes it. Same sentence the
+    // CLI prints (P5). It only gets room when the pane can spare it — the
+    // table is the thing you came for, and a note that squeezes rows out is
+    // worse than no note.
+    let aur_id = crate::model::SourceId::aur().to_string();
+    let note = rows
+        .iter()
+        .any(|r| r.id == aur_id)
+        .then(|| app.scan().aur_helper.note())
+        .flatten();
+    let (area, note_area) = match (&note, area.height) {
+        (Some(_), h) if h >= 5 => {
+            let v = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).split(area);
+            (v[0], Some(v[1]))
+        }
+        (Some(_), h) if h >= 4 => {
+            let v = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
+            (v[0], Some(v[1]))
+        }
+        _ => (area, None),
+    };
+    if let (Some(note), Some(note_area)) = (note, note_area) {
+        frame.render_widget(
+            Paragraph::new(Span::styled(note, theme.dim))
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+            note_area,
+        );
+    }
+
     if rows.is_empty() {
         frame.render_widget(
             Paragraph::new("No package sources detected.")
@@ -650,11 +679,19 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
         .map(|r| {
             // "ok / not found", not "available": next to the UPDATES column
             // that read like "updates available" (wording chosen with the user).
+            // "no helper" rather than the generic "not found", but only when
+            // the helper is actually the reason — a missing pacman takes the
+            // aur source down too, and that is a different sentence.
             let status = if r.available {
                 Span::styled(format!("{} ok", theme.glyphs.available), theme.success)
             } else {
+                let reason = if r.id == aur_id && app.scan().aur_helper.helper().is_none() {
+                    "no helper"
+                } else {
+                    "not found"
+                };
                 Span::styled(
-                    format!("{} not found", theme.glyphs.unavailable),
+                    format!("{} {reason}", theme.glyphs.unavailable),
                     theme.unavailable,
                 )
             };
@@ -1188,7 +1225,7 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![kv("pacman cache", pacman_cache)];
     // Named for the helper actually in use — "paru build cache" on a machine
     // with only yay is a figure attributed to the wrong tool.
-    let aur_helper = app.scan().aur_helper;
+    let aur_helper = app.scan().aur_helper.helper();
     if let (Some(b), Some(helper)) = (sizes.aur_cache_bytes, aur_helper) {
         lines.push(kv(
             &format!("{} build cache", helper.bin()),
@@ -1770,7 +1807,9 @@ mod tests {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
-            aur_helper: Some(crate::providers::aur::AurHelper::Paru),
+            aur_helper: crate::providers::aur::HelperChoice::Detected(
+                crate::providers::aur::AurHelper::Paru,
+            ),
         }
     }
 
@@ -2582,6 +2621,63 @@ mod tests {
         assert!(text.contains("o overlaps"), "hint missing:\n{text}");
     }
 
+    /// The dashboard says the same thing `paclens status` does (P5): which
+    /// capability the missing helper costs, and what restores it.
+    #[test]
+    fn dashboard_names_a_missing_helper_and_the_fix() {
+        use crate::providers::aur::HelperChoice;
+        let mut s = scan_with(Vec::new());
+        s.aur_helper = HelperChoice::None;
+        s.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: false,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        let app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 110, 30);
+        assert!(text.contains("no helper"), "status column:\n{text}");
+        assert!(
+            text.contains("install paru, yay or pikaur"),
+            "note missing:\n{text}"
+        );
+    }
+
+    /// A stale pin is surfaced on the dashboard too, even though the source is
+    /// working — silently using a helper other than the configured one is the
+    /// unexplained behaviour design §2 rules out.
+    #[test]
+    fn dashboard_reports_a_stale_pin() {
+        use crate::providers::aur::{AurHelper, HelperChoice};
+        let mut s = scan_with(Vec::new());
+        s.aur_helper = HelperChoice::FellBack {
+            configured: "yay".to_string(),
+            to: AurHelper::Paru,
+        };
+        s.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: true,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        let app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 110, 30);
+        assert!(text.contains("config asks for yay"), "{text}");
+        assert!(text.contains("using paru"), "{text}");
+    }
+
+    /// On a healthy system the note is absent — it must not eat a row of the
+    /// sources pane permanently.
+    #[test]
+    fn dashboard_prints_no_note_when_the_helper_is_fine() {
+        let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        let text = render(&app, 110, 30);
+        assert!(!text.contains("aur:"), "unexpected note:\n{text}");
+        assert!(!text.contains("no helper"), "{text}");
+    }
+
     // --- cleanup screen ---
 
     /// The build-cache row and its suggestion name the helper actually in use.
@@ -2591,7 +2687,8 @@ mod tests {
     #[test]
     fn cache_pane_names_the_helper_in_use_not_paru() {
         let mut s = scan_with(Vec::new());
-        s.aur_helper = Some(crate::providers::aur::AurHelper::Yay);
+        s.aur_helper =
+            crate::providers::aur::HelperChoice::Detected(crate::providers::aur::AurHelper::Yay);
         s.cache_sizes.aur_cache_bytes = Some(9_000_000_000);
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.open_cleanup();
@@ -2609,7 +2706,7 @@ mod tests {
     #[test]
     fn cache_pane_omits_the_build_cache_without_a_helper() {
         let mut s = scan_with(Vec::new());
-        s.aur_helper = None;
+        s.aur_helper = crate::providers::aur::HelperChoice::None;
         s.cache_sizes.aur_cache_bytes = Some(9_000_000_000);
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.open_cleanup();

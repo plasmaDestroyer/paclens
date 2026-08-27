@@ -104,7 +104,7 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
         pacman_available,
         flatpak_available,
         checkupdates,
-        helper.helper(),
+        helper,
         home_dir.as_deref(),
     )
 }
@@ -123,7 +123,7 @@ fn assemble(
     pacman_available: bool,
     flatpak_available: bool,
     checkupdates_available: bool,
-    aur_helper: Option<aur::AurHelper>,
+    aur_helper: aur::HelperChoice,
     home_dir: Option<&Path>,
 ) -> ScanResult {
     let now = Utc::now();
@@ -154,7 +154,8 @@ fn assemble(
             let sizes = gather_profile_sizes(runner, flatpak_profile_dir, &pkgs);
             (pkgs, ups, sizes)
         });
-        let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman, aur_helper, home_dir));
+        let du_lane =
+            s.spawn(|| gather_cache_sizes(runner, scan_pacman, aur_helper.helper(), home_dir));
         let aur_lane = s.spawn(|| {
             if !scan_aur {
                 return (std::collections::HashSet::new(), Vec::new());
@@ -166,7 +167,7 @@ fn assemble(
                     return (std::collections::HashSet::new(), Vec::new());
                 }
             };
-            let updates = if let Some(helper) = aur_helper {
+            let updates = if let Some(helper) = aur_helper.helper() {
                 match aur::scan_updates(runner, helper, config.scan.aur_devel) {
                     Ok(ups) => ups,
                     Err(err) => {
@@ -214,7 +215,7 @@ fn assemble(
         sources.push(Source {
             id: SourceId::aur(),
             kind: SourceKind::Aur,
-            available: aur_helper.is_some() && pacman_available,
+            available: aur_helper.helper().is_some() && pacman_available,
             last_scanned: scan_aur.then_some(now),
             accurate_updates: true,
         });
@@ -458,6 +459,7 @@ fn is_flatpak(id: &SourceId) -> bool {
 mod tests {
     use super::*;
     use crate::model::InstallReason;
+    use crate::providers::aur::HelperChoice as HC;
     use crate::providers::test_support::MockRunner;
 
     const QI_SMALL: &str = include_str!("../../tests/fixtures/pacman/qi_small_system.txt");
@@ -504,7 +506,7 @@ mod tests {
             true,
             true,
             true,
-            None,
+            HC::None,
             Some(Path::new("/home/t")),
         );
         assert_eq!(
@@ -559,7 +561,7 @@ mod tests {
             true,
             true,
             true,
-            None,
+            HC::None,
             Some(Path::new("/home/t")),
         );
         assert_eq!(scan.profile_dir_sizes.get("~/.mozilla"), Some(&1200));
@@ -580,7 +582,15 @@ mod tests {
         // No home dir → nothing measured even with an overlap present.
         let qi = format!("{QI_SMALL}\n{FIREFOX_QI}");
         let runner = full_runner().with("pacman -Qi", &qi, 0);
-        let scan = assemble(&runner, &Config::default(), true, true, true, None, None);
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            HC::None,
+            None,
+        );
         assert!(scan.profile_dir_sizes.is_empty());
 
         // No overlaps (stock fixtures) → no du probes issued at all.
@@ -590,7 +600,7 @@ mod tests {
             true,
             true,
             true,
-            None,
+            HC::None,
             Some(Path::new("/home/t")),
         );
         assert!(scan.profile_dir_sizes.is_empty());
@@ -604,7 +614,7 @@ mod tests {
             true,
             true,
             true,
-            None,
+            HC::None,
             None,
         );
         assert!(scan.flatpak_profile_sizes.is_empty());
@@ -627,7 +637,7 @@ mod tests {
             true,
             true,
             true,
-            Some(aur::AurHelper::Paru),
+            HC::Detected(aur::AurHelper::Paru),
             None,
         );
         let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
@@ -673,10 +683,10 @@ mod tests {
             true,
             false,
             false,
-            Some(aur::AurHelper::Yay),
+            HC::Detected(aur::AurHelper::Yay),
             None,
         );
-        assert_eq!(scan.aur_helper, Some(aur::AurHelper::Yay));
+        assert_eq!(scan.aur_helper.helper(), Some(aur::AurHelper::Yay));
         assert!(
             scan.updates.iter().any(|u| u.source_id == SourceId::aur()),
             "yay -Qua should have produced aur updates"
@@ -689,8 +699,16 @@ mod tests {
             MockRunner::new()
                 .with("pacman -Qi", QI_SMALL, 0)
                 .with("pacman -Qm", "bash 5.2-1\n", 0);
-        let scan = assemble(&runner, &Config::default(), true, false, false, None, None);
-        assert_eq!(scan.aur_helper, None);
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            false,
+            false,
+            HC::None,
+            None,
+        );
+        assert_eq!(scan.aur_helper.helper(), None);
         let aur_source = scan
             .sources
             .iter()
@@ -703,7 +721,15 @@ mod tests {
     #[test]
     fn missing_paru_lists_foreign_packages_but_no_updates() {
         let runner = full_runner().with("pacman -Qm", "bash 5.2-1\n", 0);
-        let scan = assemble(&runner, &Config::default(), true, true, true, None, None);
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            HC::None,
+            None,
+        );
         let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
         assert_eq!(
             bash.source_id,
@@ -730,7 +756,7 @@ mod tests {
             true,
             true,
             true,
-            Some(aur::AurHelper::Paru),
+            HC::Detected(aur::AurHelper::Paru),
             None,
         );
         let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
@@ -750,7 +776,7 @@ mod tests {
             true,
             true,
             true,
-            Some(aur::AurHelper::Paru),
+            HC::Detected(aur::AurHelper::Paru),
             None,
         );
         // None of the live foreign names exist in QI_SMALL — no relabels,
@@ -772,7 +798,7 @@ mod tests {
             true,
             true,
             true,
-            None,
+            HC::None,
             None,
         );
         // pacman + aur + flatpak-user + flatpak-system
@@ -799,7 +825,7 @@ mod tests {
             true,
             true,
             true,
-            None,
+            HC::None,
             None,
         );
         let pacman = with
@@ -815,7 +841,7 @@ mod tests {
             true,
             true,
             false,
-            None,
+            HC::None,
             None,
         );
         let pacman = without
@@ -838,7 +864,7 @@ mod tests {
     fn assemble_respects_disabled_pacman_source() {
         let mut config = Config::default();
         config.sources.pacman = false;
-        let scan = assemble(&full_runner(), &config, true, true, true, None, None);
+        let scan = assemble(&full_runner(), &config, true, true, true, HC::None, None);
         assert!(scan.sources.iter().all(|s| s.id != SourceId::pacman()));
         assert!(
             scan.packages
@@ -853,7 +879,7 @@ mod tests {
     fn assemble_omits_flatpak_scopes_when_excluded() {
         let mut config = Config::default();
         config.scan.flatpak_include_system = false;
-        let scan = assemble(&full_runner(), &config, true, true, true, None, None);
+        let scan = assemble(&full_runner(), &config, true, true, true, HC::None, None);
         assert!(
             scan.sources
                 .iter()
@@ -875,7 +901,15 @@ mod tests {
             .with(FP_LIST_KEY, FP_LIST, 0)
             .with(FP_RUNTIME_KEY, "", 0)
             .with(FP_UPDATES_KEY, FP_UPDATES, 0);
-        let scan = assemble(&runner, &Config::default(), true, true, true, None, None);
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            HC::None,
+            None,
+        );
         assert!(
             scan.packages
                 .iter()
@@ -893,7 +927,7 @@ mod tests {
             false,
             false,
             false,
-            None,
+            HC::None,
             None,
         );
         assert!(scan.packages.is_empty());
@@ -942,7 +976,7 @@ mod tests {
             true,
             true,
             true,
-            Some(aur::AurHelper::Paru),
+            HC::Detected(aur::AurHelper::Paru),
             Some(Path::new("/home/t")),
         );
         assert_eq!(
@@ -958,7 +992,7 @@ mod tests {
             true,
             true,
             true,
-            Some(aur::AurHelper::Paru),
+            HC::Detected(aur::AurHelper::Paru),
             None,
         );
         assert_eq!(scan.cache_sizes.pacman_cache_reclaimable_bytes, None);
@@ -983,7 +1017,7 @@ mod tests {
             true,
             true,
             true,
-            Some(aur::AurHelper::Yay),
+            HC::Detected(aur::AurHelper::Yay),
             Some(Path::new("/home/t")),
         );
         assert_eq!(scan.cache_sizes.aur_cache_bytes, Some(700));
@@ -1005,7 +1039,7 @@ mod tests {
             true,
             true,
             true,
-            None,
+            HC::None,
             Some(Path::new("/home/t")),
         );
         assert_eq!(scan.cache_sizes.aur_cache_bytes, None);

@@ -113,7 +113,14 @@ impl Styles {
 
     /// "<glyph> not found" — the source's binary is not on PATH, dim.
     pub fn unavailable(&self) -> String {
-        let text = format!("{} not found", self.glyphs.unavailable);
+        self.unavailable_because("not found")
+    }
+
+    /// The same dim unavailable marker, with a reason that names the missing
+    /// thing rather than the generic "not found" (design §3). The AUR source
+    /// uses "no helper", because "not found" says nothing about what to do.
+    pub fn unavailable_because(&self, reason: &str) -> String {
+        let text = format!("{} {reason}", self.glyphs.unavailable);
         self.dim(&text)
     }
 

@@ -176,7 +176,9 @@ mod tests {
             },
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
-            aur_helper: Some(crate::providers::aur::AurHelper::Paru),
+            aur_helper: crate::providers::aur::HelperChoice::Detected(
+                crate::providers::aur::AurHelper::Paru,
+            ),
         }
     }
 

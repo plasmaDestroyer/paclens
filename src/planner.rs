@@ -44,7 +44,7 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
             // be unreachable here, since a scan with no helper marks the aur
             // source unavailable and the loop already skipped it — but the
             // plan is what the user is asked to confirm, so it invents nothing.
-            SourceKind::Aur => match scan.aur_helper {
+            SourceKind::Aur => match scan.aur_helper.helper() {
                 Some(helper) => (aur::update_command(helper), false),
                 None => continue,
             },
@@ -304,7 +304,9 @@ mod tests {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
-            aur_helper: Some(crate::providers::aur::AurHelper::Paru),
+            aur_helper: crate::providers::aur::HelperChoice::Detected(
+                crate::providers::aur::AurHelper::Paru,
+            ),
         }
     }
 
@@ -314,6 +316,11 @@ mod tests {
 
     /// A scan with one pending AUR update, driven by `helper`.
     fn aur_scan(helper: Option<crate::providers::aur::AurHelper>) -> ScanResult {
+        use crate::providers::aur::HelperChoice;
+        let helper = match helper {
+            Some(h) => HelperChoice::Detected(h),
+            None => HelperChoice::None,
+        };
         let mut scan = scan();
         scan.sources
             .push(source(SourceId::aur(), SourceKind::Aur, true));
@@ -440,7 +447,9 @@ mod tests {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
-            aur_helper: Some(crate::providers::aur::AurHelper::Paru),
+            aur_helper: crate::providers::aur::HelperChoice::Detected(
+                crate::providers::aur::AurHelper::Paru,
+            ),
         };
         let plan = plan_updates(&empty, enable_all);
         assert!(plan.is_empty());

@@ -75,15 +75,26 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     out.push_str(&render_row("pacman", &pacman, s));
     out.push('\n');
     // The aur row only exists when the source is configured (v0.3).
-    if scan.sources.iter().any(|src| src.id == SourceId::aur()) {
+    let aur_shown = scan.sources.iter().any(|src| src.id == SourceId::aur());
+    if aur_shown {
         let aur = summarize(scan, |id| id == &SourceId::aur());
-        out.push_str(&render_row("aur", &aur, s));
+        // "no helper" rather than "not found" — but only when the helper is
+        // actually the reason. A missing pacman makes the aur source
+        // unavailable too, and that is a different sentence.
+        let reason = (scan.aur_helper.helper().is_none()).then_some("no helper");
+        out.push_str(&render_row_because("aur", &aur, reason, s));
         out.push('\n');
     }
     out.push_str(&render_row("flatpak", &flatpak, s));
     out.push('\n');
 
     out.push('\n');
+    // Why the aur source is degraded, and what fixes it. Shared with the TUI
+    // dashboard so the two can never word it differently (P5).
+    if aur_shown && let Some(note) = scan.aur_helper.note() {
+        out.push_str(&s.dim(&format!("  {note}")));
+        out.push('\n');
+    }
     let mut meta = Vec::new();
     if let Some(bytes) = scan.cache_sizes.pacman_cache_bytes {
         meta.push(format!("cache {}", human_bytes(bytes)));
@@ -99,12 +110,23 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
 /// padded to the column width *before* styling so ANSI codes never break the
 /// alignment.
 fn render_row(name: &str, summary: &SourceSummary, s: &Styles) -> String {
+    render_row_because(name, summary, None, s)
+}
+
+/// [`render_row`], with an optional reason replacing the generic "not found".
+/// Ignored when the source is available — there is nothing to explain.
+fn render_row_because(
+    name: &str,
+    summary: &SourceSummary,
+    reason: Option<&str>,
+    s: &Styles,
+) -> String {
     let installed = format!("{:>9}", summary.installed);
     let updates = s.updates_count(&format!("{:>7}", summary.updates), summary.updates);
-    let status = if summary.available {
-        s.available()
-    } else {
-        s.unavailable()
+    let status = match (summary.available, reason) {
+        (true, _) => s.available(),
+        (false, Some(reason)) => s.unavailable_because(reason),
+        (false, None) => s.unavailable(),
     };
     format!("  {name:<8} {installed}  {updates}  {status}")
 }
@@ -186,7 +208,9 @@ mod tests {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
-            aur_helper: Some(crate::providers::aur::AurHelper::Paru),
+            aur_helper: crate::providers::aur::HelperChoice::Detected(
+                crate::providers::aur::AurHelper::Paru,
+            ),
         }
     }
 
@@ -297,5 +321,86 @@ mod tests {
         let s = plain_styles();
         let scan = scan_with(vec![pkg("a", SourceId::pacman())], Vec::new(), true);
         assert!(!render_status(&scan, &s).contains('\u{1b}'));
+    }
+
+    /// A degraded aur source says which capability is missing and what
+    /// restores it. "not found" alone is the generic note design §3 rules out
+    /// — it tells you nothing about what to do next.
+    #[test]
+    fn a_missing_helper_names_itself_and_the_fix() {
+        use crate::providers::aur::HelperChoice;
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        scan.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: false,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        scan.aur_helper = HelperChoice::None;
+        let out = render_status(&scan, &ascii_styles());
+        assert!(out.contains("no helper"), "status column:\n{out}");
+        assert!(
+            !out.contains("aur") || !out.contains("- not found"),
+            "{out}"
+        );
+        assert!(
+            out.contains("install paru, yay or pikaur for update detection"),
+            "note missing:\n{out}"
+        );
+    }
+
+    /// Using a different helper than the one configured is exactly the
+    /// unexplained behaviour design §2 rules out, so it is said out loud even
+    /// though the source is working.
+    #[test]
+    fn a_stale_pin_is_reported_even_though_the_source_works() {
+        use crate::providers::aur::{AurHelper, HelperChoice};
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        scan.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: true,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        scan.aur_helper = HelperChoice::FellBack {
+            configured: "yay".to_string(),
+            to: AurHelper::Paru,
+        };
+        let out = render_status(&scan, &ascii_styles());
+        assert!(out.contains("* ok"), "source should still read ok:\n{out}");
+        assert!(out.contains("config asks for yay"), "{out}");
+        assert!(out.contains("using paru"), "{out}");
+    }
+
+    /// Nothing to explain, nothing printed — the note must not become a line
+    /// of permanent furniture on a healthy system.
+    #[test]
+    fn a_working_helper_prints_no_note() {
+        use crate::providers::aur::{AurHelper, HelperChoice};
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        scan.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: true,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        scan.aur_helper = HelperChoice::Detected(AurHelper::Paru);
+        let out = render_status(&scan, &ascii_styles());
+        assert!(!out.contains("aur:"), "unexpected note:\n{out}");
+        assert!(!out.contains("no helper"), "{out}");
+    }
+
+    /// No aur source configured at all → no aur row, and so no aur note
+    /// either, whatever the helper state happens to be.
+    #[test]
+    fn no_aur_source_means_no_note() {
+        use crate::providers::aur::HelperChoice;
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        scan.aur_helper = HelperChoice::None;
+        let out = render_status(&scan, &ascii_styles());
+        assert!(!out.contains("aur"), "{out}");
     }
 }

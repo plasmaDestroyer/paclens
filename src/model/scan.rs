@@ -23,7 +23,10 @@ use super::{Package, PendingUpdate, Source};
 /// update step for the one actually installed rather than assuming paru.
 /// v9: `aur_cache_bytes` replaces `paru_cache_bytes` — the build cache follows
 /// the detected helper instead of always being paru's.
-pub const SCHEMA_VERSION: u32 = 9;
+/// v10: `aur_helper` widens from the resolved helper to the whole
+/// `HelperChoice`, so the dashboard can say *why* — a stale pin needs the name
+/// that was configured, which the resolved value has already thrown away.
+pub const SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -44,12 +47,16 @@ pub struct ScanResult {
     /// `analyzer::migrate::probe_paths`; the scanner just measures them.
     #[serde(default)]
     pub profile_dir_sizes: std::collections::HashMap<String, u64>,
-    /// The AUR helper this scan used, or `None` if none is installed. Recorded
-    /// rather than re-detected because the planner is pure over a
-    /// `ScanResult` (P5) — it cannot look at `PATH`, and a plan that names a
-    /// helper the scan did not use would be a plan for a different machine.
+    /// What the AUR helper resolved to, *and how*. Recorded rather than
+    /// re-detected because the planner is pure over a `ScanResult` (P5) — it
+    /// cannot look at `PATH`, and a plan that names a helper the scan did not
+    /// use would be a plan for a different machine.
+    ///
+    /// The whole choice is kept, not just the resolved helper: explaining a
+    /// stale pin needs the name that was *configured*, and resolving throws
+    /// that away.
     #[serde(default)]
-    pub aur_helper: Option<crate::providers::aur::AurHelper>,
+    pub aur_helper: crate::providers::aur::HelperChoice,
 }
 
 impl ScanResult {
@@ -65,7 +72,7 @@ impl ScanResult {
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
-            aur_helper: None,
+            aur_helper: Default::default(),
         }
     }
 }
