@@ -660,21 +660,33 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
         .map(|r| {
             // "ok / not found", not "available": next to the UPDATES column
             // that read like "updates available" (wording chosen with the user).
+            // A source carrying a note is flagged on its own row, whether or
+            // not it still works — a stale pin leaves the aur source perfectly
+            // functional, and without this the only hint lives behind the
+            // cursor. The explanation stays in the system pane; this just says
+            // there is one.
+            let warned = r.id == aur_id && app.scan().aur_helper.note().is_some();
             // "no helper" rather than the generic "not found", but only when
             // the helper is actually the reason — a missing pacman takes the
             // aur source down too, and that is a different sentence.
-            let status = if r.available {
-                Span::styled(format!("{} ok", theme.glyphs.available), theme.success)
-            } else {
-                let reason = if r.id == aur_id && app.scan().aur_helper.helper().is_none() {
-                    "no helper"
-                } else {
-                    "not found"
-                };
-                Span::styled(
-                    format!("{} {reason}", theme.glyphs.unavailable),
-                    theme.unavailable,
-                )
+            let status = match (r.available, warned) {
+                (true, false) => {
+                    Span::styled(format!("{} ok", theme.glyphs.available), theme.success)
+                }
+                (true, true) => Span::styled(format!("{} ok", theme.glyphs.warning), theme.accent),
+                (false, warned) => {
+                    let reason = if r.id == aur_id && app.scan().aur_helper.helper().is_none() {
+                        "no helper"
+                    } else {
+                        "not found"
+                    };
+                    let (glyph, style) = if warned {
+                        (theme.glyphs.warning, theme.accent)
+                    } else {
+                        (theme.glyphs.unavailable, theme.unavailable)
+                    };
+                    Span::styled(format!("{glyph} {reason}"), style)
+                }
             };
             let updates = if r.updates > 0 {
                 Span::styled(r.updates.to_string(), theme.accent)
@@ -2671,6 +2683,45 @@ mod tests {
         select_aur(&mut app);
         let text = render(&app, 110, 30);
         assert!(text.contains("no yay, using paru"), "{text}");
+    }
+
+    /// The row is marked whatever the cursor is doing. The note is the
+    /// explanation and stays behind the cursor; the marker is the reason you
+    /// would move the cursor there at all.
+    #[test]
+    fn a_degraded_aur_row_is_marked_without_selecting_it() {
+        use crate::providers::aur::{AurHelper, HelperChoice};
+        let mut s = scan_with(Vec::new());
+        s.aur_helper = HelperChoice::FellBack {
+            configured: "yay".to_string(),
+            to: AurHelper::Paru,
+        };
+        s.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: true,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        let app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 110, 30);
+        assert!(source_row(&text, "aur").contains("! ok"));
+        // Not selected, so no explanation yet.
+        assert!(!text.contains("no yay, using paru"), "{text}");
+        // And a healthy source is untouched.
+        assert!(source_row(&text, "pacman").contains("* ok"));
+    }
+
+    /// The dashboard table row for `name`.
+    ///
+    /// Anchored past the SOURCE header on purpose: the updates pane is titled
+    /// " pending updates · pacman ", which a naive line search happily
+    /// mistakes for the pacman row.
+    fn source_row<'a>(text: &'a str, name: &str) -> &'a str {
+        text.lines()
+            .skip_while(|l| !l.contains("SOURCE"))
+            .find(|l| l.contains(&format!(" {name} ")))
+            .unwrap_or_else(|| panic!("no {name} row in:\n{text}"))
     }
 
     /// Selecting a healthy source must not carry the aur note along with it —

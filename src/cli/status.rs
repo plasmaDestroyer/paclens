@@ -82,7 +82,11 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
         // actually the reason. A missing pacman makes the aur source
         // unavailable too, and that is a different sentence.
         let reason = (scan.aur_helper.helper().is_none()).then_some("no helper");
-        out.push_str(&render_row_because("aur", &aur, reason, s));
+        // Flag the row itself whenever there is a note, working or not — a
+        // stale pin leaves the source fine, and the note alone is easy to read
+        // past.
+        let warned = scan.aur_helper.note().is_some();
+        out.push_str(&render_row_because("aur", &aur, reason, warned, s));
         out.push('\n');
     }
     out.push_str(&render_row("flatpak", &flatpak, s));
@@ -110,23 +114,26 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
 /// padded to the column width *before* styling so ANSI codes never break the
 /// alignment.
 fn render_row(name: &str, summary: &SourceSummary, s: &Styles) -> String {
-    render_row_because(name, summary, None, s)
+    render_row_because(name, summary, None, false, s)
 }
 
-/// [`render_row`], with an optional reason replacing the generic "not found".
-/// Ignored when the source is available — there is nothing to explain.
+/// [`render_row`], with an optional reason replacing the generic "not found"
+/// and a `warned` flag that marks the row even when the source still works.
 fn render_row_because(
     name: &str,
     summary: &SourceSummary,
     reason: Option<&str>,
+    warned: bool,
     s: &Styles,
 ) -> String {
     let installed = format!("{:>9}", summary.installed);
     let updates = s.updates_count(&format!("{:>7}", summary.updates), summary.updates);
-    let status = match (summary.available, reason) {
-        (true, _) => s.available(),
-        (false, Some(reason)) => s.unavailable_because(reason),
-        (false, None) => s.unavailable(),
+    let status = match (summary.available, warned, reason) {
+        (true, false, _) => s.available(),
+        (true, true, _) => s.warned("ok"),
+        (false, true, reason) => s.warned(reason.unwrap_or("not found")),
+        (false, false, Some(reason)) => s.unavailable_because(reason),
+        (false, false, None) => s.unavailable(),
     };
     format!("  {name:<8} {installed}  {updates}  {status}")
 }
@@ -402,5 +409,86 @@ mod tests {
         scan.aur_helper = HelperChoice::None;
         let out = render_status(&scan, &ascii_styles());
         assert!(!out.contains("aur"), "{out}");
+    }
+
+    /// A stale pin leaves the source working, so the row would read a clean
+    /// "ok" and the note below it is easy to read straight past. The row
+    /// carries the warning marker itself.
+    #[test]
+    fn a_working_but_degraded_aur_row_is_marked() {
+        use crate::providers::aur::{AurHelper, HelperChoice};
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        scan.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: true,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        scan.aur_helper = HelperChoice::FellBack {
+            configured: "yay".to_string(),
+            to: AurHelper::Paru,
+        };
+        let out = render_status(&scan, &ascii_styles());
+        let row = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("aur"))
+            .expect("aur row");
+        assert!(row.ends_with("! ok"), "row was: {row:?}");
+        // pacman is healthy and must stay unmarked.
+        let pacman = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("pacman"))
+            .expect("pacman row");
+        assert!(pacman.ends_with("* ok"), "row was: {pacman:?}");
+    }
+
+    /// The marker rides on the note, not on availability: every state that
+    /// prints a note marks its row, and every state that does not, does not.
+    #[test]
+    fn the_row_marker_and_the_note_agree() {
+        use crate::providers::aur::{AurHelper, HelperChoice};
+        let cases = [
+            (HelperChoice::Detected(AurHelper::Paru), true, false),
+            (HelperChoice::Pinned(AurHelper::Yay), true, false),
+            (
+                HelperChoice::FellBack {
+                    configured: "yay".to_string(),
+                    to: AurHelper::Paru,
+                },
+                true,
+                true,
+            ),
+            (HelperChoice::None, false, true),
+            (
+                HelperChoice::ConfiguredMissing {
+                    configured: "trizen".to_string(),
+                },
+                false,
+                true,
+            ),
+        ];
+        for (choice, available, expect_mark) in cases {
+            let mut scan = scan_with(Vec::new(), Vec::new(), true);
+            scan.sources.push(Source {
+                id: SourceId::aur(),
+                kind: SourceKind::Aur,
+                available,
+                last_scanned: None,
+                accurate_updates: true,
+            });
+            scan.aur_helper = choice.clone();
+            let out = render_status(&scan, &ascii_styles());
+            let row = out
+                .lines()
+                .find(|l| l.trim_start().starts_with("aur "))
+                .expect("aur row");
+            assert_eq!(row.contains("! "), expect_mark, "{choice:?} row: {row:?}");
+            assert_eq!(
+                out.contains("aur: "),
+                expect_mark,
+                "{choice:?} note presence should match the marker"
+            );
+        }
     }
 }

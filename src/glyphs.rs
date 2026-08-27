@@ -22,6 +22,16 @@ pub struct Glyphs {
     pub check: &'static str,
     /// A failed step. ASCII falls back to `!` since `x` already means checked.
     pub cross: &'static str,
+    /// A source that works but has something to say about it — degraded, not
+    /// broken. ASCII reuses `!`, which also stands in for `cross`; the two
+    /// never share a screen (one is a dashboard row, the other an exec step).
+    ///
+    /// The Unicode form is deliberately East-Asian *Ambiguous* width, like the
+    /// `available`/`unavailable` glyphs it shares a column with. A narrow
+    /// glyph such as `⚠` would misalign against them in any terminal that
+    /// renders Ambiguous as double-width — so matching the siblings beats
+    /// picking the more obvious symbol.
+    pub warning: &'static str,
     /// Animation frames for the background-scan spinner.
     pub spinner: &'static [&'static str],
     /// Tree drawing: mid branch, last branch, continuation pipe, blank indent.
@@ -43,6 +53,7 @@ pub const UNICODE: Glyphs = Glyphs {
     arrow: "→",
     check: "✓",
     cross: "✗",
+    warning: "▲",
     spinner: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
     tree_branch: "├─ ",
     tree_last: "└─ ",
@@ -62,6 +73,7 @@ pub const ASCII: Glyphs = Glyphs {
     arrow: "->",
     check: "x",
     cross: "!",
+    warning: "!",
     spinner: &["|", "/", "-", "\\"],
     tree_branch: "|- ",
     tree_last: "`- ",

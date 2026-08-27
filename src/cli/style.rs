@@ -124,6 +124,14 @@ impl Styles {
         self.dim(&text)
     }
 
+    /// "<warning glyph> <state>" — the source has something to say about it,
+    /// whether or not it still works. Yellow rather than dim: a degraded
+    /// source that keeps working is the case most easily missed.
+    pub fn warned(&self, state: &str) -> String {
+        let text = format!("{} {state}", self.glyphs.warning);
+        self.paint(&text, |t| t.yellow().bold())
+    }
+
     /// A succeeded step / positive mark, in green (not bold — `summary_ok` is
     /// the headline weight).
     pub fn success(&self, s: &str) -> String {
