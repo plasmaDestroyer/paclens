@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Install what is being pushed, so `paclens` on PATH is the last thing that
+# actually landed.
+#
+# This used to be a post-commit hook, which meant an ~80s fat-LTO relink on
+# every commit — and commits here are deliberately granular. A push is the
+# point where a piece of work is finished, which is the granularity worth
+# paying for. (git has no post-push hook; pre-push is the standard place.)
+#
+# Never blocks the push. An install problem is not a reason to refuse to
+# publish work that already passed fmt, clippy and the tests at commit time.
+#
+# Skip with PACLENS_SKIP_HOOKS=1 or PACLENS_NO_INSTALL=1.
+set -uo pipefail
+
+[ "${PACLENS_SKIP_HOOKS:-0}" = "1" ] && exit 0
+[ "${PACLENS_NO_INSTALL:-0}" = "1" ] && exit 0
+
+say() { printf '\033[2mpre-push:\033[0m %s\n' "$1" >&2; }
+
+zero='0000000000000000000000000000000000000000'
+touches_build=0
+pushing=0
+
+# stdin: <local ref> <local oid> <remote ref> <remote oid>, one line per ref.
+while read -r _local_ref local_oid _remote_ref remote_oid; do
+  [ -z "${local_oid:-}" ] && continue
+  # A deleted ref has a zero local oid — nothing to build.
+  [ "$local_oid" = "$zero" ] && continue
+  pushing=1
+  if [ "$remote_oid" = "$zero" ]; then
+    # New branch on the remote: no range to diff against, so just install.
+    touches_build=1
+  elif git diff --name-only "$remote_oid" "$local_oid" 2>/dev/null |
+    grep -qE '\.rs$|^Cargo\.(toml|lock)$|\.toml$'; then
+    touches_build=1
+  fi
+done
+
+# Pushing only tags, or nothing at all.
+[ "$pushing" = "1" ] || exit 0
+if [ "$touches_build" != "1" ]; then
+  say "nothing in this push changes the build — skipping install"
+  exit 0
+fi
+
+say "installing $(git rev-parse --short HEAD) (fat-LTO relink, ~80s) ..."
+if out=$(cargo install --path . --locked --force 2>&1); then
+  say "installed -> $(command -v paclens 2>/dev/null || echo "$HOME/.cargo/bin/paclens")"
+else
+  say "install failed (push continues; binary on PATH is stale):"
+  printf '%s\n' "$out" | grep -E '^(error|warning: )' -A3 | head -20 >&2
+fi
+exit 0
