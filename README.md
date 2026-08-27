@@ -143,7 +143,7 @@ paclens migrate firefox         # where both sides keep data + the steps
 paclens migrate firefox --run   # run the copy: plan, y/N, backup, rollback block
 ```
 
-(The cleanup report is TUI-only for now — press `c` on the dashboard.)
+(Or press `c` on the dashboard for the same report in the TUI.)
 
 `--refresh` forces a re-scan, `--no-color` gives plain ASCII output,
 `--config <path>` uses an alternate config.

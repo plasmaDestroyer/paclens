@@ -1,5 +1,6 @@
 //! CLI entry: argument parsing, the init sequence, and subcommand dispatch.
 
+mod cleanup;
 mod migrate;
 mod overlaps;
 mod status;
@@ -243,7 +244,17 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
-        Command::Cleanup => not_implemented("cleanup", &err_styles),
+        Command::Cleanup => {
+            let out_styles = Styles::resolve(
+                cli.no_color,
+                config.general.color_theme(),
+                std::io::stdout().is_terminal(),
+            );
+            report(
+                cleanup::run(&config, cli.refresh, config_path.as_deref(), &out_styles),
+                &err_styles,
+            )
+        }
     }
 }
 
@@ -256,11 +267,6 @@ fn report(result: anyhow::Result<()>, styles: &Styles) -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn not_implemented(name: &str, styles: &Styles) -> ExitCode {
-    eprintln!("{} `{name}` is not implemented yet", styles.dim("paclens:"));
-    ExitCode::FAILURE
 }
 
 #[cfg(test)]

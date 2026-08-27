@@ -60,12 +60,22 @@ fn help_flag_prints_usage_and_succeeds() {
 }
 
 #[test]
-fn unimplemented_subcommand_fails_with_a_clear_message() {
+fn cleanup_prints_a_report_and_succeeds() {
+    // Advisory + read-only, so safe against the host: it reports whatever this
+    // machine has. `cleanup` was the last stubbed subcommand — every one now
+    // has a headless equivalent, so nothing here should print "not
+    // implemented" ever again.
     let home = sandbox("cleanup");
-    let out = run(&home, &["cleanup"]);
-    assert!(!out.status.success());
+    let out = run(&home, &["cleanup", "--no-color"]);
+    assert!(out.status.success(), "cleanup should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not implemented"), "stderr was: {stderr}");
+    assert!(!stderr.contains("not implemented"), "stderr was: {stderr}");
+    assert!(stdout.contains("pacman cache"), "stdout was: {stdout}");
+    assert!(stdout.contains("orphans"), "stdout was: {stdout}");
+    assert!(!stdout.contains('\u{1b}'), "ANSI in no-color: {stdout:?}");
+    // Advisory only: the report may never run anything itself.
+    assert!(!stdout.contains("--noconfirm"), "stdout was: {stdout}");
     let _ = std::fs::remove_dir_all(&home);
 }
 
