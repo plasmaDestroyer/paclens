@@ -21,7 +21,9 @@ use super::{Package, PendingUpdate, Source};
 /// v7: `CacheSizes` reclaimable + paru build cache (0.3.0, cleanup honesty).
 /// v8: `aur_helper` — which helper the scan used, so the planner builds the
 /// update step for the one actually installed rather than assuming paru.
-pub const SCHEMA_VERSION: u32 = 8;
+/// v9: `aur_cache_bytes` replaces `paru_cache_bytes` — the build cache follows
+/// the detected helper instead of always being paru's.
+pub const SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -78,9 +80,11 @@ pub struct CacheSizes {
     /// (v0.5 cleanup honesty; dev-notes 2026-07-14). `None` = no paccache.
     #[serde(default)]
     pub pacman_cache_reclaimable_bytes: Option<u64>,
-    /// `~/.cache/paru` — AUR build cache (clones + built packages).
+    /// `~/.cache/<helper>` — AUR build cache (clones + built packages) for
+    /// whichever helper the scan used. `None` when there is no helper, or the
+    /// directory does not exist yet.
     #[serde(default)]
-    pub paru_cache_bytes: Option<u64>,
+    pub aur_cache_bytes: Option<u64>,
     pub flatpak_unused_runtime_count: Option<u32>,
     pub flatpak_unused_runtime_bytes: Option<u64>,
 }

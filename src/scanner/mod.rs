@@ -154,7 +154,7 @@ fn assemble(
             let sizes = gather_profile_sizes(runner, flatpak_profile_dir, &pkgs);
             (pkgs, ups, sizes)
         });
-        let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman, home_dir));
+        let du_lane = s.spawn(|| gather_cache_sizes(runner, scan_pacman, aur_helper, home_dir));
         let aur_lane = s.spawn(|| {
             if !scan_aur {
                 return (std::collections::HashSet::new(), Vec::new());
@@ -326,10 +326,12 @@ fn join_lane<T: Default>(handle: std::thread::ScopedJoinHandle<'_, T>, lane: &st
 }
 
 /// Gather disk-usage figures: pacman cache total, what paccache would
-/// actually reclaim (v0.5 cleanup honesty), and the paru build cache.
+/// actually reclaim (v0.5 cleanup honesty), and the AUR build cache of
+/// whichever helper is in use.
 fn gather_cache_sizes(
     runner: &dyn CommandRunner,
     pacman_available: bool,
+    aur_helper: Option<aur::AurHelper>,
     home: Option<&Path>,
 ) -> CacheSizes {
     // `du` exits non-zero when a transient root-owned `download-*` subdir is
@@ -345,15 +347,20 @@ fn gather_cache_sizes(
         .then(|| runner.run("paccache", &["-dk2"]))
         .and_then(Result::ok)
         .and_then(|out| parse_paccache_saved(&format!("{}\n{}", out.stdout, out.stderr)));
-    let paru_cache_bytes = home
-        .map(|h| h.join(".cache").join("paru"))
+    // All three helpers keep their build cache at `~/.cache/<binary name>`,
+    // so the binary name is the directory name. No helper means nothing to
+    // measure — an absent number rather than paru's, which would be a figure
+    // for a tool the user does not have (design §3).
+    let aur_cache_bytes = aur_helper
+        .zip(home)
+        .map(|(helper, h)| h.join(".cache").join(helper.bin()))
         .and_then(|dir| dir.to_str().map(String::from))
         .and_then(|dir| runner.run("du", &["-sb", &dir]).ok())
         .and_then(|out| parse_du_bytes(&out.stdout));
     CacheSizes {
         pacman_cache_bytes,
         pacman_cache_reclaimable_bytes,
-        paru_cache_bytes,
+        aur_cache_bytes,
         flatpak_unused_runtime_count: None,
         flatpak_unused_runtime_bytes: None,
     }
@@ -917,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_sizes_include_reclaimable_and_paru_cache() {
+    fn cache_sizes_include_reclaimable_and_the_aur_build_cache() {
         let runner = full_runner()
             .with(
                 "paccache -dk2",
@@ -935,27 +942,73 @@ mod tests {
             true,
             true,
             true,
-            None,
+            Some(aur::AurHelper::Paru),
             Some(Path::new("/home/t")),
         );
         assert_eq!(
             scan.cache_sizes.pacman_cache_reclaimable_bytes,
             Some(100 * 1024 * 1024)
         );
-        assert_eq!(scan.cache_sizes.paru_cache_bytes, Some(9_000_000_000));
+        assert_eq!(scan.cache_sizes.aur_cache_bytes, Some(9_000_000_000));
 
-        // paccache or the paru cache dir missing → honest None.
+        // paccache or the build cache dir missing → honest None.
         let scan = assemble(
             &full_runner(),
             &Config::default(),
             true,
             true,
             true,
-            None,
+            Some(aur::AurHelper::Paru),
             None,
         );
         assert_eq!(scan.cache_sizes.pacman_cache_reclaimable_bytes, None);
-        assert_eq!(scan.cache_sizes.paru_cache_bytes, None);
+        assert_eq!(scan.cache_sizes.aur_cache_bytes, None);
+    }
+
+    /// The build cache measured is the one belonging to the helper actually in
+    /// use. A yay user's `~/.cache/yay` is what counts; paru's directory is not
+    /// consulted, and a `du` mock for it going unused proves the point.
+    #[test]
+    fn the_build_cache_measured_follows_the_detected_helper() {
+        let runner = full_runner()
+            .with("du -sb /home/t/.cache/yay", "700\t/home/t/.cache/yay\n", 0)
+            .with(
+                "du -sb /home/t/.cache/paru",
+                "9000000000\t/home/t/.cache/paru\n",
+                0,
+            );
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            Some(aur::AurHelper::Yay),
+            Some(Path::new("/home/t")),
+        );
+        assert_eq!(scan.cache_sizes.aur_cache_bytes, Some(700));
+    }
+
+    /// With no helper there is no build cache to attribute, so the figure is
+    /// absent rather than paru's — a number for a tool the user does not have
+    /// would be exactly the kind of dishonest total design §3 forbids.
+    #[test]
+    fn no_helper_means_no_build_cache_figure() {
+        let runner = full_runner().with(
+            "du -sb /home/t/.cache/paru",
+            "9000000000\t/home/t/.cache/paru\n",
+            0,
+        );
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            true,
+            true,
+            true,
+            None,
+            Some(Path::new("/home/t")),
+        );
+        assert_eq!(scan.cache_sizes.aur_cache_bytes, None);
     }
 
     #[test]

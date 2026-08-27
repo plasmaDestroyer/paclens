@@ -1186,9 +1186,12 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
         .sum();
 
     let mut lines = vec![kv("pacman cache", pacman_cache)];
-    if let Some(b) = sizes.paru_cache_bytes {
+    // Named for the helper actually in use — "paru build cache" on a machine
+    // with only yay is a figure attributed to the wrong tool.
+    let aur_helper = app.scan().aur_helper;
+    if let (Some(b), Some(helper)) = (sizes.aur_cache_bytes, aur_helper) {
         lines.push(kv(
-            "paru build cache",
+            &format!("{} build cache", helper.bin()),
             vec![Span::styled(crate::format::human_bytes(b), theme.accent)],
         ));
     }
@@ -1223,8 +1226,11 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
         "  flatpak uninstall --unused",
         theme.primary,
     )));
-    if sizes.paru_cache_bytes.is_some() {
-        lines.push(Line::from(Span::styled("  paru -Sc --aur", theme.primary)));
+    if let (Some(_), Some(helper)) = (sizes.aur_cache_bytes, aur_helper) {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", helper.clean_command().join(" ")),
+            theme.primary,
+        )));
     }
     if !app.cleanup_orphans().is_empty() {
         lines.push(Line::from(Span::styled(
@@ -2577,12 +2583,47 @@ mod tests {
     }
 
     // --- cleanup screen ---
+
+    /// The build-cache row and its suggestion name the helper actually in use.
+    /// A yay user reading "paru build cache" would be looking at a figure
+    /// attributed to a tool they do not have, and copying a command that would
+    /// not run (design §3).
+    #[test]
+    fn cache_pane_names_the_helper_in_use_not_paru() {
+        let mut s = scan_with(Vec::new());
+        s.aur_helper = Some(crate::providers::aur::AurHelper::Yay);
+        s.cache_sizes.aur_cache_bytes = Some(9_000_000_000);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 24);
+        assert!(text.contains("yay build cache"), "{text}");
+        assert!(text.contains("yay -Sc --aur"), "{text}");
+        assert!(
+            !text.contains("paru"),
+            "paru must not appear at all:\n{text}"
+        );
+    }
+
+    /// No helper means no build-cache row and no clean suggestion — nothing to
+    /// attribute, so nothing is claimed.
+    #[test]
+    fn cache_pane_omits_the_build_cache_without_a_helper() {
+        let mut s = scan_with(Vec::new());
+        s.aur_helper = None;
+        s.cache_sizes.aur_cache_bytes = Some(9_000_000_000);
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 24);
+        assert!(!text.contains("build cache"), "{text}");
+        assert!(!text.contains("-Sc"), "{text}");
+    }
+
     #[test]
     fn cache_pane_shows_honest_reclaimable_and_paru_cache() {
         let mut s = scan_with(Vec::new());
         s.cache_sizes.pacman_cache_bytes = Some(11_000_000_000);
         s.cache_sizes.pacman_cache_reclaimable_bytes = Some(0);
-        s.cache_sizes.paru_cache_bytes = Some(9_000_000_000);
+        s.cache_sizes.aur_cache_bytes = Some(9_000_000_000);
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.open_cleanup();
         let text = render(&app, 110, 24);

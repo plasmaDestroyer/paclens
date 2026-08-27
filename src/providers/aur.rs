@@ -49,6 +49,22 @@ impl AurHelper {
         let name = name.trim().to_ascii_lowercase();
         AurHelper::ALL.into_iter().find(|h| h.bin() == name)
     }
+
+    /// The suggested cache-clean command for the cleanup screen — copiable
+    /// text the user runs themselves, never executed by paclens.
+    ///
+    /// paru and yay both read `-a`/`--aur` as "restrict this to the AUR", so
+    /// they get it and leave the repo cache to `paccache`. pikaur documents
+    /// `--aur` as a *query* filter only, and its `-Sc` prompts for each cache
+    /// it would clear anyway, so it is suggested bare rather than with a flag
+    /// whose meaning here is unverified.
+    pub fn clean_command(self) -> Vec<String> {
+        let mut cmd = vec![self.bin().to_string(), "-Sc".to_string()];
+        if self != AurHelper::Pikaur {
+            cmd.push("--aur".to_string());
+        }
+        cmd
+    }
 }
 
 /// What [`choose`] decided, and why — the "why" exists so the caller can say
@@ -194,6 +210,90 @@ mod tests {
 
     const QM: &str = include_str!("../../tests/fixtures/aur/qm.txt");
     const QUA: &str = include_str!("../../tests/fixtures/aur/qua.txt");
+    const QUA_YAY: &str = include_str!("../../tests/fixtures/aur/qua_yay.txt");
+    const QUA_PIKAUR: &str = include_str!("../../tests/fixtures/aur/qua_pikaur.txt");
+
+    /// yay appends a `[20h47m]` age column that paru does not emit. The parser
+    /// reads four fields and stops, so the extra one is ignored rather than
+    /// mistaken for a version — captured from real `yay -Qua` output.
+    #[test]
+    fn yay_qua_parses_despite_the_trailing_age_column() {
+        assert!(
+            QUA_YAY.contains('['),
+            "fixture must still carry the age column"
+        );
+        let runner = MockRunner::new().with("yay -Qua", QUA_YAY, 0);
+        let ups = scan_updates(&runner, AurHelper::Yay, false).unwrap();
+        assert_eq!(ups.len(), 2);
+        assert_eq!(ups[0].package_name, "t3code-bin");
+        assert_eq!(ups[0].current_version, "0.0.33-1");
+        assert_eq!(ups[0].available_version, "0.0.34-1");
+        assert_eq!(ups[0].source_id, SourceId::aur());
+    }
+
+    /// pikaur indents every row and pads to aligned columns. `split_whitespace`
+    /// skips both, but that is worth pinning: a switch to `split(' ')` would
+    /// silently produce empty package names — captured from real output.
+    #[test]
+    fn pikaur_qua_parses_despite_indentation_and_column_padding() {
+        assert!(
+            QUA_PIKAUR.starts_with(' '),
+            "fixture must still carry the leading indent"
+        );
+        let runner = MockRunner::new().with("pikaur -Qua", QUA_PIKAUR, 0);
+        let ups = scan_updates(&runner, AurHelper::Pikaur, false).unwrap();
+        assert_eq!(ups.len(), 2);
+        assert_eq!(ups[0].package_name, "t3code-bin");
+        assert_eq!(ups[0].available_version, "0.0.34-1");
+        assert!(ups.iter().all(|u| !u.package_name.is_empty()));
+    }
+
+    /// paru and yay both exit 1 with no output when nothing is out of date;
+    /// pikaur's behaviour there could not be produced on the capture machine,
+    /// so both endings are accepted. Either way the answer is "no updates",
+    /// never an error.
+    #[test]
+    fn no_updates_is_empty_for_every_helper_on_either_ending() {
+        for helper in AurHelper::ALL {
+            for code in [0, 1] {
+                let runner = MockRunner::new().with(&format!("{} -Qua", helper.bin()), "", code);
+                assert!(
+                    scan_updates(&runner, helper, false)
+                        .unwrap_or_else(|e| panic!("{} exit {code}: {e}", helper.bin()))
+                        .is_empty(),
+                    "{} exit {code} should mean no updates",
+                    helper.bin()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clean_command_restricts_to_the_aur_where_the_helper_supports_it() {
+        assert_eq!(
+            AurHelper::Paru.clean_command(),
+            vec!["paru", "-Sc", "--aur"]
+        );
+        assert_eq!(AurHelper::Yay.clean_command(), vec!["yay", "-Sc", "--aur"]);
+        // pikaur reads --aur as a query filter only, so it is left off.
+        assert_eq!(AurHelper::Pikaur.clean_command(), vec!["pikaur", "-Sc"]);
+    }
+
+    /// Whatever the helper, the suggestion must never carry --noconfirm: the
+    /// cleanup screen hands the user text to review, not a command to trust.
+    #[test]
+    fn no_clean_command_suppresses_confirmation() {
+        for helper in AurHelper::ALL {
+            assert!(
+                !helper
+                    .clean_command()
+                    .iter()
+                    .any(|a| a.contains("noconfirm")),
+                "{} clean command must still prompt",
+                helper.bin()
+            );
+        }
+    }
 
     #[test]
     fn foreign_names_reads_qm() {
