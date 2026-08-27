@@ -255,7 +255,17 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
 
     let cols =
         Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).split(inner);
-    let left = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(cols[0]);
+    // The system pane grows to fit the helper note rather than clipping it.
+    // A note cut off mid-sentence loses exactly the actionable half — "install
+    // paru, yay or" tells you nothing — so the rows come out of the sources
+    // table, which is `Min` and can spare them.
+    let system_height = if app.selected_aur_note().is_some() {
+        10
+    } else {
+        8
+    };
+    let left =
+        Layout::vertical([Constraint::Min(5), Constraint::Length(system_height)]).split(cols[0]);
     let right = Layout::vertical([Constraint::Min(5), Constraint::Length(5)]).split(cols[1]);
 
     let sources_focused = app.dash_focus() == crate::tui::app::DashPane::Sources;
@@ -499,7 +509,16 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
             theme.accent,
         )));
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    // Why the aur source is degraded, shown only while it is the selected row
+    // (the pane already follows the sources cursor) and in accent rather than
+    // dim: it is the one line here that asks the user to do something.
+    if let Some(note) = app.selected_aur_note() {
+        lines.push(Line::from(Span::styled(note, theme.accent)));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
+        inner,
+    );
 }
 
 /// Pending-updates pane: grouped per source, capped per group.
@@ -626,35 +645,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let rows = app.rows();
 
-    // Why the aur source is degraded, and what fixes it. Same sentence the
-    // CLI prints (P5). It only gets room when the pane can spare it — the
-    // table is the thing you came for, and a note that squeezes rows out is
-    // worse than no note.
     let aur_id = crate::model::SourceId::aur().to_string();
-    let note = rows
-        .iter()
-        .any(|r| r.id == aur_id)
-        .then(|| app.scan().aur_helper.note())
-        .flatten();
-    let (area, note_area) = match (&note, area.height) {
-        (Some(_), h) if h >= 5 => {
-            let v = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).split(area);
-            (v[0], Some(v[1]))
-        }
-        (Some(_), h) if h >= 4 => {
-            let v = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
-            (v[0], Some(v[1]))
-        }
-        _ => (area, None),
-    };
-    if let (Some(note), Some(note_area)) = (note, note_area) {
-        frame.render_widget(
-            Paragraph::new(Span::styled(note, theme.dim))
-                .wrap(ratatui::widgets::Wrap { trim: true }),
-            note_area,
-        );
-    }
-
     if rows.is_empty() {
         frame.render_widget(
             Paragraph::new("No package sources detected.")
@@ -2635,13 +2626,32 @@ mod tests {
             last_scanned: None,
             accurate_updates: true,
         });
-        let app = App::new(s, Theme::none(), AppOptions::test());
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        // The status column says it regardless of the cursor.
         let text = render(&app, 110, 30);
         assert!(text.contains("no helper"), "status column:\n{text}");
         assert!(
-            text.contains("install paru, yay or pikaur"),
-            "note missing:\n{text}"
+            !text.contains("install paru, yay or pikaur"),
+            "note must wait for the aur row to be selected:\n{text}"
         );
+
+        select_aur(&mut app);
+        let text = render(&app, 110, 30);
+        assert!(
+            text.contains("install paru, yay or pikaur"),
+            "note missing once aur is selected:\n{text}"
+        );
+    }
+
+    /// Walk the sources cursor to the aur row.
+    fn select_aur(app: &mut App) {
+        for _ in 0..app.rows().len() {
+            if app.dash_source().map(|s| s.id.clone()) == Some(SourceId::aur()) {
+                return;
+            }
+            app.on_next();
+        }
+        panic!("no aur row to select");
     }
 
     /// A stale pin is surfaced on the dashboard too, even though the source is
@@ -2662,10 +2672,41 @@ mod tests {
             last_scanned: None,
             accurate_updates: true,
         });
-        let app = App::new(s, Theme::none(), AppOptions::test());
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        assert!(
+            !render(&app, 110, 30).contains("config asks for yay"),
+            "a stale pin must not interrupt the pacman row"
+        );
+
+        select_aur(&mut app);
         let text = render(&app, 110, 30);
         assert!(text.contains("config asks for yay"), "{text}");
         assert!(text.contains("using paru"), "{text}");
+    }
+
+    /// Selecting a healthy source must not carry the aur note along with it —
+    /// the note belongs to the row it describes.
+    #[test]
+    fn the_helper_note_follows_the_cursor_off_the_aur_row() {
+        use crate::providers::aur::HelperChoice;
+        let mut s = scan_with(Vec::new());
+        s.aur_helper = HelperChoice::None;
+        s.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: false,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        select_aur(&mut app);
+        assert!(render(&app, 110, 30).contains("install paru, yay or pikaur"));
+
+        app.on_prev();
+        assert!(
+            !render(&app, 110, 30).contains("install paru, yay or pikaur"),
+            "note should be gone once another source is selected"
+        );
     }
 
     /// On a healthy system the note is absent — it must not eat a row of the

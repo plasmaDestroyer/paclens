@@ -504,6 +504,18 @@ impl App {
     pub fn overlap_cursor(&self) -> usize {
         self.overlap_cursor
     }
+    /// The AUR helper note, but only while the aur row is the selected source.
+    ///
+    /// It lives in the system pane rather than under the table because it is
+    /// advice, not data — and it is tied to the cursor so a healthy pacman or
+    /// flatpak row is never interrupted by a sentence about the AUR.
+    pub fn selected_aur_note(&self) -> Option<String> {
+        let source = self.dash_source()?;
+        (source.id == SourceId::aur())
+            .then(|| self.scan.aur_helper.note())
+            .flatten()
+    }
+
     pub fn selected_overlap(&self) -> Option<&OverlapCandidate> {
         self.overlaps.get(self.overlap_cursor)
     }
