@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Install the freshly committed build so `paclens` on PATH is what was just
+# committed. Runs only after the commit succeeded, which means pre-commit's
+# fmt/clippy/tests already passed.
+#
+# Never fails the commit: the commit is already made, and an install problem is
+# not a reason to make you think otherwise. It reports and exits 0.
+#
+# Skip with PACLENS_SKIP_HOOKS=1 or PACLENS_NO_INSTALL=1 — worth using during a
+# run of granular commits, since the release profile is fat-LTO and relinks on
+# every source change (see #76).
+set -uo pipefail
+
+[ "${PACLENS_SKIP_HOOKS:-0}" = "1" ] && exit 0
+[ "${PACLENS_NO_INSTALL:-0}" = "1" ] && exit 0
+
+say() { printf '\033[2mpost-commit:\033[0m %s\n' "$1" >&2; }
+
+# Nothing to install if this commit did not touch the build.
+if git diff-tree --no-commit-id --name-only -r HEAD |
+  grep -qE '\.rs$|^Cargo\.(toml|lock)$|\.toml$'; then
+  say "installing $(git rev-parse --short HEAD) ..."
+  if out=$(cargo install --path . --locked --force 2>&1); then
+    say "installed -> $(command -v paclens 2>/dev/null || echo ~/.cargo/bin/paclens)"
+  else
+    say "install failed (commit is fine, binary on PATH is stale):"
+    printf '%s\n' "$out" | grep -E '^(error|warning: )' -A3 | head -20 >&2
+  fi
+fi
+exit 0

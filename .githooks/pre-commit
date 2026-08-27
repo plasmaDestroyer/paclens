@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# fmt (auto-fixing), clippy, tests — before the commit exists.
+#
+# Deliberately pre-commit rather than post-commit: a fix applied here lands in
+# the commit being made, so there is no second commit to chase. Fixing after
+# the fact would mean `--amend`, which re-fires the hook.
+#
+# Escape hatches: `git commit --no-verify`, or PACLENS_SKIP_HOOKS=1.
+set -uo pipefail
+
+[ "${PACLENS_SKIP_HOOKS:-0}" = "1" ] && exit 0
+
+# Only pay for Rust checks when Rust changed. A docs-only commit runs nothing.
+staged_rs=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.rs$' || true)
+staged_build=$(git diff --cached --name-only --diff-filter=ACMR |
+  grep -E '^(Cargo\.(toml|lock)|.*\.(toml|txt))$' || true)
+if [ -z "$staged_rs$staged_build" ]; then
+  exit 0
+fi
+
+say() { printf '\033[2mpre-commit:\033[0m %s\n' "$1" >&2; }
+fail() { printf '\033[31mpre-commit: %s\033[0m\n' "$1" >&2; }
+
+# --- fmt: fix rather than complain ---------------------------------------
+if ! cargo fmt --check >/dev/null 2>&1; then
+  say "formatting drifted — running cargo fmt"
+  cargo fmt || { fail "cargo fmt failed"; exit 1; }
+  # Re-stage ONLY files already staged. `cargo fmt` rewrites the whole tree,
+  # and sweeping in unrelated reformatted files would silently widen the
+  # commit past what was asked for.
+  if [ -n "$staged_rs" ]; then
+    printf '%s\n' "$staged_rs" | while IFS= read -r f; do
+      [ -f "$f" ] && git add -- "$f"
+    done
+    say "re-staged formatted files"
+  fi
+fi
+
+# --- clippy: report, never auto-fix --------------------------------------
+# `clippy --fix` rewrites code to satisfy a lint, which is a judgement call and
+# can change behaviour. A failing lint stops the commit and the human decides.
+if ! out=$(cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used 2>&1); then
+  fail "clippy found problems — commit aborted"
+  printf '%s\n' "$out" | grep -E '^(error|warning)' -A4 | head -40 >&2
+  exit 1
+fi
+
+# --- tests ----------------------------------------------------------------
+if ! out=$(cargo test --quiet 2>&1); then
+  fail "tests failed — commit aborted"
+  printf '%s\n' "$out" | grep -E '^(test result|error|FAILED|---- |thread)' -A3 | head -40 >&2
+  exit 1
+fi
+
+say "fmt + clippy + tests clean"
+exit 0
