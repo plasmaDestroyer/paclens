@@ -1419,7 +1419,7 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(line), chunks[3]);
 }
 
-/// VERSION + REASON + SIZE (+ KIND) plus the spacing between every column.
+/// VERSION + TYPE + SIZE (+ KIND) plus the spacing between every column.
 fn fixed_columns_width(kind_col: bool) -> u16 {
     12 + 10 + 10 + if kind_col { 7 + 2 } else { 0 } + 2 * 4
 }
@@ -1549,14 +1549,14 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
     }
 
     let header = if narrow {
-        Row::new(vec![Cell::from("NAME"), Cell::from("REASON")])
+        Row::new(vec![Cell::from("NAME"), Cell::from("VERSION")])
     } else {
         let mut cells = vec![Cell::from("NAME"), Cell::from("VERSION")];
         if kind_col {
             cells.push(Cell::from("KIND"));
         }
         cells.extend([
-            Cell::from("REASON"),
+            Cell::from("TYPE"),
             Cell::from(Line::from("SIZE").alignment(Alignment::Right)),
         ]);
         if desc_col {
@@ -1602,7 +1602,12 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
                 crate::model::InstallReason::Unknown => Span::styled("—", theme.dim),
             };
             if narrow {
-                return Row::new(vec![Cell::from(name), Cell::from(reason)]);
+                // Version over reason: at this width the question is what you
+                // have, not how it got here (#57).
+                return Row::new(vec![
+                    Cell::from(name),
+                    Cell::from(Span::styled(p.version.clone(), theme.dim)),
+                ]);
             }
             let size = match p.size_bytes {
                 Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
@@ -1640,7 +1645,7 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
         .collect();
 
     let widths: Vec<Constraint> = if narrow {
-        vec![Constraint::Min(20), Constraint::Length(10)]
+        vec![Constraint::Min(20), Constraint::Length(12)]
     } else {
         let mut w = vec![Constraint::Length(name_w), Constraint::Length(12)];
         if kind_col {
@@ -2478,7 +2483,7 @@ mod tests {
         let text = render(&pkg_app(), 100, 18);
         assert!(text.contains("pacman"), "title missing:\n{text}");
         assert!(text.contains("3 packages"), "count missing:\n{text}");
-        for col in ["NAME", "VERSION", "REASON", "SIZE"] {
+        for col in ["NAME", "VERSION", "TYPE", "SIZE"] {
             assert!(text.contains(col), "column {col} missing:\n{text}");
         }
         // KIND is Flatpak-only (#55) — on pacman it was a column of em dashes.
@@ -2629,6 +2634,21 @@ mod tests {
         };
         assert_eq!(name_fg("glibc"), accent, "pending row is not accented");
         assert_ne!(name_fg("bash"), accent, "an up-to-date row was accented");
+    }
+
+    #[test]
+    fn a_cramped_table_keeps_the_version_not_the_reason() {
+        let s = pkg_scan();
+
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        let text = render(&app, 56, 14);
+        assert!(text.contains("VERSION"), "version dropped:\n{text}");
+        assert!(
+            !text.contains("TYPE"),
+            "reason survived the squeeze:\n{text}"
+        );
+        assert!(!text.contains("SIZE"), "size survived the squeeze:\n{text}");
     }
 
     #[test]
