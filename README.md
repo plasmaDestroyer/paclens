@@ -39,7 +39,10 @@ your shell. Everything else is advisory: paclens never removes anything.
   optional `--devel` checks for `-git` packages.
 - **Updates in a real terminal** — the update runs on a pty inside the TUI:
   sudo's password prompt, pacman's questions, colors and progress bars all
-  work untouched. Ctrl-C interrupts the command, not the TUI.
+  work untouched. Ctrl-C interrupts the command, not the TUI. Optionally
+  (`update.sudo_loop`, off by default) authenticate once at the start and keep
+  the timestamp warm for the run, so a long AUR build does not stop halfway
+  for a second prompt — sudo only, and it ends with the run.
 - **`why` inspector** — install reason, reverse-dependency chain as a tree
   with per-edge confidence labels, what a removal would break or orphan, and
   a cautious verdict. Works for pacman, AUR (with PKGBUILD/VCS caveats),

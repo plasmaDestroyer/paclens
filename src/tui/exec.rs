@@ -53,11 +53,14 @@ pub fn start(
     tool: Option<String>,
     size: (u16, u16),
     log_dir: Option<std::path::PathBuf>,
+    sudo_loop: Option<std::time::Duration>,
 ) -> ExecSession {
     let (event_tx, events) = mpsc::channel();
     let (input, input_rx) = mpsc::channel::<Vec<u8>>();
 
-    std::thread::spawn(move || run_session(plan, tool, size, log_dir, event_tx, input_rx));
+    std::thread::spawn(move || {
+        run_session(plan, tool, size, log_dir, sudo_loop, event_tx, input_rx)
+    });
 
     ExecSession { events, input }
 }
@@ -67,6 +70,7 @@ fn run_session(
     tool: Option<String>,
     size: (u16, u16),
     log_dir: Option<std::path::PathBuf>,
+    sudo_loop: Option<std::time::Duration>,
     events: mpsc::Sender<ExecEvent>,
     input: mpsc::Receiver<Vec<u8>>,
 ) {
@@ -91,6 +95,40 @@ fn run_session(
         .map(|s| s.source_id.as_str())
         .collect();
     log.line(&format!("sources: [{}]", run_ids.join(", ")));
+
+    // #24: authenticate once, here, where the reader is looking — then keep
+    // the timestamp warm so a long AUR build does not stop for a second
+    // prompt in the middle of paru's output. The value lives for the run and
+    // its Drop stops the loop on every exit path.
+    let privileged = plan
+        .steps
+        .iter()
+        .any(|s| executor::needs_privilege(s) && skip_reason(s, tool).is_none());
+    let _keepalive = match sudo_loop {
+        Some(interval) if executor::sudo::keepalive_applies(tool, true, privileged) => {
+            let argv = executor::sudo::prime_command();
+            let _ = events.send(ExecEvent::Bytes(
+                format!(
+                    "\x1b[1m:: {} \x1b[0m\x1b[2m(once, for the whole run)\x1b[0m\r\n",
+                    argv.join(" ")
+                )
+                .into_bytes(),
+            ));
+            match run_step(&argv, size, &events, &input) {
+                StepStatus::Succeeded => {
+                    log.line("sudo timestamp primed; keepalive running");
+                    Some(executor::sudo::Keepalive::start(interval))
+                }
+                _ => {
+                    // Not fatal: the steps themselves will ask, exactly as
+                    // they do with the loop off.
+                    log.line("sudo priming failed; steps will authenticate on their own");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
 
     let mut steps = Vec::new();
     for step in &plan.steps {
@@ -316,6 +354,29 @@ mod tests {
         }
     }
 
+    /// The keepalive must not fire for a run that never escalates — a plan of
+    /// flatpak steps asks for no password, so priming one would be a prompt
+    /// the run does not need (#24). The privileged path is not exercised here
+    /// on purpose: it would ask the machine running the tests for a password.
+    #[test]
+    fn an_unprivileged_plan_is_never_primed() {
+        let dir = std::env::temp_dir().join(format!("paclens-exec-noprime-{}", std::process::id()));
+        let session = start(
+            plan_for("echo done"),
+            Some("sudo".to_string()),
+            (24, 80),
+            Some(dir.clone()),
+            Some(std::time::Duration::from_secs(240)),
+        );
+        let (text, report) = drain(&session, None);
+        assert!(
+            !text.contains("sudo -v"),
+            "primed a run with nothing privileged in it:\n{text}"
+        );
+        assert_eq!(report.succeeded(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// End-to-end through a real pty: `sh` echoes, reads forwarded input
     /// (which the pty echoes back — a real terminal), and exits 0.
     #[test]
@@ -326,6 +387,7 @@ mod tests {
             None,
             (24, 80),
             Some(dir.clone()),
+            None,
         );
         let (text, report) = drain(&session, Some(("hello", b"world\r")));
         assert!(text.contains("hello"), "{text:?}");
@@ -342,6 +404,7 @@ mod tests {
             None,
             (24, 80),
             Some(dir.clone()),
+            None,
         );
         let (text, report) = drain(&session, None);
         assert!(text.contains("IS_A_TTY"), "{text:?}");
@@ -352,7 +415,7 @@ mod tests {
     #[test]
     fn failing_step_reports_its_exit_code() {
         let dir = std::env::temp_dir().join(format!("paclens-exec-fail-{}", std::process::id()));
-        let session = start(plan_for("exit 3"), None, (24, 80), Some(dir.clone()));
+        let session = start(plan_for("exit 3"), None, (24, 80), Some(dir.clone()), None);
         let (_, report) = drain(&session, None);
         assert_eq!(report.failed(), 1);
         assert_eq!(

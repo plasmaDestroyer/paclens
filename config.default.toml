@@ -125,3 +125,23 @@ config_dirs = ["/etc"]
 # copiable text, because merging a config is a decision, not a step.
 # Example: diff_prog = "meld"
 diff_prog = ""
+
+
+[update]
+
+# Authenticate once at the start of a privileged run and keep the sudo
+# timestamp warm until it ends. Without this, a long AUR build can outlast
+# sudo's 5-minute default timeout, and the run stops for a second password
+# prompt in the middle of paru's output.
+#
+# Off by default, and the reason is worth reading: while the loop runs,
+# anything running as you can use sudo without being asked. It stops the
+# moment the run does — success, failure or interrupt.
+#
+# sudo only. doas persists through its own `persist` option in doas.conf, and
+# pkexec authenticates through polkit; on those this does nothing rather than
+# pretending.
+sudo_loop = false
+
+# How often to refresh, in seconds. Comfortably under the 5-minute default.
+sudo_loop_interval = 240

@@ -17,6 +17,7 @@ pub struct Config {
     pub why: Why,
     pub overlap: Overlap,
     pub cleanup: Cleanup,
+    pub update: Update,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +58,29 @@ pub struct Scan {
     /// Reads `/proc/<pid>/maps` for every process this user can see, which is
     /// the most expensive thing a scan does.
     pub stale_services: bool,
+}
+
+/// The update run itself (#24).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Update {
+    /// Authenticate once at the start of a privileged run and keep the sudo
+    /// timestamp warm until it ends, so a long AUR build does not strand the
+    /// run on a second prompt. Off by default: while it runs, anything
+    /// running as you can use sudo without being asked.
+    pub sudo_loop: bool,
+    /// How often to refresh, in seconds. Comfortably under sudo's 5-minute
+    /// default `timestamp_timeout`.
+    pub sudo_loop_interval: u64,
+}
+
+impl Default for Update {
+    fn default() -> Self {
+        Self {
+            sudo_loop: false,
+            sudo_loop_interval: 240,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

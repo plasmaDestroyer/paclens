@@ -241,6 +241,7 @@ fn run_loop(
                         tool.map(String::from),
                         (rows, cols),
                         None,
+                        app.sudo_loop(),
                     ));
                 }
             }
@@ -274,7 +275,7 @@ fn run_loop(
                                 .unwrap_or((24, 80));
                             app.start_exec(rows, cols, app::ExecKind::Migrate);
                             // Copy steps never escalate — no tool.
-                            exec_session = Some(exec::start(plan, None, (rows, cols), None));
+                            exec_session = Some(exec::start(plan, None, (rows, cols), None, None));
                         }
                     }
                 }
@@ -297,6 +298,7 @@ fn run_loop(
                             tool.map(String::from),
                             (rows, cols),
                             None,
+                            app.sudo_loop(),
                         ));
                     }
                 }

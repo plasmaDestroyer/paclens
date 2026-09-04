@@ -34,6 +34,9 @@ pub struct AppOptions {
     /// `config.cleanup.diff_prog` — the program the `.pacnew` review command
     /// names. Empty defers to `$DIFFPROG`, then `vimdiff`.
     pub diff_prog: String,
+    /// `config.update.sudo_loop` and its interval (#24). `None` when the loop
+    /// is off, which is the default.
+    pub sudo_loop: Option<std::time::Duration>,
 }
 
 impl AppOptions {
@@ -46,6 +49,10 @@ impl AppOptions {
             min_confidence: config.overlap.min_confidence(),
             orphan_ignore: config.cleanup.orphan_ignore.clone(),
             diff_prog: config.cleanup.diff_prog.clone(),
+            sudo_loop: config
+                .update
+                .sudo_loop
+                .then(|| std::time::Duration::from_secs(config.update.sudo_loop_interval.max(30))),
         }
     }
 
@@ -62,6 +69,7 @@ impl AppOptions {
             // Named rather than resolved, so a test never depends on whatever
             // $DIFFPROG happens to be on the machine running it.
             diff_prog: "vimdiff".to_string(),
+            sudo_loop: None,
         }
     }
 }
@@ -712,6 +720,11 @@ impl App {
             &self.opts.diff_prog,
             std::env::var("DIFFPROG").ok().as_deref(),
         )
+    }
+
+    /// How often to refresh the sudo timestamp during a run, if at all (#24).
+    pub fn sudo_loop(&self) -> Option<std::time::Duration> {
+        self.opts.sudo_loop
     }
 
     /// Units running against files an upgrade replaced (#4). Inferred, and
