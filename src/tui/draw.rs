@@ -26,9 +26,6 @@ const SIDE_PANE_MIN_WIDTH: u16 = 90;
 /// The pane never grows past this: its text is one description and one why
 /// report, and the width beyond that reads better as table.
 const PANE_MAX_WIDTH: u16 = 64;
-/// DESCRIPTION returns to the table once this much width is spare — below it
-/// the column is a stub and the pane is the better place for the text.
-const DESCRIPTION_MIN_WIDTH: u16 = 24;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -1298,7 +1295,7 @@ fn render_cleanup_why_pane(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(Paragraph::new("no selection").style(theme.dim), inner);
         return;
     };
-    let lines = why_pane_lines(&report, theme);
+    let lines = why_pane_lines(&report, theme, true);
     frame.render_widget(
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
         inner,
@@ -1368,27 +1365,21 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
     ]);
     frame.render_widget(Paragraph::new(Line::from(summary)), chunks[0]);
 
-    if app.is_why_open() {
-        // The pane carries the description in full, so a landscape terminal
-        // spends its spare width on it rather than on a truncated column.
-        // Too narrow for that and the split turns vertical instead — a side
-        // pane there would leave neither half readable.
-        if chunks[1].width >= SIDE_PANE_MIN_WIDTH {
-            let geo = pkg_geometry(app, chunks[1].width, true, app.pane_bias());
-            let panes = Layout::horizontal([Constraint::Length(geo.table_w), Constraint::Min(20)])
-                .split(chunks[1]);
-            render_package_table(frame, panes[0], app, &geo);
-            render_why_pane(frame, panes[1], app, Borders::LEFT);
-        } else {
-            let stack =
-                Layout::vertical([Constraint::Min(3), Constraint::Length(7)]).split(chunks[1]);
-            let geo = pkg_geometry(app, stack[0].width, false, 0);
-            render_package_table(frame, stack[0], app, &geo);
-            render_why_pane(frame, stack[1], app, Borders::TOP);
-        }
+    // The pane is permanent: it carries the description in full, which no
+    // column ever could. A landscape terminal puts it beside the table; too
+    // narrow for that and the split turns vertical, because a side pane there
+    // would leave neither half readable.
+    if chunks[1].width >= SIDE_PANE_MIN_WIDTH {
+        let geo = pkg_geometry(app, chunks[1].width, true, app.pane_bias());
+        let panes = Layout::horizontal([Constraint::Length(geo.table_w), Constraint::Min(20)])
+            .split(chunks[1]);
+        render_package_table(frame, panes[0], app, &geo);
+        render_why_pane(frame, panes[1], app, Borders::LEFT);
     } else {
-        let geo = pkg_geometry(app, chunks[1].width, false, 0);
-        render_package_table(frame, chunks[1], app, &geo);
+        let stack = Layout::vertical([Constraint::Min(3), Constraint::Length(7)]).split(chunks[1]);
+        let geo = pkg_geometry(app, stack[0].width, false, 0);
+        render_package_table(frame, stack[0], app, &geo);
+        render_why_pane(frame, stack[1], app, Borders::TOP);
     }
 
     if show_filter {
@@ -1409,7 +1400,6 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
                 (&updown, "navigate"),
                 ("/", "filter"),
                 ("s", "sort"),
-                ("w", "why"),
                 ("[ ]", "pane"),
                 ("esc", "back"),
                 ("q", "quit"),
@@ -1445,20 +1435,18 @@ fn name_column_width(rows: &[crate::tui::app::PkgRow<'_>], cap: u16) -> u16 {
 /// the split and the table, because two sides deciding it separately is what
 /// leaves a dead strip between them.
 struct PkgGeometry {
+    /// NAME absorbs whatever the fixed columns leave, so the table always
+    /// fills its side and nothing sits dead against the divider.
     name_w: u16,
-    /// `None` drops the DESCRIPTION column — the pane has the text.
-    desc_w: Option<u16>,
     /// The pane takes whatever is left of the area.
     table_w: u16,
     /// VERSION and SIZE do not fit; the table shows name and reason only.
     narrow: bool,
 }
 
-/// `available` is the whole area the table and pane share. With no pane the
-/// table takes all of it; with one, the table takes what its columns need,
-/// the pane takes the rest up to its cap, and anything past that goes back to
-/// the table as DESCRIPTION — or to the pane when it is too little to be a
-/// column (#56).
+/// `available` is the whole area the table and pane share. Stacked, the table
+/// takes all of it; side by side, the table takes what its columns need and
+/// the pane the rest, up to the pane's cap.
 fn pkg_geometry(app: &App, available: u16, pane: bool, bias: i16) -> PkgGeometry {
     let kind_col = app.pkg_source_is_flatpak();
     let fixed = fixed_columns_width(kind_col) + app.theme.glyphs.pointer.chars().count() as u16;
@@ -1467,53 +1455,26 @@ fn pkg_geometry(app: &App, available: u16, pane: bool, bias: i16) -> PkgGeometry
         let table_w = if pane { available / 2 } else { available };
         return PkgGeometry {
             name_w: table_w.saturating_sub(12).max(12),
-            desc_w: None,
             table_w,
             narrow,
         };
     }
 
     let name_w = name_column_width(&app.pkg_rows(), available.saturating_sub(fixed));
-    let columns = fixed + name_w;
-    if !pane {
-        let spare = available.saturating_sub(columns);
-        let (name_w, desc_w) = if spare >= DESCRIPTION_MIN_WIDTH {
-            (name_w, Some(spare))
-        } else {
-            (name_w + spare, None)
-        };
-        return PkgGeometry {
-            name_w,
-            desc_w,
-            table_w: available,
-            narrow,
-        };
-    }
-
-    let leftover = available.saturating_sub(columns);
-    // The pane's share, then the reader's own nudge on top of it.
-    let pane_w = (i32::from(leftover.min(PANE_MAX_WIDTH)) + i32::from(bias))
-        .clamp(24, i32::from(available) / 3 * 2) as u16;
-    let table_w = available.saturating_sub(pane_w);
-    // Whatever the columns do not use is either a DESCRIPTION column or the
-    // pane's — never a dead strip between the two.
-    let spare = table_w.saturating_sub(columns);
-    if spare >= DESCRIPTION_MIN_WIDTH {
-        PkgGeometry {
-            name_w,
-            desc_w: Some(spare),
-            table_w,
-            narrow,
-        }
+    let table_w = if pane {
+        // The pane's share of what the columns leave, then the reader's own
+        // nudge on top of it.
+        let leftover = available.saturating_sub(fixed + name_w);
+        let pane_w = (i32::from(leftover.min(PANE_MAX_WIDTH)) + i32::from(bias))
+            .clamp(24, i32::from(available) / 3 * 2) as u16;
+        available.saturating_sub(pane_w)
     } else {
-        // Too little for a column: NAME takes it, so the table still fills
-        // its half and nothing sits dead against the divider.
-        PkgGeometry {
-            name_w: name_w + spare,
-            desc_w: None,
-            table_w,
-            narrow,
-        }
+        available
+    };
+    PkgGeometry {
+        name_w: table_w.saturating_sub(fixed).max(12),
+        table_w,
+        narrow,
     }
 }
 
@@ -1524,14 +1485,9 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
     let rows = app.pkg_rows();
     let narrow = geo.narrow;
     // KIND only says something for Flatpak (app vs runtime); everywhere else
-    // it is a column of em dashes, so the width goes to DESCRIPTION instead.
+    // it is a column of em dashes (#55).
     let kind_col = !narrow && app.pkg_source_is_flatpak();
-
-    // NAME takes what its longest entry needs and no more, capped at half of
-    // what is left — one 40-char name must not starve DESCRIPTION.
     let name_w = geo.name_w;
-    let desc_col = geo.desc_w.is_some();
-    let desc_w = geo.desc_w.unwrap_or(0) as usize;
 
     if rows.is_empty() {
         let msg = if app.pkg_filter().is_empty() {
@@ -1559,9 +1515,6 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
             Cell::from("TYPE"),
             Cell::from(Line::from("SIZE").alignment(Alignment::Right)),
         ]);
-        if desc_col {
-            cells.push(Cell::from("DESCRIPTION"));
-        }
         Row::new(cells)
     }
     .style(theme.header);
@@ -1574,23 +1527,12 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
         .iter()
         .map(|row| {
             let p = match row {
-                crate::tui::app::PkgRow::Header(label, count) => {
-                    // A non-selectable divider (the cursor skips it), set like
-                    // the column header so it reads as structure rather than
-                    // as a row — accented for the group that is why the sort
-                    // grouped at all.
-                    let style = if *label == "pending updates" {
-                        theme.accent
-                    } else {
-                        theme.header
-                    };
-                    let text = Span::styled(format!("{} ({count})", label.to_uppercase()), style);
-                    let mut cells = vec![Cell::from(text)];
-                    let width = if narrow {
-                        2
-                    } else {
-                        3 + usize::from(kind_col) + usize::from(desc_col)
-                    };
+                crate::tui::app::PkgRow::Header(..) => {
+                    // Painted over afterwards, full width: a table row cannot
+                    // span columns, and a group header that stops at the NAME
+                    // column reads as another row.
+                    let mut cells = vec![Cell::from("")];
+                    let width = if narrow { 2 } else { 3 + usize::from(kind_col) };
                     cells.resize_with(width, || Cell::from(""));
                     return Row::new(cells);
                 }
@@ -1618,14 +1560,6 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
                 Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
                 None => Span::styled("—".to_string(), theme.dim),
             };
-            let raw = p.description.clone().unwrap_or_default();
-            let text = if raw.chars().count() > desc_w && desc_w > 1 {
-                let cut: String = raw.chars().take(desc_w - 1).collect();
-                format!("{cut}…")
-            } else {
-                raw
-            };
-            let description = Span::styled(text, theme.dim);
             let mut cells = vec![
                 Cell::from(name),
                 Cell::from(Span::styled(p.version.clone(), theme.dim)),
@@ -1642,9 +1576,6 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
                 Cell::from(reason),
                 Cell::from(Line::from(size).alignment(Alignment::Right)),
             ]);
-            if desc_col {
-                cells.push(Cell::from(description));
-            }
             Row::new(cells)
         })
         .collect();
@@ -1657,9 +1588,6 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
             w.push(Constraint::Length(7));
         }
         w.extend([Constraint::Length(10), Constraint::Length(10)]);
-        if desc_col {
-            w.push(Constraint::Fill(1));
-        }
         w
     };
     let table = Table::new(body, widths)
@@ -1673,6 +1601,41 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
     let mut state = TableState::default().with_offset(app.pkg_offset());
     state.select(Some(app.pkg_row_index()));
     frame.render_stateful_widget(table, area, &mut state);
+
+    for (i, row) in rows.iter().skip(app.pkg_offset()).enumerate() {
+        let y = area.y + 1 + i as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        let crate::tui::app::PkgRow::Header(label, count) = row else {
+            continue;
+        };
+        // The accent means "pending updates" everywhere else in the UI, so it
+        // means it here too; every other group is structure, not news.
+        let style = if *label == "pending updates" {
+            theme.accent
+        } else {
+            theme.header
+        };
+        let body = format!("{} ({count})", label.to_uppercase());
+        // Two columns short of the edge, so the rule never butts against the
+        // pane divider the way a row's last column does not.
+        let rule = "─".repeat((area.width as usize).saturating_sub(body.chars().count() + 8));
+        let line = Line::from(vec![
+            Span::styled("  ── ", theme.border),
+            Span::styled(body, style),
+            Span::styled(format!(" {rule}"), theme.border),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
 }
 
 fn render_filter_line(frame: &mut Frame, area: Rect, app: &App) {
@@ -1720,14 +1683,20 @@ fn render_why_pane(frame: &mut Frame, area: Rect, app: &App, borders: Borders) {
         )));
         lines.push(Line::default());
     }
-    lines.extend(why_pane_lines(&report, theme));
+    lines.extend(why_pane_lines(&report, theme, false));
     frame.render_widget(
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
         inner,
     );
 }
 
-fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Line<'static>> {
+/// `title` prints the `why · <name>` heading. The package screen's pane names
+/// the package itself a line above, so it asks for the report without one.
+fn why_pane_lines(
+    report: &crate::analyzer::WhyReport,
+    theme: &Theme,
+    title: bool,
+) -> Vec<Line<'static>> {
     use crate::analyzer::{Verdict, WhyReport};
     use crate::model::{InstallReason, SourceId};
 
@@ -1749,10 +1718,14 @@ fn why_pane_lines(report: &crate::analyzer::WhyReport, theme: &Theme) -> Vec<Lin
 
     match report {
         WhyReport::Found(p) => {
-            let mut lines = vec![
-                Line::from(Span::styled(format!("why · {}", p.package), theme.title)),
-                Line::default(),
-            ];
+            let mut lines = if title {
+                vec![
+                    Line::from(Span::styled(format!("why · {}", p.package), theme.title)),
+                    Line::default(),
+                ]
+            } else {
+                Vec::new()
+            };
             let is_alpm =
                 p.source_id == SourceId::pacman() || p.source_id == crate::model::SourceId::aur();
             let reason = if !is_alpm {
@@ -2493,11 +2466,8 @@ mod tests {
         }
         // KIND is Flatpak-only (#55) — on pacman it was a column of em dashes.
         assert!(!text.contains("KIND"), "KIND on a pacman list:\n{text}");
-        // DESCRIPTION lives in the pane while it is open (#56).
-        assert!(
-            !text.contains("DESCRIPTION"),
-            "column with the pane open:\n{text}"
-        );
+        // The description lives in the pane, never in a column (#56).
+        assert!(!text.contains("DESCRIPTION"), "description column:\n{text}");
         assert!(text.contains("firefox"), "{text}");
         assert!(text.contains("explicit"), "{text}");
         assert!(text.contains("dependency"), "{text}");
@@ -2510,13 +2480,13 @@ mod tests {
             "summary missing:\n{text}"
         );
         assert!(text.contains("/ filter"), "footer missing:\n{text}");
-        assert!(text.contains("w why"), "footer missing:\n{text}");
+        assert!(text.contains("[ ] pane"), "footer missing:\n{text}");
     }
 
     #[test]
     fn the_table_ends_where_its_columns_do_so_the_pane_gets_the_rest() {
         // Wide: the pane stops at its cap and the table keeps the rest, which
-        // it spends on DESCRIPTION rather than leaving a dead strip.
+        // goes to NAME rather than sitting dead against the divider.
         let text = render(&pkg_app(), 200, 18);
         let header = text
             .lines()
@@ -2527,8 +2497,6 @@ mod tests {
             divider >= 200 - PANE_MAX_WIDTH as usize - 6,
             "pane grew past its cap:\n{text}"
         );
-        assert!(text.contains("DESCRIPTION"), "spare width unused:\n{text}");
-
         // Modest width: no room for the column, so no dead strip either — the
         // divider follows SIZE.
         let text = render(&pkg_app(), 110, 18);
@@ -2741,21 +2709,6 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_pane_brings_description_back_with_an_ellipsis() {
-        let mut s = pkg_scan();
-        s.packages[0].description =
-            Some("Fast, feature-rich web browser with a focus on privacy".to_string());
-        let mut app = App::new(s, Theme::none(), AppOptions::test());
-        app.open_packages();
-        app.toggle_why(); // close the pane
-        let text = render(&app, 100, 18);
-        assert!(text.contains("DESCRIPTION"), "column missing:\n{text}");
-        assert!(text.contains("Fast, feature-rich"), "{text}");
-        // Cut text says so rather than just stopping.
-        assert!(text.contains('…'), "no ellipsis on the cut:\n{text}");
-    }
-
-    #[test]
     fn package_list_marks_runtimes_in_the_kind_column() {
         let mut s = scan_with(Vec::new());
         let mut platform = pkg("org.gnome.Platform", SourceId::flatpak_user());
@@ -2799,16 +2752,13 @@ mod tests {
         let mut app = pkg_app();
         // cursor row 0 = firefox (size-sorted) → explicit, nothing requires it.
         let text = render(&app, 110, 20);
-        assert!(
-            text.contains("why · firefox"),
-            "pane title missing:\n{text}"
-        );
+        assert!(text.contains("firefox  1"), "pane header missing:\n{text}");
         assert!(text.contains("likely safe"), "{text}");
         assert!(text.contains("[confirmed]"), "{text}");
 
         app.on_next(); // glibc — needed by bash + firefox
         let text = render(&app, 110, 20);
-        assert!(text.contains("why · glibc"), "pane must follow:\n{text}");
+        assert!(text.contains("glibc  1"), "pane must follow:\n{text}");
         assert!(text.contains("is a dependency"), "{text}");
         assert!(text.contains("bash, firefox"), "{text}");
     }
@@ -2825,7 +2775,7 @@ mod tests {
         app.open_packages();
         app.pkg_move(1); // glibc (name-sorted: bash, glibc, readline)
         let text = render(&app, 100, 22);
-        assert!(text.contains("why · glibc"), "{text}");
+        assert!(text.contains("glibc  1"), "pane header missing:\n{text}");
         assert!(text.contains("chain"), "chain section missing:\n{text}");
         assert!(
             text.contains("`- readline [confirmed]"),
@@ -2851,7 +2801,10 @@ mod tests {
         // name-sorted: org.gnome.Platform is row 0. Wide enough that the
         // pane does not wrap the label being asserted.
         let text = render(&app, 130, 22);
-        assert!(text.contains("why · org.gnome.Platform"), "{text}");
+        assert!(
+            text.contains("org.gnome.Platform  1"),
+            "pane header missing:\n{text}"
+        );
         assert!(text.contains("flatpak runtime"), "{text}");
         assert!(
             text.contains("org.x.App [inferred]"),
@@ -2869,7 +2822,10 @@ mod tests {
         app.on_next(); // select the flatpak-user source
         app.open_packages();
         let text = render(&app, 100, 22);
-        assert!(text.contains("why · org.x.App"), "{text}");
+        assert!(
+            text.contains("org.x.App  1"),
+            "pane header missing:\n{text}"
+        );
         assert!(text.contains("self-contained"), "{text}");
         assert!(text.contains("likely safe"), "{text}");
         assert!(text.contains("[confirmed]"), "{text}");

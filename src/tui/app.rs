@@ -182,7 +182,6 @@ pub struct App {
     /// Package list: the filter input line has focus.
     filter_active: bool,
     /// Package list: the why side pane is open.
-    why_open: bool,
     /// Columns added to (or taken from) the package screen's pane by `]`/`[`.
     pane_bias: i16,
     /// Package list: active sort mode (persists across list opens).
@@ -269,7 +268,6 @@ impl App {
             pkg_cursor: 0,
             pkg_filter: String::new(),
             filter_active: false,
-            why_open: false,
             pane_bias: 0,
             pkg_sort: PkgSort::Size,
             spinner_frame: 0,
@@ -813,9 +811,6 @@ impl App {
         self.pkg_offset = 0;
         self.pkg_filter.clear();
         self.filter_active = false;
-        // The pane is the package screen's default state — it carries the
-        // description the table no longer has room for (#56).
-        self.why_open = true;
         self.screen = Screen::Packages;
     }
 
@@ -849,10 +844,6 @@ impl App {
 
     pub fn pane_bias(&self) -> i16 {
         self.pane_bias
-    }
-
-    pub fn is_why_open(&self) -> bool {
-        self.why_open
     }
 
     /// Does this package (of the open source) have a pending update?
@@ -1114,6 +1105,8 @@ impl App {
         self.clamp_pkg_cursor();
     }
 
+    /// The overlap and cleanup screens open their detail on demand; the
+    /// package screen's pane is permanent and has no toggle.
     pub fn toggle_why(&mut self) {
         match self.screen {
             Screen::Cleanup => self.cleanup_why = !self.cleanup_why,
@@ -1122,15 +1115,13 @@ impl App {
                 self.overlap_migrate = !self.overlap_migrate;
                 self.migrate_direction = None;
             }
-            _ => self.why_open = !self.why_open,
+            _ => {}
         }
     }
 
     /// Esc on the list unwinds one layer at a time: why pane → filter → back.
     pub fn back_packages(&mut self) {
-        if self.why_open {
-            self.why_open = false;
-        } else if !self.pkg_filter.is_empty() {
+        if !self.pkg_filter.is_empty() {
             self.pkg_filter.clear();
             self.clamp_pkg_cursor();
         } else {
@@ -1489,13 +1480,15 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_opens_with_the_package_screen() {
+    fn the_package_screens_pane_has_no_toggle() {
         let mut app = app();
         app.open_packages();
-        assert!(app.is_why_open(), "the pane is the default state (#56)");
         assert_eq!(app.pkg_sort(), PkgSort::Size, "size is the default sort");
+        // The pane is permanent (#56): nothing closes it, and esc leaves for
+        // the dashboard rather than unwinding it first.
         app.toggle_why();
-        assert!(!app.is_why_open(), "w still closes it");
+        app.back_packages();
+        assert_eq!(app.screen(), Screen::Dashboard);
     }
 
     #[test]
@@ -2120,23 +2113,19 @@ mod tests {
     }
 
     #[test]
-    fn esc_unwinds_why_then_filter_then_screen() {
+    fn esc_unwinds_the_filter_then_the_screen() {
         let mut app = app();
         app.open_packages();
         app.start_filter();
         app.filter_push('a');
         app.filter_accept();
-        assert!(app.is_why_open(), "the pane opens with the screen");
-
-        app.back_packages(); // 1: closes the why pane
-        assert!(!app.is_why_open());
         assert_eq!(app.pkg_filter(), "a");
 
-        app.back_packages(); // 2: clears the filter
+        app.back_packages(); // 1: clears the filter
         assert_eq!(app.pkg_filter(), "");
         assert_eq!(app.screen(), Screen::Packages);
 
-        app.back_packages(); // 3: back to the dashboard
+        app.back_packages(); // 2: back to the dashboard
         assert_eq!(app.screen(), Screen::Dashboard);
     }
 

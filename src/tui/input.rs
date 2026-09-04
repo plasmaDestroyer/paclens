@@ -145,7 +145,6 @@ pub fn map_packages_key(key: KeyEvent) -> Action {
         KeyCode::PageUp => Action::PrevPage,
         KeyCode::Char('/') => Action::StartFilter,
         KeyCode::Char('s') | KeyCode::Char('S') => Action::CycleSort,
-        KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
         KeyCode::Char(']') | KeyCode::Char('>') => Action::ResizePane(2),
         KeyCode::Char('[') | KeyCode::Char('<') => Action::ResizePane(-2),
         KeyCode::Esc => Action::Back,
@@ -323,14 +322,8 @@ mod tests {
             map_packages_key(plain(KeyCode::Char('s'))),
             Action::CycleSort
         );
-        assert_eq!(
-            map_packages_key(plain(KeyCode::Char('w'))),
-            Action::ToggleWhy
-        );
-        assert_eq!(
-            map_packages_key(plain(KeyCode::Char('W'))),
-            Action::ToggleWhy
-        );
+        // The package screen's pane is permanent — no toggle key (#56).
+        assert_eq!(map_packages_key(plain(KeyCode::Char('w'))), Action::Ignore);
         assert_eq!(
             map_packages_key(plain(KeyCode::Char(']'))),
             Action::ResizePane(2)
