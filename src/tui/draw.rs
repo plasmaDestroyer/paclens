@@ -1478,8 +1478,10 @@ fn pkg_geometry(app: &App, available: u16, pane: bool, bias: i16) -> PkgGeometry
     }
 }
 
-/// `narrow` drops the VERSION/SIZE columns — used when the why pane halves
-/// the width, where they would truncate into noise.
+/// A narrow table carries NAME and VERSION only. TYPE and SIZE (and KIND) go
+/// because at that width they truncate into noise, and because a squeezed
+/// list is still answering "what do I have" — which the pane, always open,
+/// answers at length for the row under the cursor (#57).
 fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeometry) {
     let theme = &app.theme;
     let rows = app.pkg_rows();
@@ -2661,6 +2663,34 @@ mod tests {
             bold(style_of("UP TO DATE")),
             "up-to-date header is not set apart"
         );
+    }
+
+    #[test]
+    fn the_columns_move_by_one_for_every_column_of_width() {
+        // #57: NAME used to follow one rule in a narrow table and another in a
+        // full one, so the surviving column landed somewhere else entirely.
+        // Inside either mode the layout must now walk, not jump.
+        let app = pkg_app();
+        let version_at = |w: u16| -> Option<usize> {
+            let text = render(&app, w, 10);
+            text.lines().find(|l| l.contains("NAME"))?.find("VERSION")
+        };
+        for band in [50u16..57, 60..80] {
+            let mut last: Option<usize> = None;
+            for w in band {
+                let Some(x) = version_at(w) else { continue };
+                if let Some(prev) = last {
+                    assert_eq!(
+                        x,
+                        prev + 1,
+                        "VERSION jumped from {prev} to {x} between widths {} and {w}",
+                        w - 1
+                    );
+                }
+                last = Some(x);
+            }
+            assert!(last.is_some(), "VERSION never rendered");
+        }
     }
 
     #[test]
