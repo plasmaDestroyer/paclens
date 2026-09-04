@@ -913,14 +913,23 @@ impl App {
         match self.pkg_sort {
             PkgSort::Name => vec![("", pkgs)],
             PkgSort::Size => {
-                let mut pkgs = pkgs;
-                pkgs.sort_by(|a, b| {
+                let by_size = |a: &&Package, b: &&Package| {
                     b.size_bytes
                         .unwrap_or(0)
                         .cmp(&a.size_bytes.unwrap_or(0))
                         .then_with(|| a.name.cmp(&b.name))
-                });
-                vec![("", pkgs)]
+                };
+                // Size answers "what is worth looking at", but a pending
+                // update is worth looking at whatever it weighs.
+                let (mut pending, mut rest): (Vec<_>, Vec<_>) =
+                    pkgs.into_iter().partition(|p| self.pkg_pending(&p.name));
+                pending.sort_by(by_size);
+                rest.sort_by(by_size);
+                if pending.is_empty() {
+                    vec![("", rest)]
+                } else {
+                    vec![("pending updates", pending), ("up to date", rest)]
+                }
             }
             PkgSort::UpdatesFirst => {
                 let (pending, rest): (Vec<_>, Vec<_>) =
@@ -1939,9 +1948,13 @@ mod tests {
     #[test]
     fn size_sort_is_largest_first_and_name_sort_is_plain() {
         let mut app = sorted_app();
-        // Size is the default: c (99) > b (10) > a (None → last).
+        // Size is the default, and a pending update stays on top of it:
+        // a is pending, then c (99) > b (10).
         assert_eq!(app.pkg_sort(), PkgSort::Size);
-        assert_eq!(row_names(&app), vec!["c", "b", "a"]);
+        assert_eq!(
+            row_names(&app),
+            vec!["[pending updates 1]", "a", "[up to date 2]", "c", "b"]
+        );
         app.cycle_sort(); // updates
         app.cycle_sort(); // reason
         app.cycle_sort(); // name
@@ -1949,6 +1962,23 @@ mod tests {
         assert_eq!(row_names(&app), vec!["a", "b", "c"]);
         app.cycle_sort(); // wraps back to size
         assert_eq!(app.pkg_sort(), PkgSort::Size);
+    }
+
+    #[test]
+    fn size_sort_drops_the_headers_when_nothing_is_pending() {
+        let mut s = scan_with_sources(three_sources());
+        let mut big = pkg("big", SourceId::pacman());
+        big.size_bytes = Some(99);
+        let mut small = pkg("small", SourceId::pacman());
+        small.size_bytes = Some(1);
+        s.packages = vec![small, big];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        assert_eq!(
+            row_names(&app),
+            vec!["big", "small"],
+            "headers would be noise"
+        );
     }
 
     #[test]

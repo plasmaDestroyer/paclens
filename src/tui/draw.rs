@@ -1566,9 +1566,10 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
     }
     .style(theme.header);
 
-    // Under the default sort, packages with a pending update read accented.
-    let accent_pending =
-        app.pkg_sort() == crate::tui::app::PkgSort::UpdatesFirst && app.pkg_filter().is_empty();
+    // A pending update reads accented whatever the sort — it is the same
+    // fact about the package either way. Under a filter the accent would
+    // compete with the match highlighting.
+    let accent_pending = app.pkg_filter().is_empty();
     let body: Vec<Row> = rows
         .iter()
         .map(|row| {
@@ -2578,6 +2579,56 @@ mod tests {
                 divider - ends
             );
         }
+    }
+
+    #[test]
+    fn a_pending_update_reads_accented_under_the_size_sort() {
+        let mut s = pkg_scan();
+        s.updates = vec![upd("glibc", "1", "2", SourceId::pacman())];
+        let mut app = App::new(s, Theme::dark(), AppOptions::test());
+        app.open_packages();
+        assert_eq!(app.pkg_sort(), crate::tui::app::PkgSort::Size);
+        // Off the pending row: the cursor's own highlight would mask it.
+        app.pkg_move(1);
+        assert_ne!(
+            app.selected_package().map(|p| p.name.as_str()),
+            Some("glibc")
+        );
+
+        // Read the styles back: the pending row's name carries the accent,
+        // an up-to-date one does not.
+        let backend = TestBackend::new(120, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let accent = Theme::dark().accent.fg;
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect()
+            })
+            .collect();
+        // The pane titles its report with the same name in the same accent,
+        // so only look left of the divider.
+        let divider = rows
+            .iter()
+            .find(|l| l.contains("NAME"))
+            .and_then(|l| l.rfind('|'))
+            .unwrap_or(usize::MAX);
+        let name_fg = |needle: &str| {
+            for (y, row) in rows.iter().enumerate() {
+                match row.find(needle) {
+                    Some(col) if col < divider => {
+                        return buf.cell((col as u16, y as u16)).and_then(|c| c.style().fg);
+                    }
+                    _ => {}
+                }
+            }
+            None
+        };
+        assert_eq!(name_fg("glibc"), accent, "pending row is not accented");
+        assert_ne!(name_fg("bash"), accent, "an up-to-date row was accented");
     }
 
     #[test]
