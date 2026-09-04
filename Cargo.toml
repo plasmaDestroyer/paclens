@@ -1,6 +1,6 @@
 [package]
 name = "paclens"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 description = "A TUI-first pacman + AUR + Flatpak inspection and update tool for Arch Linux. Installs a binary; there is no library API."
 license = "MIT"

@@ -1443,6 +1443,36 @@ YYYY-MM-DD | no --noconfirm for pacman
            | Publishing is ordered ahead of all of it, because until the
            | AUR package and the crates.io entry exist, every capability
            | added lands in front of the same zero users.
+
+2026-09-04 | the package screen's pane is permanent; the description lives
+           | in it, never in a column (#46, #55-#58)
+           | DESCRIPTION shared the leftover width with NAME and lost:
+           | ~29 columns against text that is usually 40-80, cut with no
+           | sign anything was missing. No arrangement of columns fixes
+           | that at a terminal's width — the text needs somewhere it can
+           | wrap. The why pane already had one and sat closed by default,
+           | so the two problems solved each other. The pane opens with
+           | the screen and cannot be closed: a key that hides the only
+           | place a package explains itself makes the screen worse, so W
+           | is gone (superseding the 2026-07-06 entry above, which put it
+           | there) and esc returns to the sources. It sits beside the
+           | table where there is room and under it where there is not.
+           | The DESCRIPTION column went with the closed state.
+           | The width is decided once, by one function, for both the
+           | split and the table: they used to work it out separately from
+           | different numbers, which left a strip of columns drawn by
+           | neither. Width the columns do not use goes to NAME, and the
+           | reader moves the divider with [ and ].
+           | Size is the default sort, with pending updates held above it
+           | — the dashboard already answers "what is pending", so the
+           | list opens on what is worth looking at instead. The accent
+           | that marks a pending row follows the package now rather than
+           | the sort that grouped it.
+           | The filter searches description, version and source as well
+           | as name, ranked field-before-score. Only the name stays
+           | fuzzy: a subsequence match over a sentence hits nearly
+           | anything, and the shared fields carry a minimum query length
+           | because every pacman package has "pacman" in its source.
 ```
 
 ---

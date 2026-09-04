@@ -122,8 +122,8 @@ detection and the update step go away.
 | `o` / `c` | dashboard | overlap screen / cleanup screen |
 | `r` / `L` | dashboard | refresh scan / view the update log |
 | `/` | package list | fuzzy filter |
-| `s` | package list | cycle sort: updates → reason → name → size |
-| `w` | package list | why pane for the selected package |
+| `s` | package list | cycle sort: size → updates → reason → name |
+| `[` `]` | package list | move the divider between the table and the pane |
 | `enter` | overlaps | migration report for the selected overlap |
 | `d` | overlaps | flip the migration direction |
 | `x` | overlaps | run the migration copy — backup first, unprivileged |
