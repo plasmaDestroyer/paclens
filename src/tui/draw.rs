@@ -1250,6 +1250,16 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     lines.extend([
         kv("unused runtimes", vec![unused]),
         kv(
+            "config leftovers",
+            vec![if app.pacfiles().is_empty() {
+                // A clean row, not an absent section: "none" is the answer
+                // the question has on most machines, and it is worth saying.
+                Span::styled("none".to_string(), theme.dim)
+            } else {
+                Span::styled(format!("{}", app.pacfiles().len()), theme.accent)
+            }],
+        ),
+        kv(
             "orphans",
             vec![if app.cleanup_orphans().is_empty() {
                 Span::styled("none".to_string(), theme.dim)
@@ -1283,6 +1293,30 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
             format!("  {}", helper.clean_command().join(" ")),
             theme.primary,
         )));
+    }
+    // Merging a config is genuinely destructive, so this stays where the
+    // trust ladder puts it: text you read, then run yourself (#2).
+    let pacfiles = app.pacfiles();
+    if !pacfiles.is_empty() {
+        let diff = app.diff_program();
+        lines.push(Line::from(Span::styled(
+            format!("  {}", crate::analyzer::pacfiles::review_all_command(&diff)),
+            theme.primary,
+        )));
+        // The newest few by name, so the list says *what* is waiting rather
+        // than only how many. The rest are behind pacdiff above.
+        for f in pacfiles.iter().take(3) {
+            lines.push(Line::from(Span::styled(
+                format!("  {} {}", f.kind.label(), f.base()),
+                theme.dim,
+            )));
+        }
+        if pacfiles.len() > 3 {
+            lines.push(Line::from(Span::styled(
+                format!("  … {} more", pacfiles.len() - 3),
+                theme.dim,
+            )));
+        }
     }
     if !app.cleanup_orphans().is_empty() {
         lines.push(Line::from(Span::styled(
@@ -2007,6 +2041,7 @@ mod tests {
                 crate::providers::aur::AurHelper::Paru,
             ),
             kernel: None,
+            pacfiles: Vec::new(),
         }
     }
 
@@ -2799,6 +2834,44 @@ mod tests {
             !text.contains("reboot"),
             "furniture on a healthy system:\n{text}"
         );
+    }
+
+    #[test]
+    fn the_cleanup_screen_lists_config_leftovers_as_copiable_text() {
+        use crate::analyzer::pacfiles::{PacFile, PacFileKind};
+        let mut s = scan_with(Vec::new());
+        s.pacfiles = (0..5)
+            .map(|i| PacFile {
+                path: format!("/etc/conf{i}.conf.pacnew"),
+                kind: PacFileKind::Pacnew,
+                modified_secs: Some(100 - i),
+            })
+            .collect();
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 26);
+        assert!(text.contains("config leftovers"), "row missing:\n{text}");
+        assert!(text.contains("pacdiff"), "suggestion missing:\n{text}");
+        // Named, not just counted — but capped, with the rest behind pacdiff.
+        assert!(text.contains("/etc/conf0.conf"), "{text}");
+        assert!(
+            text.contains("2 more"),
+            "the cap must say what it hid:\n{text}"
+        );
+        // The screen still has no action keys: this is text you run yourself.
+        assert!(!text.contains("--noconfirm"), "{text}");
+    }
+
+    #[test]
+    fn a_clean_system_still_gets_a_config_leftovers_row() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 26);
+        assert!(
+            text.contains("config leftovers"),
+            "the row must say none rather than vanish:\n{text}"
+        );
+        assert!(!text.contains("pacdiff"), "nothing to suggest:\n{text}");
     }
 
     #[test]

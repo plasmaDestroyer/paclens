@@ -31,6 +31,9 @@ pub struct AppOptions {
     pub min_confidence: MinConfidence,
     /// `config.cleanup.orphan_ignore` — names kept out of the orphan list.
     pub orphan_ignore: Vec<String>,
+    /// `config.cleanup.diff_prog` — the program the `.pacnew` review command
+    /// names. Empty defers to `$DIFFPROG`, then `vimdiff`.
+    pub diff_prog: String,
 }
 
 impl AppOptions {
@@ -42,6 +45,7 @@ impl AppOptions {
             extra_mappings: config.overlap.extra_mappings.clone(),
             min_confidence: config.overlap.min_confidence(),
             orphan_ignore: config.cleanup.orphan_ignore.clone(),
+            diff_prog: config.cleanup.diff_prog.clone(),
         }
     }
 
@@ -55,6 +59,9 @@ impl AppOptions {
             extra_mappings: Vec::new(),
             min_confidence: MinConfidence::Unknown, // tests see everything
             orphan_ignore: Vec::new(),
+            // Named rather than resolved, so a test never depends on whatever
+            // $DIFFPROG happens to be on the machine running it.
+            diff_prog: "vimdiff".to_string(),
         }
     }
 }
@@ -691,6 +698,20 @@ impl App {
     }
     pub fn overlap_count(&self) -> usize {
         self.overlaps.len()
+    }
+
+    /// The `.pacnew` / `.pacsave` leftovers, newest first (#2).
+    pub fn pacfiles(&self) -> Vec<&crate::analyzer::PacFile> {
+        crate::analyzer::pacfiles::review_order(&self.scan.pacfiles)
+    }
+
+    /// The diff program the review commands name: the config knob, else
+    /// `$DIFFPROG`, else `vimdiff` — `pacdiff`'s own order.
+    pub fn diff_program(&self) -> String {
+        crate::analyzer::pacfiles::diff_program(
+            &self.opts.diff_prog,
+            std::env::var("DIFFPROG").ok().as_deref(),
+        )
     }
 
     /// Does the running kernel still match the installed one (#3)? Recomputed
@@ -1350,6 +1371,7 @@ mod tests {
                 crate::providers::aur::AurHelper::Paru,
             ),
             kernel: None,
+            pacfiles: Vec::new(),
         }
     }
 

@@ -29,6 +29,69 @@ const MODULES_DIR: &str = "/usr/lib/modules";
 /// `uname -r` without a subprocess.
 const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
 
+/// Walk the config dirs for `.pacnew` / `.pacsave` leftovers (#2).
+///
+/// Bounded rather than unlimited: `/etc` is shallow, and a runaway walk of a
+/// bind-mounted tree would turn a scan into a chore. Unreadable directories
+/// are skipped silently — several under `/etc` are root-only by design, and
+/// paclens does not elevate to look at configs.
+///
+/// ponytail: std::fs recursion, no walkdir dependency and no `find`
+/// subprocess. Symlinked directories are not followed, which is what keeps
+/// this from looping.
+fn find_pacfiles(dirs: &[String]) -> Vec<crate::analyzer::pacfiles::PacFile> {
+    use crate::analyzer::pacfiles::{PacFile, PacFileKind};
+    const MAX_DEPTH: usize = 8;
+
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PacFile>) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return; // unreadable: root-only, or gone since the listing
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                walk(&path, depth + 1, out);
+                continue;
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let found = if name.ends_with(".pacnew") {
+                PacFileKind::Pacnew
+            } else if name.ends_with(".pacsave") {
+                PacFileKind::Pacsave
+            } else {
+                continue;
+            };
+            let modified_secs = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            out.push(PacFile {
+                path: path.to_string_lossy().into_owned(),
+                kind: found,
+                modified_secs,
+            });
+        }
+    }
+
+    let mut out = Vec::new();
+    for dir in dirs {
+        walk(Path::new(dir), 0, &mut out);
+    }
+    out
+}
+
 /// The running kernel, as two facts read from the system. Whether they add up
 /// to "reboot required" is the analyzer's call (P5) — this only measures, the
 /// way it measures cache sizes.
@@ -291,6 +354,7 @@ fn assemble(
         profile_dir_sizes: Default::default(),
         aur_helper,
         kernel: read_running_kernel(),
+        pacfiles: find_pacfiles(&config.cleanup.config_dirs),
     };
 
     // v0.4 migration-advisory probe. Which paths matter is pure analyzer

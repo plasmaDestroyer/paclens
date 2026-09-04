@@ -308,6 +308,7 @@ mod tests {
                 crate::providers::aur::AurHelper::Paru,
             ),
             kernel: None,
+            pacfiles: Vec::new(),
         }
     }
 
@@ -452,6 +453,7 @@ mod tests {
                 crate::providers::aur::AurHelper::Paru,
             ),
             kernel: None,
+            pacfiles: Vec::new(),
         };
         let plan = plan_updates(&empty, enable_all);
         assert!(plan.is_empty());

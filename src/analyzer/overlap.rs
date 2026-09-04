@@ -266,6 +266,7 @@ mod tests {
                 crate::providers::aur::AurHelper::Paru,
             ),
             kernel: None,
+            pacfiles: Vec::new(),
         }
     }
 

@@ -117,6 +117,7 @@ mod tests {
                 crate::providers::aur::AurHelper::Paru,
             ),
             kernel: None,
+            pacfiles: Vec::new(),
         }
     }
 
@@ -180,6 +181,7 @@ mod tests {
                 crate::providers::aur::AurHelper::Paru,
             ),
             kernel: None,
+            pacfiles: Vec::new(),
         };
         assert_eq!(
             summarize(&empty, |_| true),

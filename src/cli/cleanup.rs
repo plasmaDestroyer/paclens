@@ -27,13 +27,21 @@ pub fn run(
     let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
     let graph = DepGraph::build(&scan);
-    print!("{}", render_cleanup(&scan, &graph, styles));
+    print!(
+        "{}",
+        render_cleanup_with(&scan, &graph, styles, &config.cleanup.diff_prog)
+    );
     Ok(())
 }
 
 /// The whole report. Pure (no IO) so the no-color rendering is deterministic
 /// and unit-testable, matching `status::render_status`.
-fn render_cleanup(scan: &ScanResult, graph: &DepGraph, s: &Styles) -> String {
+/// The diff program is the one part of the report that comes from config
+/// rather than from the scan.
+fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_prog: &str) -> String {
+    use crate::analyzer::pacfiles;
+    let pacfiles = pacfiles::review_order(&scan.pacfiles);
+    let diff = pacfiles::diff_program(diff_prog, std::env::var("DIFFPROG").ok().as_deref());
     let orphans = graph.orphans(scan);
     let unused: Vec<_> = graph.unused_runtimes(scan);
     let unused_bytes: u64 = unused.iter().filter_map(|p| p.size_bytes).sum();
@@ -51,7 +59,7 @@ fn render_cleanup(scan: &ScanResult, graph: &DepGraph, s: &Styles) -> String {
     let mut out = String::new();
     // The headline counts things a reader could act on, not bytes: the cache
     // total is mostly current-version tarballs that nothing should remove.
-    let actionable = orphans.len() + unused.len();
+    let actionable = orphans.len() + unused.len() + pacfiles.len();
     let headline = if actionable == 0 {
         s.summary_ok("nothing to clean up")
     } else {
@@ -104,6 +112,18 @@ fn render_cleanup(scan: &ScanResult, graph: &DepGraph, s: &Styles) -> String {
         },
         s,
     ));
+    // A clean row rather than an absent section: "none" is the answer on most
+    // machines, and a report that only speaks up when something is wrong
+    // leaves you wondering whether it looked.
+    out.push_str(&row(
+        "config leftovers",
+        &if pacfiles.is_empty() {
+            s.dim("none")
+        } else {
+            format!("{}", pacfiles.len())
+        },
+        s,
+    ));
 
     // --- the lists themselves, which the TUI shows on its own rows ---
     if !unused.is_empty() {
@@ -134,6 +154,22 @@ fn render_cleanup(scan: &ScanResult, graph: &DepGraph, s: &Styles) -> String {
         }
     }
 
+    if !pacfiles.is_empty() {
+        out.push('\n');
+        out.push_str(
+            &s.dim("config leftovers - upgrades kept your file and left the new one beside it:"),
+        );
+        out.push('\n');
+        for f in &pacfiles {
+            out.push_str(&format!(
+                "  {} {} {}\n",
+                s.bullet(),
+                f.base(),
+                s.dim(f.kind.label())
+            ));
+        }
+    }
+
     // --- suggestions ---
     let mut suggestions = Vec::new();
     // Only suggest what would actually do something: an 11 GiB cache that
@@ -146,6 +182,9 @@ fn render_cleanup(scan: &ScanResult, graph: &DepGraph, s: &Styles) -> String {
     }
     if let (Some(_), Some(helper)) = (sizes.aur_cache_bytes, scan.aur_helper.helper()) {
         suggestions.push(helper.clean_command().join(" "));
+    }
+    if !pacfiles.is_empty() {
+        suggestions.push(pacfiles::review_all_command(&diff));
     }
     if !orphans.is_empty() {
         suggestions.push(format!("sudo pacman -Rns {}", orphans.join(" ")));
@@ -240,12 +279,13 @@ mod tests {
             profile_dir_sizes: Default::default(),
             aur_helper: HelperChoice::Detected(AurHelper::Paru),
             kernel: None,
+            pacfiles: Vec::new(),
         }
     }
 
     fn render(scan: &ScanResult) -> String {
         let graph = DepGraph::build(scan);
-        render_cleanup(scan, &graph, &ascii())
+        render_cleanup_with(scan, &graph, &ascii(), "")
     }
 
     #[test]
@@ -275,6 +315,51 @@ mod tests {
     /// An orphan is a package installed as a dependency that nothing now
     /// requires. It is listed with its size and a removal command, but the
     /// command is text — and it points at `why` first.
+    #[test]
+    fn config_leftovers_are_listed_with_their_base_and_a_copiable_command() {
+        use crate::analyzer::pacfiles::{PacFile, PacFileKind};
+        let mut scan = scan(Vec::new(), CacheSizes::default());
+        scan.pacfiles = vec![
+            PacFile {
+                path: "/etc/pacman.conf.pacnew".to_string(),
+                kind: PacFileKind::Pacnew,
+                modified_secs: Some(200),
+            },
+            PacFile {
+                path: "/etc/locale.gen.pacnew".to_string(),
+                kind: PacFileKind::Pacnew,
+                modified_secs: Some(100),
+            },
+        ];
+        let graph = DepGraph::build(&scan);
+        let out = render_cleanup_with(&scan, &graph, &ascii(), "meld");
+        assert!(out.contains("config leftovers"), "row missing:\n{out}");
+        // Listed by the config they sit next to, not by the leftover's name.
+        assert!(out.contains("/etc/pacman.conf "), "base missing:\n{out}");
+        assert!(out.contains("pacnew"), "kind missing:\n{out}");
+        // Newest first.
+        let first = out.find("/etc/pacman.conf").expect("listed");
+        let second = out.find("/etc/locale.gen").expect("listed");
+        assert!(first < second, "not newest-first:\n{out}");
+        // Copiable text, and nothing that merges anything by itself.
+        assert!(
+            out.contains("sudo DIFFPROG=meld pacdiff"),
+            "suggestion missing:\n{out}"
+        );
+        assert!(!out.contains("--noconfirm"), "{out}");
+    }
+
+    #[test]
+    fn no_leftovers_still_gets_a_row() {
+        let scan = scan(Vec::new(), CacheSizes::default());
+        let out = render(&scan);
+        assert!(
+            out.contains("config leftovers"),
+            "the row must say none rather than vanish:\n{out}"
+        );
+        assert!(!out.contains("pacdiff"), "nothing to suggest:\n{out}");
+    }
+
     #[test]
     fn orphans_are_listed_with_sizes_and_a_why_first_suggestion() {
         let s = scan(

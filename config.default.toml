@@ -107,3 +107,13 @@ min_confidence = "Inferred"
 # Useful for packages you keep intentionally despite having no dependents.
 # Example: orphan_ignore = ["lib32-vulkan-icd-loader", "wine-staging"]
 orphan_ignore = []
+
+# Where to look for .pacnew / .pacsave files left behind by upgrades.
+# /etc is what pacman backs up; add directories if you keep configs elsewhere.
+config_dirs = ["/etc"]
+
+# The diff program the review command suggests. Empty follows pacdiff's own
+# order: $DIFFPROG, then vimdiff. paclens never runs it — the command is
+# copiable text, because merging a config is a decision, not a step.
+# Example: diff_prog = "meld"
+diff_prog = ""

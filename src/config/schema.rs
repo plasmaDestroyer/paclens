@@ -84,10 +84,27 @@ pub struct ExtraMapping {
     pub profile_dirs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Cleanup {
     pub orphan_ignore: Vec<String>,
+    /// Where to look for `.pacnew` / `.pacsave` leftovers (#2). `/etc` covers
+    /// what pacman actually backs up; a machine that keeps configs elsewhere
+    /// can name those dirs too.
+    pub config_dirs: Vec<String>,
+    /// The diff program the review command suggests. Empty follows
+    /// `pacdiff`'s own order: `$DIFFPROG`, then `vimdiff`.
+    pub diff_prog: String,
+}
+
+impl Default for Cleanup {
+    fn default() -> Self {
+        Self {
+            orphan_ignore: Vec::new(),
+            config_dirs: vec!["/etc".to_string()],
+            diff_prog: String::new(),
+        }
+    }
 }
 
 impl Default for General {

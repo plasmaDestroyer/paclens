@@ -26,7 +26,7 @@ use super::{Package, PendingUpdate, Source};
 /// v10: `aur_helper` widens from the resolved helper to the whole
 /// `HelperChoice`, so the dashboard can say *why* — a stale pin needs the name
 /// that was configured, which the resolved value has already thrown away.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -62,6 +62,11 @@ pub struct ScanResult {
     /// they mean "reboot required" is the analyzer's call (#3).
     #[serde(default)]
     pub kernel: Option<crate::analyzer::kernel::RunningKernel>,
+    /// `.pacnew` / `.pacsave` files found under the config dirs (#2). Paths
+    /// and mtimes only — what they mean, and what to do about them, is the
+    /// analyzer's.
+    #[serde(default)]
+    pub pacfiles: Vec<crate::analyzer::pacfiles::PacFile>,
 }
 
 impl ScanResult {
@@ -79,6 +84,7 @@ impl ScanResult {
             profile_dir_sizes: Default::default(),
             aur_helper: Default::default(),
             kernel: None,
+            pacfiles: Vec::new(),
         }
     }
 }
