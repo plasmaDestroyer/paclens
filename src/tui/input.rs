@@ -47,7 +47,9 @@ pub enum Action {
     CycleSort,
     /// Package list → toggle the why side pane.
     ToggleWhy,
-    /// Package list → widen (+) or narrow (-) the pane by a column.
+    /// Package list → move the divider: `]` right (a wider table, `+`), `[`
+    /// left (a wider pane, `-`). The sign is the pane's, so it reads inverted
+    /// here — the keys point at where the divider goes.
     ResizePane(i16),
     /// Flip the migration report's direction (overlap screen, v0.4).
     FlipDirection,
@@ -145,8 +147,8 @@ pub fn map_packages_key(key: KeyEvent) -> Action {
         KeyCode::PageUp => Action::PrevPage,
         KeyCode::Char('/') => Action::StartFilter,
         KeyCode::Char('s') | KeyCode::Char('S') => Action::CycleSort,
-        KeyCode::Char(']') | KeyCode::Char('>') => Action::ResizePane(2),
-        KeyCode::Char('[') | KeyCode::Char('<') => Action::ResizePane(-2),
+        KeyCode::Char(']') | KeyCode::Char('>') => Action::ResizePane(-2),
+        KeyCode::Char('[') | KeyCode::Char('<') => Action::ResizePane(2),
         KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
@@ -324,13 +326,15 @@ mod tests {
         );
         // The package screen's pane is permanent — no toggle key (#56).
         assert_eq!(map_packages_key(plain(KeyCode::Char('w'))), Action::Ignore);
+        // The brackets move the divider where they point: `]` right, which is
+        // a wider table and so a negative delta for the pane.
         assert_eq!(
             map_packages_key(plain(KeyCode::Char(']'))),
-            Action::ResizePane(2)
+            Action::ResizePane(-2)
         );
         assert_eq!(
             map_packages_key(plain(KeyCode::Char('['))),
-            Action::ResizePane(-2)
+            Action::ResizePane(2)
         );
         assert_eq!(map_packages_key(plain(KeyCode::Esc)), Action::Back);
         assert_eq!(map_packages_key(plain(KeyCode::Char('q'))), Action::Quit);

@@ -182,7 +182,7 @@ pub struct App {
     /// Package list: the filter input line has focus.
     filter_active: bool,
     /// Package list: the why side pane is open.
-    /// Columns added to (or taken from) the package screen's pane by `]`/`[`.
+    /// Columns added to (or taken from) the package screen's pane by `[`/`]`.
     pane_bias: i16,
     /// Package list: active sort mode (persists across list opens).
     pkg_sort: PkgSort,
@@ -912,8 +912,10 @@ impl App {
     pub fn is_filter_active(&self) -> bool {
         self.filter_active
     }
-    /// `]`/`[`: the reader's own split. Bounded so neither side can be
-    /// squeezed to nothing; the render clamps again against the real width.
+    /// The reader's own split, in columns given to the pane — so `[` (divider
+    /// left, wider pane) is positive and `]` is negative. Bounded so neither
+    /// side can be squeezed to nothing; the render clamps again against the
+    /// real width.
     pub fn resize_pane(&mut self, delta: i16) {
         self.pane_bias = (self.pane_bias + delta).clamp(-30, 60);
     }
