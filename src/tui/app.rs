@@ -243,6 +243,58 @@ pub enum ExecKind {
     Removal,
 }
 
+/// Which field a filter query hit. Ordered best-first: the derived `Ord` is
+/// the ranking, so a name match sorts above a description match whatever the
+/// two scored (#58).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MatchField {
+    Name,
+    Version,
+    Source,
+    Description,
+}
+
+impl MatchField {
+    pub fn label(self) -> &'static str {
+        match self {
+            MatchField::Name => "name",
+            MatchField::Version => "version",
+            MatchField::Source => "source",
+            MatchField::Description => "description",
+        }
+    }
+}
+
+/// Match a filter query against a package, best field first.
+///
+/// Only the name is fuzzy. A subsequence match over a sentence hits nearly
+/// everything — "abc" would match any description carrying an a, a b and a c
+/// in that order — so the other fields want the query to actually appear in
+/// them.
+pub fn pkg_match(query: &str, p: &Package) -> Option<(MatchField, fuzzy::Score)> {
+    if let Some(score) = fuzzy::matches(query, &p.name) {
+        return Some((MatchField::Name, score));
+    }
+    let needle = query.to_lowercase();
+    let len = needle.chars().count();
+    let contains = |hay: &str, min: usize| len >= min && hay.to_lowercase().contains(&needle);
+    // Minimum lengths, because these fields are shared: every pacman package
+    // has "pacman" in its source and a "1" somewhere in its version, so a
+    // one-letter query would match the whole list rather than narrow it.
+    if contains(&p.version, 2) {
+        return Some((MatchField::Version, 0));
+    }
+    if contains(p.source_id.as_str(), 3) {
+        return Some((MatchField::Source, 0));
+    }
+    match &p.description {
+        // Longer descriptions carry more noise, so the shorter one wins a tie
+        // — the same instinct fuzzy scoring already follows for names.
+        Some(d) if contains(d, 3) => Some((MatchField::Description, -(d.len() as fuzzy::Score))),
+        _ => None,
+    }
+}
+
 impl App {
     pub fn new(scan: ScanResult, theme: Theme, opts: AppOptions) -> Self {
         let dash_selected = if scan.sources.is_empty() {
@@ -830,6 +882,30 @@ impl App {
             .as_ref()
             .is_some_and(|s| s.as_str().starts_with("flatpak"))
     }
+    /// What the current filter matched on, best field first, with a count
+    /// each. A row that hit on its description says nothing on its own — the
+    /// filter line is where that gets explained (#58).
+    pub fn filter_fields(&self) -> Vec<(MatchField, usize)> {
+        if self.pkg_filter.is_empty() {
+            return Vec::new();
+        }
+        let Some(source) = &self.pkg_source else {
+            return Vec::new();
+        };
+        let mut counts: Vec<(MatchField, usize)> = Vec::new();
+        for p in self.scan.packages.iter().filter(|p| &p.source_id == source) {
+            let Some((field, _)) = pkg_match(&self.pkg_filter, p) else {
+                continue;
+            };
+            match counts.iter_mut().find(|(f, _)| *f == field) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((field, 1)),
+            }
+        }
+        counts.sort_by_key(|&(f, _)| f);
+        counts
+    }
+
     pub fn pkg_filter(&self) -> &str {
         &self.pkg_filter
     }
@@ -893,12 +969,18 @@ impl App {
             .filter(|p| &p.source_id == source)
             .collect();
         if !self.pkg_filter.is_empty() {
-            let mut scored: Vec<(fuzzy::Score, &Package)> = pkgs
+            let mut scored: Vec<(MatchField, fuzzy::Score, &Package)> = pkgs
                 .into_iter()
-                .filter_map(|p| fuzzy::matches(&self.pkg_filter, &p.name).map(|s| (s, p)))
+                .filter_map(|p| pkg_match(&self.pkg_filter, p).map(|(f, s)| (f, s, p)))
                 .collect();
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
-            return vec![("", scored.into_iter().map(|(_, p)| p).collect())];
+            // Field first, then the match's own score: a name hit outranks a
+            // description hit however well the description scored.
+            scored.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| b.1.cmp(&a.1))
+                    .then_with(|| a.2.name.cmp(&b.2.name))
+            });
+            return vec![("", scored.into_iter().map(|(_, _, p)| p).collect())];
         }
         pkgs.sort_by(|a, b| a.name.cmp(&b.name));
         match self.pkg_sort {
@@ -2079,6 +2161,74 @@ mod tests {
         assert_eq!(app.pkg_offset(), 4);
         app.filter_push('p');
         assert_eq!(app.pkg_offset(), 0, "filter snaps the window home");
+    }
+
+    #[test]
+    fn a_filter_matches_name_then_version_source_description() {
+        let mut p = pkg("ripgrep", SourceId::pacman());
+        p.version = "14.1.1-1".to_string();
+        p.description = Some("A search tool that respects gitignore".to_string());
+
+        // Name is fuzzy, and outranks every other field.
+        assert_eq!(pkg_match("rg", &p).map(|(f, _)| f), Some(MatchField::Name));
+        assert_eq!(
+            pkg_match("ripgrep", &p).map(|(f, _)| f),
+            Some(MatchField::Name)
+        );
+        // The rest want the query to actually appear.
+        assert_eq!(
+            pkg_match("14.1", &p).map(|(f, _)| f),
+            Some(MatchField::Version)
+        );
+        assert_eq!(
+            pkg_match("pacman", &p).map(|(f, _)| f),
+            Some(MatchField::Source)
+        );
+        assert_eq!(
+            pkg_match("gitignore", &p).map(|(f, _)| f),
+            Some(MatchField::Description)
+        );
+        assert_eq!(pkg_match("zzz", &p), None);
+    }
+
+    #[test]
+    fn short_queries_do_not_match_the_shared_fields() {
+        let mut p = pkg("zzz", SourceId::pacman());
+        p.version = "1".to_string();
+        p.description = Some("an ordinary description".to_string());
+        // "a" is in "pacman", in the description, and one char of the version:
+        // matching on any of those would return the entire list.
+        assert_eq!(pkg_match("a", &p), None);
+        assert_eq!(pkg_match("pa", &p), None, "two chars is still the source");
+        assert_eq!(
+            pkg_match("pac", &p).map(|(f, _)| f),
+            Some(MatchField::Source)
+        );
+    }
+
+    #[test]
+    fn a_name_hit_sorts_above_a_description_hit() {
+        let mut s = scan_with_sources(three_sources());
+        let mut by_desc = pkg("aardvark", SourceId::pacman());
+        by_desc.description = Some("the best editor around".to_string());
+        let by_name = pkg("editor", SourceId::pacman());
+        s.packages = vec![by_desc, by_name];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        app.start_filter();
+        for c in "editor".chars() {
+            app.filter_push(c);
+        }
+        let names: Vec<&str> = app
+            .visible_packages()
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["editor", "aardvark"]);
+        assert_eq!(
+            app.filter_fields(),
+            vec![(MatchField::Name, 1), (MatchField::Description, 1)]
+        );
     }
 
     #[test]

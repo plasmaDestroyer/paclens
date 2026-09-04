@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
 use crate::format::relative_time;
-use crate::tui::app::{App, Screen};
+use crate::tui::app::{App, MatchField as PkgMatchField, Screen};
 use crate::tui::theme::Theme;
 
 const MIN_WIDTH: u16 = 40;
@@ -1644,11 +1644,30 @@ fn render_filter_line(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let shown = app.visible_packages().len();
     let cursor = if app.is_filter_active() { "▏" } else { "" };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled("/", theme.accent),
         Span::styled(format!("{}{cursor}", app.pkg_filter()), theme.primary),
         Span::styled(format!("   {shown} of {}", app.pkg_total()), theme.dim),
-    ]);
+    ];
+    // A row that matched on its description looks like a row that matched on
+    // nothing, so say what the query actually hit (#58).
+    let fields = app.filter_fields();
+    if fields.len() > 1
+        || fields
+            .first()
+            .is_some_and(|&(f, _)| f != PkgMatchField::Name)
+    {
+        let by = fields
+            .iter()
+            .map(|(f, n)| format!("{n} by {}", f.label()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        spans.push(Span::styled(
+            format!("   {b} {by}", b = theme.glyphs.bullet),
+            theme.dim,
+        ));
+    }
+    let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -2691,6 +2710,37 @@ mod tests {
             }
             assert!(last.is_some(), "VERSION never rendered");
         }
+    }
+
+    #[test]
+    fn the_filter_line_says_which_field_matched() {
+        let mut s = pkg_scan();
+        s.packages[1].description = Some("the GNU C library and firefox's floor".to_string());
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        app.start_filter();
+        for c in "firefox".chars() {
+            app.filter_push(c);
+        }
+        let text = render(&app, 120, 14);
+        assert!(text.contains("2 of 3"), "counts missing:\n{text}");
+        assert!(text.contains("1 by name"), "fields missing:\n{text}");
+        assert!(text.contains("1 by description"), "fields missing:\n{text}");
+    }
+
+    #[test]
+    fn a_name_only_filter_does_not_explain_itself() {
+        let mut app = pkg_app();
+        app.start_filter();
+        for c in "fire".chars() {
+            app.filter_push(c);
+        }
+        let text = render(&app, 120, 14);
+        assert!(text.contains("1 of 3"), "counts missing:\n{text}");
+        assert!(
+            !text.contains("by name"),
+            "noise on the ordinary case:\n{text}"
+        );
     }
 
     #[test]
