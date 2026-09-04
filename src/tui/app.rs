@@ -268,7 +268,7 @@ impl App {
             pkg_filter: String::new(),
             filter_active: false,
             why_open: false,
-            pkg_sort: PkgSort::UpdatesFirst,
+            pkg_sort: PkgSort::Size,
             spinner_frame: 0,
             log_view: None,
             exec: None,
@@ -1455,6 +1455,7 @@ mod tests {
         let mut app = app();
         app.open_packages();
         assert!(app.is_why_open(), "the pane is the default state (#56)");
+        assert_eq!(app.pkg_sort(), PkgSort::Size, "size is the default sort");
         app.toggle_why();
         assert!(!app.is_why_open(), "w still closes it");
     }
@@ -1843,7 +1844,9 @@ mod tests {
 
     #[test]
     fn updates_first_puts_pending_on_top_with_headers() {
-        let app = sorted_app();
+        let mut app = sorted_app();
+        app.cycle_sort(); // size → updates
+        assert_eq!(app.pkg_sort(), PkgSort::UpdatesFirst);
         assert_eq!(
             row_names(&app),
             vec!["[pending updates 1]", "a", "[up to date 2]", "b", "c"]
@@ -1873,6 +1876,7 @@ mod tests {
     #[test]
     fn reason_sort_groups_by_install_reason() {
         let mut app = sorted_app();
+        app.cycle_sort(); // size → updates
         app.cycle_sort(); // updates → reason
         assert_eq!(app.pkg_sort(), PkgSort::Reason);
         assert_eq!(
@@ -1890,7 +1894,8 @@ mod tests {
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.on_next(); // flatpak-user
         app.open_packages();
-        app.cycle_sort();
+        app.cycle_sort(); // size → updates
+        app.cycle_sort(); // updates → reason
         assert_eq!(
             row_names(&app),
             vec![
@@ -1905,14 +1910,16 @@ mod tests {
     #[test]
     fn size_sort_is_largest_first_and_name_sort_is_plain() {
         let mut app = sorted_app();
+        // Size is the default: c (99) > b (10) > a (None → last).
+        assert_eq!(app.pkg_sort(), PkgSort::Size);
+        assert_eq!(row_names(&app), vec!["c", "b", "a"]);
+        app.cycle_sort(); // updates
         app.cycle_sort(); // reason
         app.cycle_sort(); // name
         assert_eq!(app.pkg_sort(), PkgSort::Name);
         assert_eq!(row_names(&app), vec!["a", "b", "c"]);
-        app.cycle_sort(); // size
+        app.cycle_sort(); // wraps back to size
         assert_eq!(app.pkg_sort(), PkgSort::Size);
-        // c (99) > b (10) > a (None → last).
-        assert_eq!(row_names(&app), vec!["c", "b", "a"]);
     }
 
     #[test]
@@ -1935,8 +1942,9 @@ mod tests {
 
     #[test]
     fn scrolloff_counts_header_rows() {
-        // 50 packages, one pending → 52 rows. The offset math must run in
-        // row space or the cursor drifts by the header count.
+        // 50 packages, one pending → 52 rows under the updates sort. The
+        // offset math must run in row space or the cursor drifts by the
+        // header count.
         let mut s = scan_with_sources(three_sources());
         s.packages = (0..50)
             .map(|i| pkg(&format!("p{i:02}"), SourceId::pacman()))
@@ -1944,6 +1952,7 @@ mod tests {
         s.updates = vec![upd("p00", SourceId::pacman())];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.open_packages();
+        app.cycle_sort(); // size → updates: the sort that groups
         app.set_pkg_viewport(10);
         assert_eq!(app.pkg_rows().len(), 52);
         app.pkg_move(20); // cursor pkg 20 → row 22

@@ -2178,6 +2178,7 @@ mod tests {
         ];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.open_packages();
+        app.cycle_sort(); // size (the default) → updates
         let text = render(&app, 140, 22);
         assert!(text.contains("sort: updates"), "chip missing:\n{text}");
         assert!(
@@ -2501,8 +2502,8 @@ mod tests {
         // Wide: the pane shares rows with the table, so one line carries both.
         let wide = render(&app, 120, 18);
         assert!(
-            wide.lines().any(|l| l.contains("bash")
-                && l.contains("explicit")
+            wide.lines().any(|l| l.contains("firefox")
+                && l.contains("228.88 MiB")
                 && l.contains("no description")),
             "pane is not beside the table:\n{wide}"
         );
@@ -2574,13 +2575,15 @@ mod tests {
     #[test]
     fn why_pane_shows_live_verdict_for_the_cursor_row() {
         let mut app = pkg_app();
-        // cursor row 0 = bash (name-sorted) → explicit, nothing requires it.
+        // cursor row 0 = firefox (size-sorted) → explicit, nothing requires it.
         let text = render(&app, 110, 20);
-        assert!(text.contains("why · bash"), "pane title missing:\n{text}");
+        assert!(
+            text.contains("why · firefox"),
+            "pane title missing:\n{text}"
+        );
         assert!(text.contains("likely safe"), "{text}");
         assert!(text.contains("[confirmed]"), "{text}");
 
-        app.on_next(); // firefox
         app.on_next(); // glibc — needed by bash + firefox
         let text = render(&app, 110, 20);
         assert!(text.contains("why · glibc"), "pane must follow:\n{text}");
