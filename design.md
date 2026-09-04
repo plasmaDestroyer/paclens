@@ -1473,6 +1473,43 @@ YYYY-MM-DD | no --noconfirm for pacman
            | fuzzy: a subsequence match over a sentence hits nearly
            | anything, and the shared fields carry a minimum query length
            | because every pacman package has "pacman" in its source.
+
+2026-09-05 | what needs attention after an upgrade, and what paclens may
+           | not claim to know about it (#2, #3, #4, #24)
+           | Three scanner lanes that read the system rather than a
+           | package database, and each one is shaped by what it cannot
+           | see honestly.
+           | Reboot: /proc/sys/kernel/osrelease plus whether the running
+           | release still has a modules dir; the analyzer decides. Which
+           | kernel package to compare against comes from the release's
+           | own flavour — the trailing segments that do not start with a
+           | digit — so 7.2.2-1-cachyos asks about linux-cachyos and
+           | 6.18.48-1-cachyos-lts about linux-cachyos-lts, which is the
+           | case that matters when both are installed. A kernel it
+           | cannot place says unknown; a scan that recorded none says
+           | nothing at all, because that is a fact about the scan.
+           | pacnew: Confirmed by construction, so nothing to label. Walk
+           | the config dirs with std::fs, skip what is unreadable
+           | (several dirs under /etc are root-only), list by the config
+           | each sits next to. Advisory only: taking upstream's
+           | pacman.conf would delete this machine's own repos, so there
+           | is no safe automatic answer and the screen keeps no action
+           | keys.
+           | Services: measured against checkservices, which arch-update
+           | shells out to. Its filter is the executable bit; ours was
+           | the /usr prefix. Both are needed — 121 processes here hold
+           | some deleted mapping, 3 hold an executable one, 2 hold an
+           | executable one under /usr — and the report names the file,
+           | which checkservices does not. Inferred, always. Only the
+           | caller's own processes are visible without privilege and the
+           | report says so; a session-critical unit is listed with what
+           | it would cost but never suggested.
+           | sudo: authenticate once before the first step and refresh
+           | until the run ends (#24), off by default. The trade is that
+           | anything running as this user can use sudo unprompted for
+           | the duration, which is why it is opt-in and why the run owns
+           | the loop. sudo only; doas and pkexec have no timestamp to
+           | refresh and it no-ops rather than pretending.
 ```
 
 ---

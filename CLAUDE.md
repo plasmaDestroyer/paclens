@@ -6,7 +6,7 @@ paclens is **not** a package manager. It wraps pacman, whichever AUR helper you 
 
 ## Status
 
-**0.3.4 — working tool, daily-driveable.** ~16k lines of Rust across `src/`. 462 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+**0.4.0 — working tool, daily-driveable.** ~17k lines of Rust across `src/`. 492 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
 
 Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, pty exec console, log viewer), pacman + AUR + Flatpak providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`.
 
@@ -61,7 +61,7 @@ Module contracts (design §6):
 Orientation only — **design §3 carries the rules and §13 the dated reasoning.**
 
 - **Dep graph from one `pacman -Qi` call**, not per-package `pactree`. All graph queries run in-memory on `petgraph`.
-- **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`, currently `SCHEMA_VERSION = 12`. The dep graph and overlaps are recomputed on load, never serialized. Atomic writes: write `.tmp`, then `rename()`.
+- **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`, currently `SCHEMA_VERSION = 13`. The dep graph and overlaps are recomputed on load, never serialized. Atomic writes: write `.tmp`, then `rename()`.
 - **Execution runs on a real pty** (`portable-pty` + `vt100`) inside the TUI. The child sees a genuine terminal, so sudo/doas/pkexec/pacman/paru prompt, colour and redraw natively; every key including Ctrl-C passes through. This replaced both the piped-stdio console and the original suspend/restore flow.
 - **No `--noconfirm` for pacman**, ever. It suppresses conflict resolution.
 - **The dashboard *is* the plan view.** There is no separate update screen. `space` toggles a source, **`enter` runs the plan** (`u` is an alias), `i` opens the selected source's package list, and the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
@@ -97,6 +97,9 @@ Three capability blocks, one minor each:
                   every config knob consumed, provider timeouts
 0.3.0  extend     AUR as its own source via paru, migration advisory and
                   execution behind backups, honest reclaimable cleanup figures
+0.4.0  attend     what needs attention after an upgrade: reboot required,
+                  .pacnew/.pacsave leftovers, services running against
+                  replaced files; one sudo prompt per run
 ```
 
 **Renumbered 2026-08-24.** The old scheme mixed granularities — 0.1.x took a
