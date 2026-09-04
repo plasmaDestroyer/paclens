@@ -172,9 +172,46 @@ aur_publish() {
   fi
 }
 
+# Publish the crate. A crates.io version is immutable — it can be yanked but
+# never replaced — so this checks the registry itself rather than trusting the
+# tree, and leaves `cargo publish`'s verification build in place: that build is
+# the last thing standing between a typo and a version nobody can take back.
+#
+# Skip with PACLENS_NO_CRATES=1.
+crates_publish() {
+  [ "${PACLENS_NO_CRATES:-0}" = "1" ] && return
+  ver=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
+  [ -n "$ver" ] || {
+    say "crates: no version in Cargo.toml — skipping"
+    return
+  }
+  if ! git ls-remote --tags origin "v$ver" 2>/dev/null | grep -q .; then
+    say "crates: $ver — tag v$ver is not on origin, skipping"
+    return
+  fi
+  if curl -fsS "https://index.crates.io/pa/cl/paclens" 2>/dev/null |
+    grep -q "\"vers\":\"$ver\""; then
+    say "crates: $ver is already published"
+    return
+  fi
+  if ! git -C "$root" diff --quiet HEAD 2>/dev/null; then
+    say "crates: the tree has uncommitted changes — not publishing $ver"
+    return
+  fi
+  say "crates: publishing $ver (verification build) ..."
+  if out=$(cd "$root" && cargo publish --locked 2>&1); then
+    say "crates: published $ver"
+  else
+    say "crates: publish failed (this push continues):"
+    printf '%s\n' "$out" | grep -E '^(error|warning: )' -A3 | head -20 >&2
+  fi
+}
+
 if [ "$pushing_tag" = "1" ]; then
-  # Wait for the tag this push is carrying, then publish the source package.
-  # Detached, because the tag cannot land until this hook returns.
+  # Wait for the tag this push is carrying, then publish. Detached, because
+  # the tag cannot land until this hook returns — and neither the AUR package
+  # (which builds from that tag) nor an immutable crates.io version should
+  # exist before the ref they name does.
   ver=$(sed -n 's/^pkgver=//p' "$root/packaging/paclens/PKGBUILD" | head -1)
   mkdir -p "$cache"
   (
@@ -184,9 +221,10 @@ if [ "$pushing_tag" = "1" ]; then
     done
     printf '\n=== %s ===\n' "$(date -Is)"
     aur_publish paclens
+    crates_publish
   ) >>"$log" 2>&1 </dev/null &
   disown 2>/dev/null || true
-  say "aur: waiting for v$ver to land, then publishing paclens (log: $log)"
+  say "aur + crates: waiting for v$ver to land, then publishing (log: $log)"
 fi
 
 if [ "$touches_packaging" = "1" ] || [ "${PACLENS_AUR:-0}" = "1" ]; then
