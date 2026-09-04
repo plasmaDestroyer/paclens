@@ -1383,10 +1383,9 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
             let (table_w, cramped) = table_layout(app, chunks[1].width);
             // The pane takes what it needs and no more; everything past that
             // is the table's, which spends it on DESCRIPTION.
-            let pane_w = chunks[1]
-                .width
-                .saturating_sub(table_w)
-                .clamp(30, PANE_MAX_WIDTH);
+            let pane_w = (i32::from(chunks[1].width.saturating_sub(table_w).min(PANE_MAX_WIDTH))
+                + i32::from(app.pane_bias()))
+            .clamp(24, i32::from(chunks[1].width) * 2 / 3) as u16;
             let panes = Layout::horizontal([Constraint::Min(20), Constraint::Length(pane_w)])
                 .split(chunks[1]);
             render_package_table(frame, panes[0], app, cramped);
@@ -1420,6 +1419,7 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
                 ("/", "filter"),
                 ("s", "sort"),
                 ("w", "why"),
+                ("[ ]", "pane"),
                 ("esc", "back"),
                 ("q", "quit"),
             ],
@@ -2494,6 +2494,29 @@ mod tests {
         let mut with_header = vec![PkgRow::Header("pending updates", 9)];
         with_header.extend(scan.packages.iter().map(PkgRow::Pkg));
         assert_eq!(name_column_width(&with_header, 40), 21);
+    }
+
+    #[test]
+    fn brackets_move_the_split() {
+        fn divider(app: &App) -> usize {
+            let text = render(app, 140, 18);
+            // The outer panel border is a '|' too — look inside it.
+            text.lines()
+                .find(|l| l.contains("NAME"))
+                .and_then(|l| l.get(1..l.len() - 1))
+                .and_then(|l| l.rfind('|'))
+                .unwrap_or(0)
+        }
+        let mut app = pkg_app();
+        let start = divider(&app);
+        app.resize_pane(6); // ] — a wider pane starts further left
+        let wider = divider(&app);
+        assert!(
+            wider < start,
+            "] did not widen the pane: {wider} vs {start}"
+        );
+        app.resize_pane(-12); // [ — past the start, the other way
+        assert!(divider(&app) > wider, "[ did not narrow the pane");
     }
 
     #[test]

@@ -332,6 +332,7 @@ fn run_loop(
                 },
                 None => app.set_flash("no update log yet — nothing has been executed"),
             },
+            Action::ResizePane(delta) => app.resize_pane(delta),
             Action::Ignore => {}
         }
     }

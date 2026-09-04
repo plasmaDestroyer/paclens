@@ -47,6 +47,8 @@ pub enum Action {
     CycleSort,
     /// Package list → toggle the why side pane.
     ToggleWhy,
+    /// Package list → widen (+) or narrow (-) the pane by a column.
+    ResizePane(i16),
     /// Flip the migration report's direction (overlap screen, v0.4).
     FlipDirection,
     /// Run the open migration report's copy plan (overlap screen, v0.5).
@@ -144,6 +146,8 @@ pub fn map_packages_key(key: KeyEvent) -> Action {
         KeyCode::Char('/') => Action::StartFilter,
         KeyCode::Char('s') | KeyCode::Char('S') => Action::CycleSort,
         KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
+        KeyCode::Char(']') | KeyCode::Char('>') => Action::ResizePane(2),
+        KeyCode::Char('[') | KeyCode::Char('<') => Action::ResizePane(-2),
         KeyCode::Esc => Action::Back,
         _ => Action::Ignore,
     }
@@ -326,6 +330,14 @@ mod tests {
         assert_eq!(
             map_packages_key(plain(KeyCode::Char('W'))),
             Action::ToggleWhy
+        );
+        assert_eq!(
+            map_packages_key(plain(KeyCode::Char(']'))),
+            Action::ResizePane(2)
+        );
+        assert_eq!(
+            map_packages_key(plain(KeyCode::Char('['))),
+            Action::ResizePane(-2)
         );
         assert_eq!(map_packages_key(plain(KeyCode::Esc)), Action::Back);
         assert_eq!(map_packages_key(plain(KeyCode::Char('q'))), Action::Quit);

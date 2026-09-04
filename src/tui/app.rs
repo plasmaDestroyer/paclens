@@ -183,6 +183,8 @@ pub struct App {
     filter_active: bool,
     /// Package list: the why side pane is open.
     why_open: bool,
+    /// Columns added to (or taken from) the package screen's pane by `]`/`[`.
+    pane_bias: i16,
     /// Package list: active sort mode (persists across list opens).
     pkg_sort: PkgSort,
     /// Spinner animation frame, advanced by the loop's poll tick.
@@ -268,6 +270,7 @@ impl App {
             pkg_filter: String::new(),
             filter_active: false,
             why_open: false,
+            pane_bias: 0,
             pkg_sort: PkgSort::Size,
             spinner_frame: 0,
             log_view: None,
@@ -838,6 +841,16 @@ impl App {
     pub fn is_filter_active(&self) -> bool {
         self.filter_active
     }
+    /// `]`/`[`: the reader's own split. Bounded so neither side can be
+    /// squeezed to nothing; the render clamps again against the real width.
+    pub fn resize_pane(&mut self, delta: i16) {
+        self.pane_bias = (self.pane_bias + delta).clamp(-30, 60);
+    }
+
+    pub fn pane_bias(&self) -> i16 {
+        self.pane_bias
+    }
+
     pub fn is_why_open(&self) -> bool {
         self.why_open
     }
@@ -1448,6 +1461,22 @@ mod tests {
             .map(|p| p.name.as_str())
             .collect();
         assert_eq!(names, vec!["org.x.App"]);
+    }
+
+    #[test]
+    fn pane_resize_is_bounded_in_both_directions() {
+        let mut app = app();
+        assert_eq!(app.pane_bias(), 0);
+        app.resize_pane(2);
+        assert_eq!(app.pane_bias(), 2);
+        for _ in 0..60 {
+            app.resize_pane(2);
+        }
+        assert_eq!(app.pane_bias(), 60, "clamped wide");
+        for _ in 0..80 {
+            app.resize_pane(-2);
+        }
+        assert_eq!(app.pane_bias(), -30, "clamped narrow");
     }
 
     #[test]
