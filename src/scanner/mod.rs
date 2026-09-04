@@ -29,6 +29,58 @@ const MODULES_DIR: &str = "/usr/lib/modules";
 /// `uname -r` without a subprocess.
 const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
 
+/// Processes still mapping files an upgrade deleted (#4).
+///
+/// Reads `/proc/<pid>/maps` and `/proc/<pid>/cgroup` directly rather than
+/// depending on `lsof` or `needrestart`. Another user's processes are not
+/// readable without privilege, and paclens does not take any to look — so
+/// this sees the caller's own processes, and the surfaces say so rather than
+/// implying the machine was searched.
+///
+/// ponytail: reads each `maps` file whole and stops at the first mapping that
+/// matters — one finding per process is all the report uses.
+fn find_stale_processes() -> Vec<crate::analyzer::services::StaleProcess> {
+    use crate::analyzer::services::{StaleProcess, mapping_matters, unit_from_cgroup};
+
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue; // /proc carries plenty that is not a process
+        };
+        let dir = entry.path();
+        // Unreadable: another user's, or gone between the listing and here.
+        let Ok(maps) = std::fs::read_to_string(dir.join("maps")) else {
+            continue;
+        };
+        let holds_deleted = maps.lines().any(|line| {
+            line.strip_suffix(" (deleted)")
+                .and_then(|l| l.split_whitespace().nth(5))
+                .is_some_and(mapping_matters)
+        });
+        if !holds_deleted {
+            continue;
+        }
+        let comm = std::fs::read_to_string(dir.join("comm"))
+            .map(|c| c.trim().to_string())
+            .unwrap_or_default();
+        let (unit, scope) = std::fs::read_to_string(dir.join("cgroup"))
+            .ok()
+            .and_then(|c| unit_from_cgroup(&c))
+            .map_or((None, None), |(u, s)| (Some(u), Some(s)));
+        out.push(StaleProcess {
+            pid,
+            comm,
+            unit,
+            scope,
+        });
+    }
+    out
+}
+
 /// Walk the config dirs for `.pacnew` / `.pacsave` leftovers (#2).
 ///
 /// Bounded rather than unlimited: `/etc` is shallow, and a runaway walk of a
@@ -355,6 +407,11 @@ fn assemble(
         aur_helper,
         kernel: read_running_kernel(),
         pacfiles: find_pacfiles(&config.cleanup.config_dirs),
+        stale_processes: if config.scan.stale_services {
+            find_stale_processes()
+        } else {
+            Vec::new()
+        },
     };
 
     // v0.4 migration-advisory probe. Which paths matter is pure analyzer

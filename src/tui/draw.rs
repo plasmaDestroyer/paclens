@@ -509,6 +509,13 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ));
     }
+    let stale = app.stale_units();
+    if !stale.is_empty() {
+        lines.push(kv(
+            "services",
+            Span::styled(format!("{} want restarting", stale.len()), theme.accent),
+        ));
+    }
     lines.extend([
         kv("pacman cache", cache),
         kv("orphans", count(app.orphan_count())),
@@ -1237,6 +1244,7 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
         .filter_map(|n| app.orphan_size(n))
         .sum();
 
+    let stale = app.stale_units();
     let mut lines = vec![kv("pacman cache", pacman_cache)];
     // Named for the helper actually in use — "paru build cache" on a machine
     // with only yay is a figure attributed to the wrong tool.
@@ -1249,6 +1257,14 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     }
     lines.extend([
         kv("unused runtimes", vec![unused]),
+        kv(
+            "stale services",
+            vec![if stale.is_empty() {
+                Span::styled("none".to_string(), theme.dim)
+            } else {
+                Span::styled(format!("{} [inferred]", stale.len()), theme.accent)
+            }],
+        ),
         kv(
             "config leftovers",
             vec![if app.pacfiles().is_empty() {
@@ -1294,6 +1310,29 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
             theme.primary,
         )));
     }
+    // Inferred, so it says so: a deleted mapping proves the file changed,
+    // not that anything is broken (#4).
+    if !stale.is_empty() {
+        for u in stale.iter().take(4) {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", u.restart_command()),
+                theme.primary,
+            )));
+            if u.session_critical {
+                lines.push(Line::from(Span::styled(
+                    "  (this ends your session)".to_string(),
+                    theme.accent,
+                )));
+            }
+        }
+        if stale.len() > 4 {
+            lines.push(Line::from(Span::styled(
+                format!("  … {} more", stale.len() - 4),
+                theme.dim,
+            )));
+        }
+    }
+
     // Merging a config is genuinely destructive, so this stays where the
     // trust ladder puts it: text you read, then run yourself (#2).
     let pacfiles = app.pacfiles();
@@ -2042,6 +2081,7 @@ mod tests {
             ),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         }
     }
 
@@ -2834,6 +2874,59 @@ mod tests {
             !text.contains("reboot"),
             "furniture on a healthy system:\n{text}"
         );
+    }
+
+    #[test]
+    fn the_cleanup_screen_warns_before_it_suggests_a_session_ending_restart() {
+        use crate::analyzer::services::{StaleProcess, UnitScope};
+        let mut s = scan_with(Vec::new());
+        s.stale_processes = vec![
+            StaleProcess {
+                pid: 1,
+                comm: "pipewire".to_string(),
+                unit: Some("pipewire.service".to_string()),
+                scope: Some(UnitScope::User),
+            },
+            StaleProcess {
+                pid: 2,
+                comm: "Hyprland".to_string(),
+                unit: Some("session-9.scope".to_string()),
+                scope: Some(UnitScope::User),
+            },
+        ];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 30);
+        assert!(text.contains("stale services"), "row missing:\n{text}");
+        assert!(text.contains("[inferred]"), "label missing:\n{text}");
+        assert!(
+            text.contains("systemctl --user restart pipewire.service"),
+            "command missing:\n{text}"
+        );
+        assert!(
+            text.contains("ends your session"),
+            "the session-critical warning must be next to its command:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_dashboard_counts_services_wanting_a_restart() {
+        use crate::analyzer::services::{StaleProcess, UnitScope};
+        let mut s = scan_with(Vec::new());
+        s.stale_processes = vec![StaleProcess {
+            pid: 1,
+            comm: "pipewire".to_string(),
+            unit: Some("pipewire.service".to_string()),
+            scope: Some(UnitScope::User),
+        }];
+        let app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 100, 24);
+        assert!(text.contains("want restarting"), "system pane row:\n{text}");
+
+        // Nothing stale: no row, the way the reboot row behaves.
+        let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        let text = render(&app, 100, 24);
+        assert!(!text.contains("want restarting"), "furniture:\n{text}");
     }
 
     #[test]

@@ -53,6 +53,10 @@ pub struct Scan {
     /// Pass `--devel` to paru's update check: compare VCS (-git) packages
     /// against the upstream HEAD instead of the version string. Slower.
     pub aur_devel: bool,
+    /// Look for processes running against files an upgrade replaced (#4).
+    /// Reads `/proc/<pid>/maps` for every process this user can see, which is
+    /// the most expensive thing a scan does.
+    pub stale_services: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,6 +140,7 @@ impl Default for Scan {
             flatpak_include_user: true,
             provider_timeout_secs: 10,
             aur_devel: false,
+            stale_services: true,
         }
     }
 }

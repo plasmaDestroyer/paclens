@@ -41,6 +41,7 @@ pub fn run(
 fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_prog: &str) -> String {
     use crate::analyzer::pacfiles;
     let pacfiles = pacfiles::review_order(&scan.pacfiles);
+    let stale = crate::analyzer::stale_units(&scan.stale_processes);
     let diff = pacfiles::diff_program(diff_prog, std::env::var("DIFFPROG").ok().as_deref());
     let orphans = graph.orphans(scan);
     let unused: Vec<_> = graph.unused_runtimes(scan);
@@ -59,7 +60,7 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
     let mut out = String::new();
     // The headline counts things a reader could act on, not bytes: the cache
     // total is mostly current-version tarballs that nothing should remove.
-    let actionable = orphans.len() + unused.len() + pacfiles.len();
+    let actionable = orphans.len() + unused.len() + pacfiles.len() + stale.len();
     let headline = if actionable == 0 {
         s.summary_ok("nothing to clean up")
     } else {
@@ -109,6 +110,15 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
             s.dim("none")
         } else {
             format!("{} ({})", orphans.len(), human_bytes(orphan_bytes))
+        },
+        s,
+    ));
+    out.push_str(&row(
+        "stale services",
+        &if stale.is_empty() {
+            s.dim("none")
+        } else {
+            format!("{} {}", stale.len(), s.dim("[inferred]"))
         },
         s,
     ));
@@ -170,6 +180,28 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
         }
     }
 
+    if !stale.is_empty() {
+        out.push('\n');
+        out.push_str(&s.dim(
+            "stale services - running against files an upgrade replaced (yours only; system services need root to inspect):",
+        ));
+        out.push('\n');
+        for u in &stale {
+            let procs = u.processes.join(", ");
+            let warning = if u.session_critical {
+                " - restarting this ends your session"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "  {} {} {}\n",
+                s.bullet(),
+                u.unit,
+                s.dim(&format!("({procs}){warning}"))
+            ));
+        }
+    }
+
     // --- suggestions ---
     let mut suggestions = Vec::new();
     // Only suggest what would actually do something: an 11 GiB cache that
@@ -185,6 +217,11 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
     }
     if !pacfiles.is_empty() {
         suggestions.push(pacfiles::review_all_command(&diff));
+    }
+    // Session-critical units are listed above but never suggested: a command
+    // that logs you out does not belong in a list headed "run yourself".
+    for u in stale.iter().filter(|u| !u.session_critical) {
+        suggestions.push(u.restart_command());
     }
     if !orphans.is_empty() {
         suggestions.push(format!("sudo pacman -Rns {}", orphans.join(" ")));
@@ -280,6 +317,7 @@ mod tests {
             aur_helper: HelperChoice::Detected(AurHelper::Paru),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         }
     }
 
@@ -315,6 +353,46 @@ mod tests {
     /// An orphan is a package installed as a dependency that nothing now
     /// requires. It is listed with its size and a removal command, but the
     /// command is text — and it points at `why` first.
+    #[test]
+    fn stale_services_are_inferred_and_session_critical_ones_are_not_suggested() {
+        use crate::analyzer::services::{StaleProcess, UnitScope};
+        let mut scan = scan(Vec::new(), CacheSizes::default());
+        scan.stale_processes = vec![
+            StaleProcess {
+                pid: 1,
+                comm: "pipewire".to_string(),
+                unit: Some("pipewire.service".to_string()),
+                scope: Some(UnitScope::User),
+            },
+            StaleProcess {
+                pid: 2,
+                comm: "Hyprland".to_string(),
+                unit: Some("session-9.scope".to_string()),
+                scope: Some(UnitScope::User),
+            },
+        ];
+        let out = render(&scan);
+        assert!(out.contains("stale services"), "row missing:\n{out}");
+        assert!(out.contains("[inferred]"), "label missing:\n{out}");
+        assert!(out.contains("pipewire.service"), "{out}");
+        // The one that would log you out is listed, warned about, and left
+        // out of the commands.
+        assert!(
+            out.contains("restarting this ends your session"),
+            "warning missing:\n{out}"
+        );
+        assert!(
+            out.contains("systemctl --user restart pipewire.service"),
+            "suggestion missing:\n{out}"
+        );
+        assert!(
+            !out.contains("restart session-9.scope"),
+            "a command that logs you out must not be suggested:\n{out}"
+        );
+        // And it says what it could not see.
+        assert!(out.contains("need root to inspect"), "{out}");
+    }
+
     #[test]
     fn config_leftovers_are_listed_with_their_base_and_a_copiable_command() {
         use crate::analyzer::pacfiles::{PacFile, PacFileKind};
@@ -353,6 +431,7 @@ mod tests {
     fn no_leftovers_still_gets_a_row() {
         let scan = scan(Vec::new(), CacheSizes::default());
         let out = render(&scan);
+        assert!(out.contains("stale services"), "row missing:\n{out}");
         assert!(
             out.contains("config leftovers"),
             "the row must say none rather than vanish:\n{out}"

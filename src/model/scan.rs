@@ -26,7 +26,7 @@ use super::{Package, PendingUpdate, Source};
 /// v10: `aur_helper` widens from the resolved helper to the whole
 /// `HelperChoice`, so the dashboard can say *why* — a stale pin needs the name
 /// that was configured, which the resolved value has already thrown away.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -67,6 +67,11 @@ pub struct ScanResult {
     /// analyzer's.
     #[serde(default)]
     pub pacfiles: Vec<crate::analyzer::pacfiles::PacFile>,
+    /// Processes holding files an upgrade replaced (#4). Only the ones this
+    /// user can see: reading another user's `/proc/<pid>/maps` needs
+    /// privilege, and paclens does not take any to look.
+    #[serde(default)]
+    pub stale_processes: Vec<crate::analyzer::services::StaleProcess>,
 }
 
 impl ScanResult {
@@ -85,6 +90,7 @@ impl ScanResult {
             aur_helper: Default::default(),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         }
     }
 }

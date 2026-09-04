@@ -118,6 +118,7 @@ mod tests {
             ),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         }
     }
 
@@ -182,6 +183,7 @@ mod tests {
             ),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         };
         assert_eq!(
             summarize(&empty, |_| true),

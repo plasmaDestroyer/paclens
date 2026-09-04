@@ -309,6 +309,7 @@ mod tests {
             ),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         }
     }
 
@@ -454,6 +455,7 @@ mod tests {
             ),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         };
         let plan = plan_updates(&empty, enable_all);
         assert!(plan.is_empty());

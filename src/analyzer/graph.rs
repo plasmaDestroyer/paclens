@@ -290,6 +290,7 @@ mod tests {
             ),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         }
     }
 

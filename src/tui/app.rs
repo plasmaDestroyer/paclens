@@ -714,6 +714,12 @@ impl App {
         )
     }
 
+    /// Units running against files an upgrade replaced (#4). Inferred, and
+    /// only what this user could see.
+    pub fn stale_units(&self) -> Vec<crate::analyzer::StaleUnit> {
+        crate::analyzer::stale_units(&self.scan.stale_processes)
+    }
+
     /// Does the running kernel still match the installed one (#3)? Recomputed
     /// per frame from the scan — it is a comparison of two strings, not work.
     pub fn reboot_status(&self) -> crate::analyzer::RebootStatus {
@@ -1372,6 +1378,7 @@ mod tests {
             ),
             kernel: None,
             pacfiles: Vec::new(),
+            stale_processes: Vec::new(),
         }
     }
 

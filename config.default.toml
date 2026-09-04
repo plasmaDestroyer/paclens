@@ -60,6 +60,14 @@ provider_timeout_secs = 10
 # instead of the version string. Accurate for -git packages but slower.
 aur_devel = false
 
+# Look for processes still running against libraries an upgrade replaced, so
+# the cleanup report can say which services want restarting. Reads
+# /proc/<pid>/maps for every process you can see — the most expensive thing a
+# scan does, and the only one that looks at running processes at all.
+# Findings are inferred: a deleted mapping proves the file changed, not that
+# anything is broken.
+stale_services = true
+
 
 [why]
 

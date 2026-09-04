@@ -10,12 +10,14 @@ pub mod kernel;
 pub mod migrate;
 mod overlap;
 pub mod pacfiles;
+pub mod services;
 mod why;
 
 pub use graph::DepGraph;
 pub use kernel::{RebootStatus, reboot_status};
 pub use overlap::detect_overlaps;
 pub use pacfiles::PacFile;
+pub use services::{StaleUnit, stale_units};
 pub use why::{Verdict, WhyDetail, WhyReport, tree_lines, why};
 // Named in bin code only through WhyDetail.tree's type; tests construct it.
 #[allow(unused_imports)]
