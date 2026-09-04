@@ -1575,11 +1575,16 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
         .map(|row| {
             let p = match row {
                 crate::tui::app::PkgRow::Header(label, count) => {
-                    // A dim, non-selectable divider (the cursor skips it).
-                    let text = Span::styled(
-                        format!("{b} {label} ({count})", b = theme.glyphs.bullet),
-                        theme.dim,
-                    );
+                    // A non-selectable divider (the cursor skips it), set like
+                    // the column header so it reads as structure rather than
+                    // as a row — accented for the group that is why the sort
+                    // grouped at all.
+                    let style = if *label == "pending updates" {
+                        theme.accent
+                    } else {
+                        theme.header
+                    };
+                    let text = Span::styled(format!("{} ({count})", label.to_uppercase()), style);
                     let mut cells = vec![Cell::from(text)];
                     let width = if narrow {
                         2
@@ -2239,17 +2244,17 @@ mod tests {
         let text = render(&app, 140, 22);
         assert!(text.contains("sort: updates"), "chip missing:\n{text}");
         assert!(
-            text.contains("pending updates (1)"),
+            text.contains("PENDING UPDATES (1)"),
             "header missing:\n{text}"
         );
-        assert!(text.contains("up to date (1)"), "{text}");
+        assert!(text.contains("UP TO DATE (1)"), "{text}");
         assert!(text.contains("s sort"), "footer missing:\n{text}");
 
         app.cycle_sort(); // reason
         let text = render(&app, 140, 22);
         assert!(text.contains("sort: reason"), "{text}");
-        assert!(text.contains("explicit (1)"), "{text}");
-        assert!(text.contains("dependencies (1)"), "{text}");
+        assert!(text.contains("EXPLICIT (1)"), "{text}");
+        assert!(text.contains("DEPENDENCIES (1)"), "{text}");
     }
 
     #[test]
@@ -2649,6 +2654,45 @@ mod tests {
             "reason survived the squeeze:\n{text}"
         );
         assert!(!text.contains("SIZE"), "size survived the squeeze:\n{text}");
+    }
+
+    #[test]
+    fn group_headers_are_set_like_headers_not_like_rows() {
+        let mut s = pkg_scan();
+        s.updates = vec![upd("glibc", "1", "2", SourceId::pacman())];
+        let mut app = App::new(s, Theme::dark(), AppOptions::test());
+        app.open_packages();
+
+        let backend = TestBackend::new(120, 16);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &app)).expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let style_of = |needle: &str| {
+            for y in 0..buf.area.height {
+                let row: String = (0..buf.area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect();
+                if let Some(col) = row.find(needle) {
+                    return buf.cell((col as u16, y)).map(|c| c.style());
+                }
+            }
+            None
+        };
+        let theme = Theme::dark();
+        let bold = |s: Option<Style>| s.is_some_and(|s| s.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            bold(style_of("PENDING UPDATES")),
+            "pending header is not set apart"
+        );
+        assert_eq!(
+            style_of("PENDING UPDATES").and_then(|s| s.fg),
+            theme.accent.fg,
+            "the pending group is the accent's own meaning"
+        );
+        assert!(
+            bold(style_of("UP TO DATE")),
+            "up-to-date header is not set apart"
+        );
     }
 
     #[test]
