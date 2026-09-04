@@ -199,6 +199,12 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
                 u.unit,
                 s.dim(&format!("({procs}){warning}"))
             ));
+            // Name the file, which is the part that turns "something changed"
+            // into "the binary you are running is gone".
+            for f in u.files.iter().take(2) {
+                out.push_str(&s.dim(&format!("      {f} was replaced")));
+                out.push('\n');
+            }
         }
     }
 
@@ -363,18 +369,23 @@ mod tests {
                 comm: "pipewire".to_string(),
                 unit: Some("pipewire.service".to_string()),
                 scope: Some(UnitScope::User),
+                file: "/usr/lib/libc.so.6".to_string(),
             },
             StaleProcess {
                 pid: 2,
                 comm: "Hyprland".to_string(),
                 unit: Some("session-9.scope".to_string()),
                 scope: Some(UnitScope::User),
+                file: "/usr/lib/libc.so.6".to_string(),
             },
         ];
         let out = render(&scan);
         assert!(out.contains("stale services"), "row missing:\n{out}");
         assert!(out.contains("[inferred]"), "label missing:\n{out}");
         assert!(out.contains("pipewire.service"), "{out}");
+        // The file is named, which is what `checkservices` cannot tell you.
+        assert!(out.contains("was replaced"), "no file named:\n{out}");
+        assert!(out.contains("/usr/lib/libc.so.6"), "{out}");
         // The one that would log you out is listed, warned about, and left
         // out of the commands.
         assert!(

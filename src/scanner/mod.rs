@@ -56,14 +56,18 @@ fn find_stale_processes() -> Vec<crate::analyzer::services::StaleProcess> {
         let Ok(maps) = std::fs::read_to_string(dir.join("maps")) else {
             continue;
         };
-        let holds_deleted = maps.lines().any(|line| {
-            line.strip_suffix(" (deleted)")
-                .and_then(|l| l.split_whitespace().nth(5))
-                .is_some_and(mapping_matters)
-        });
-        if !holds_deleted {
+        // The first mapping that matters is all the report uses: one file
+        // names the reason, and the rest of a process's maps say the same
+        // thing.
+        let Some(file) = maps.lines().find_map(|line| {
+            let line = line.strip_suffix(" (deleted)")?;
+            let mut fields = line.split_whitespace();
+            let perms = fields.nth(1)?;
+            let path = fields.nth(3)?;
+            mapping_matters(perms, path).then(|| path.to_string())
+        }) else {
             continue;
-        }
+        };
         let comm = std::fs::read_to_string(dir.join("comm"))
             .map(|c| c.trim().to_string())
             .unwrap_or_default();
@@ -76,6 +80,7 @@ fn find_stale_processes() -> Vec<crate::analyzer::services::StaleProcess> {
             comm,
             unit,
             scope,
+            file,
         });
     }
     out

@@ -33,6 +33,11 @@ pub struct StaleProcess {
     /// command to suggest for it.
     pub unit: Option<String>,
     pub scope: Option<UnitScope>,
+    /// The replaced file that made this a finding. `checkservices` reports
+    /// only the unit; naming the file is the difference between "something
+    /// changed" and "the binary you are running is gone".
+    #[serde(default)]
+    pub file: String,
 }
 
 /// A unit worth restarting, with the processes that say so.
@@ -42,6 +47,8 @@ pub struct StaleUnit {
     pub scope: UnitScope,
     /// Process names, deduplicated, in the order found.
     pub processes: Vec<String>,
+    /// The replaced files behind those processes, deduplicated.
+    pub files: Vec<String>,
     /// Restarting this one ends the session it belongs to.
     pub session_critical: bool,
 }
@@ -70,6 +77,9 @@ fn is_session_critical(unit: &str) -> bool {
         "graphical-session.target",
         "dbus-broker.service",
         "dbus.service",
+        // Restarting logind ends every session it tracks. checkservices
+        // refuses to touch this one too, along with dbus-broker.
+        "systemd-logind.service",
     ];
     // `session-9.scope` is the login session itself, and `user@1000.service`
     // is the whole user manager: both take everything with them.
@@ -98,13 +108,24 @@ pub fn unit_from_cgroup(cgroup: &str) -> Option<(String, UnitScope)> {
     Some((leaf.to_string(), scope))
 }
 
-/// Does this deleted mapping mean anything? Only files a package owns do.
+/// Does this deleted mapping mean anything?
 ///
-/// `/etc/ld.so.cache (deleted)` is rewritten by every `ldconfig` run and says
-/// nothing about the process; `/memfd:`, `/dev/zero` and deleted temp files
-/// are noise of the same kind. Package content lives under `/usr`.
-pub fn mapping_matters(path: &str) -> bool {
-    path.starts_with("/usr/")
+/// Two conditions, and both are needed. The mapping must be **executable** —
+/// code the process can still jump into is what a restart fixes, while a
+/// replaced font, locale archive or icon cache is not a reason to bounce
+/// anything. And it must live under `/usr`, which is where package content
+/// is: that rules out `/memfd:` JIT regions, deleted temp files, and a
+/// developer's own build under `/home`.
+///
+/// Either condition alone is too loose, measurably. On one real machine 121
+/// processes held some deleted mapping, 3 held an executable one, and only 2
+/// held an executable one under `/usr` — the third was a Qt JIT memfd.
+/// `checkservices`, which `arch-update` shells out to, takes the executable
+/// half and then excludes `/memfd:` by name.
+pub fn mapping_matters(perms: &str, path: &str) -> bool {
+    // maps permissions are four characters, `r-xp`; the third is the
+    // executable bit.
+    perms.chars().nth(2) == Some('x') && path.starts_with("/usr/")
 }
 
 /// Group the processes into units worth restarting, most processes first.
@@ -122,11 +143,19 @@ pub fn stale_units(processes: &[StaleProcess]) -> Vec<StaleUnit> {
                 if !existing.processes.contains(&p.comm) {
                     existing.processes.push(p.comm.clone());
                 }
+                if !p.file.is_empty() && !existing.files.contains(&p.file) {
+                    existing.files.push(p.file.clone());
+                }
             }
             None => out.push(StaleUnit {
                 unit: unit.clone(),
                 scope,
                 processes: vec![p.comm.clone()],
+                files: if p.file.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![p.file.clone()]
+                },
                 session_critical: is_session_critical(unit),
             }),
         }
@@ -156,6 +185,7 @@ mod tests {
             comm: comm.to_string(),
             unit,
             scope,
+            file: "/usr/lib/libcrypto.so.3".to_string(),
         }
     }
 
@@ -182,14 +212,19 @@ mod tests {
     }
 
     #[test]
-    fn only_package_files_count_as_findings() {
-        assert!(mapping_matters("/usr/lib/libcrypto.so.3"));
-        assert!(mapping_matters("/usr/bin/Hyprland"));
-        // Rewritten by ldconfig on every upgrade; says nothing about a process.
-        assert!(!mapping_matters("/etc/ld.so.cache"));
-        assert!(!mapping_matters("/memfd:wayland-shm"));
-        assert!(!mapping_matters("/tmp/scratch"));
-        assert!(!mapping_matters("/home/t/.cache/thing"));
+    fn a_finding_is_executable_package_code_and_nothing_else() {
+        assert!(mapping_matters("r-xp", "/usr/lib/libcrypto.so.3"));
+        assert!(mapping_matters("r-xp", "/usr/bin/Hyprland"));
+        // Mapped, but not code the process can run: a replaced font or locale
+        // archive is not a reason to restart anything. This is the half that
+        // took 121 processes down to 3 on a real machine.
+        assert!(!mapping_matters("r--p", "/usr/lib/locale/locale-archive"));
+        assert!(!mapping_matters("rw-p", "/usr/share/icons/cache"));
+        // Executable, but not package content: a Qt JIT region is the false
+        // positive `checkservices` has to exclude by name.
+        assert!(!mapping_matters("r-xp", "/memfd:JITCode:QtQml"));
+        assert!(!mapping_matters("r-xp", "/home/t/build/a.out"));
+        assert!(!mapping_matters("r--p", "/etc/ld.so.cache"));
     }
 
     #[test]

@@ -2886,12 +2886,14 @@ mod tests {
                 comm: "pipewire".to_string(),
                 unit: Some("pipewire.service".to_string()),
                 scope: Some(UnitScope::User),
+                file: "/usr/lib/libc.so.6".to_string(),
             },
             StaleProcess {
                 pid: 2,
                 comm: "Hyprland".to_string(),
                 unit: Some("session-9.scope".to_string()),
                 scope: Some(UnitScope::User),
+                file: "/usr/lib/libc.so.6".to_string(),
             },
         ];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
@@ -2918,6 +2920,7 @@ mod tests {
             comm: "pipewire".to_string(),
             unit: Some("pipewire.service".to_string()),
             scope: Some(UnitScope::User),
+            file: "/usr/lib/libc.so.6".to_string(),
         }];
         let app = App::new(s, Theme::none(), AppOptions::test());
         let text = render(&app, 100, 24);
