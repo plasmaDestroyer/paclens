@@ -6,6 +6,7 @@
 //! Built in v0.0.7 (dep graph + why) and v0.0.8 (overlap detection).
 
 mod graph;
+pub mod history;
 pub mod kernel;
 pub mod migrate;
 mod overlap;

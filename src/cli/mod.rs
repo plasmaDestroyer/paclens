@@ -1,6 +1,7 @@
 //! CLI entry: argument parsing, the init sequence, and subcommand dispatch.
 
 mod cleanup;
+mod history;
 mod migrate;
 mod overlaps;
 mod status;
@@ -94,6 +95,15 @@ pub enum Command {
     },
     /// Print an orphan and cache summary (advisory only).
     Cleanup,
+    /// What past upgrades changed, from pacman's own log.
+    History {
+        /// One package's history instead of the transaction list.
+        #[arg(long, value_name = "NAME")]
+        package: Option<String>,
+        /// How many transactions to list.
+        #[arg(long, default_value_t = 15)]
+        limit: usize,
+    },
 }
 
 /// `--to` values for `migrate`, mapped onto the model's `Direction`.
@@ -241,6 +251,17 @@ pub fn run() -> ExitCode {
                     std::io::stdin().is_terminal(),
                     &out_styles,
                 ),
+                &err_styles,
+            )
+        }
+        Command::History { package, limit } => {
+            let out_styles = Styles::resolve(
+                cli.no_color,
+                config.general.color_theme(),
+                std::io::stdout().is_terminal(),
+            );
+            report(
+                history::run(package.as_deref(), limit, &out_styles),
                 &err_styles,
             )
         }
