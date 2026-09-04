@@ -23,9 +23,6 @@ const MIN_HEIGHT: u16 = 10;
 /// Below this the package screen stacks the detail pane under the table
 /// instead of beside it (design: the pane is always open).
 const SIDE_PANE_MIN_WIDTH: u16 = 90;
-/// Below this the table drops VERSION and SIZE — they would truncate into
-/// noise.
-const NARROW_TABLE_WIDTH: u16 = 58;
 /// The pane never grows past this: its text is one description and one why
 /// report, and the width beyond that reads better as table.
 const PANE_MAX_WIDTH: u16 = 64;
@@ -1377,27 +1374,21 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
         // Too narrow for that and the split turns vertical instead — a side
         // pane there would leave neither half readable.
         if chunks[1].width >= SIDE_PANE_MIN_WIDTH {
-            // The table's columns are all fixed, so a percentage split would
-            // leave a dead strip between the last one and the pane. Give the
-            // table exactly what it needs and the pane everything else.
-            let (table_w, cramped) = table_layout(app, chunks[1].width);
-            // The pane takes what it needs and no more; everything past that
-            // is the table's, which spends it on DESCRIPTION.
-            let pane_w = (i32::from(chunks[1].width.saturating_sub(table_w).min(PANE_MAX_WIDTH))
-                + i32::from(app.pane_bias()))
-            .clamp(24, i32::from(chunks[1].width) * 2 / 3) as u16;
-            let panes = Layout::horizontal([Constraint::Min(20), Constraint::Length(pane_w)])
+            let geo = pkg_geometry(app, chunks[1].width, true, app.pane_bias());
+            let panes = Layout::horizontal([Constraint::Length(geo.table_w), Constraint::Min(20)])
                 .split(chunks[1]);
-            render_package_table(frame, panes[0], app, cramped);
+            render_package_table(frame, panes[0], app, &geo);
             render_why_pane(frame, panes[1], app, Borders::LEFT);
         } else {
             let stack =
                 Layout::vertical([Constraint::Min(3), Constraint::Length(7)]).split(chunks[1]);
-            render_package_table(frame, stack[0], app, stack[0].width < NARROW_TABLE_WIDTH);
+            let geo = pkg_geometry(app, stack[0].width, false, 0);
+            render_package_table(frame, stack[0], app, &geo);
             render_why_pane(frame, stack[1], app, Borders::TOP);
         }
     } else {
-        render_package_table(frame, chunks[1], app, false);
+        let geo = pkg_geometry(app, chunks[1].width, false, 0);
+        render_package_table(frame, chunks[1], app, &geo);
     }
 
     if show_filter {
@@ -1450,37 +1441,97 @@ fn name_column_width(rows: &[crate::tui::app::PkgRow<'_>], cap: u16) -> u16 {
     longest.min(cap).max(12)
 }
 
-/// Beside the pane the table takes what its columns need and nothing more,
-/// up to two thirds of the screen. Past that it does not fit: the second
-/// return says so, and the caller drops VERSION and SIZE.
-fn table_layout(app: &App, available: u16) -> (u16, bool) {
-    let fixed = fixed_columns_width(app.pkg_source_is_flatpak())
-        + app.theme.glyphs.pointer.chars().count() as u16;
-    let cap = available.saturating_sub(fixed);
-    let want = fixed + name_column_width(&app.pkg_rows(), cap);
-    let max = available / 3 * 2;
-    (want.min(max), want > max)
+/// How the package screen divides a width. Computed once and handed to both
+/// the split and the table, because two sides deciding it separately is what
+/// leaves a dead strip between them.
+struct PkgGeometry {
+    name_w: u16,
+    /// `None` drops the DESCRIPTION column — the pane has the text.
+    desc_w: Option<u16>,
+    /// The pane takes whatever is left of the area.
+    table_w: u16,
+    /// VERSION and SIZE do not fit; the table shows name and reason only.
+    narrow: bool,
+}
+
+/// `available` is the whole area the table and pane share. With no pane the
+/// table takes all of it; with one, the table takes what its columns need,
+/// the pane takes the rest up to its cap, and anything past that goes back to
+/// the table as DESCRIPTION — or to the pane when it is too little to be a
+/// column (#56).
+fn pkg_geometry(app: &App, available: u16, pane: bool, bias: i16) -> PkgGeometry {
+    let kind_col = app.pkg_source_is_flatpak();
+    let fixed = fixed_columns_width(kind_col) + app.theme.glyphs.pointer.chars().count() as u16;
+    let narrow = fixed + 12 > if pane { available / 3 * 2 } else { available };
+    if narrow {
+        let table_w = if pane { available / 2 } else { available };
+        return PkgGeometry {
+            name_w: table_w.saturating_sub(12).max(12),
+            desc_w: None,
+            table_w,
+            narrow,
+        };
+    }
+
+    let name_w = name_column_width(&app.pkg_rows(), available.saturating_sub(fixed));
+    let columns = fixed + name_w;
+    if !pane {
+        let spare = available.saturating_sub(columns);
+        let (name_w, desc_w) = if spare >= DESCRIPTION_MIN_WIDTH {
+            (name_w, Some(spare))
+        } else {
+            (name_w + spare, None)
+        };
+        return PkgGeometry {
+            name_w,
+            desc_w,
+            table_w: available,
+            narrow,
+        };
+    }
+
+    let leftover = available.saturating_sub(columns);
+    // The pane's share, then the reader's own nudge on top of it.
+    let pane_w = (i32::from(leftover.min(PANE_MAX_WIDTH)) + i32::from(bias))
+        .clamp(24, i32::from(available) / 3 * 2) as u16;
+    let table_w = available.saturating_sub(pane_w);
+    // Whatever the columns do not use is either a DESCRIPTION column or the
+    // pane's — never a dead strip between the two.
+    let spare = table_w.saturating_sub(columns);
+    if spare >= DESCRIPTION_MIN_WIDTH {
+        PkgGeometry {
+            name_w,
+            desc_w: Some(spare),
+            table_w,
+            narrow,
+        }
+    } else {
+        // Too little for a column: NAME takes it, so the table still fills
+        // its half and nothing sits dead against the divider.
+        PkgGeometry {
+            name_w: name_w + spare,
+            desc_w: None,
+            table_w,
+            narrow,
+        }
+    }
 }
 
 /// `narrow` drops the VERSION/SIZE columns — used when the why pane halves
 /// the width, where they would truncate into noise.
-fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) {
+fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeometry) {
     let theme = &app.theme;
     let rows = app.pkg_rows();
+    let narrow = geo.narrow;
     // KIND only says something for Flatpak (app vs runtime); everywhere else
     // it is a column of em dashes, so the width goes to DESCRIPTION instead.
     let kind_col = !narrow && app.pkg_source_is_flatpak();
 
     // NAME takes what its longest entry needs and no more, capped at half of
     // what is left — one 40-char name must not starve DESCRIPTION.
-    let fixed = fixed_columns_width(kind_col) + theme.glyphs.pointer.chars().count() as u16;
-    let budget = area.width.saturating_sub(fixed);
-    let name_w = name_column_width(&rows, budget);
-    // What is left over decides DESCRIPTION: the pane carries the text
-    // whenever the column would be a stub (#56).
-    let desc_w = budget.saturating_sub(name_w);
-    let desc_col = !narrow && desc_w >= DESCRIPTION_MIN_WIDTH;
-    let desc_w = desc_w as usize;
+    let name_w = geo.name_w;
+    let desc_col = geo.desc_w.is_some();
+    let desc_w = geo.desc_w.unwrap_or(0) as usize;
 
     if rows.is_empty() {
         let msg = if app.pkg_filter().is_empty() {
@@ -2497,6 +2548,39 @@ mod tests {
     }
 
     #[test]
+    fn no_dead_strip_between_table_and_pane_at_any_width() {
+        // A long name is what pushes the columns past the point where a
+        // DESCRIPTION column still fits — the width in between used to fall
+        // between the table and the pane and be drawn by neither.
+        let mut s = pkg_scan();
+        s.packages[0].name = "heroic-games-launcher-bin-extra".to_string();
+        for p in &mut s.packages {
+            // Real descriptions, so trailing blanks cannot be mistaken for
+            // layout: what is measured is where the columns end.
+            p.description = Some(
+                "a description long enough to fill whatever column it is given here".to_string(),
+            );
+        }
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_packages();
+        for w in (100..=200).step_by(5) {
+            let text = render(&app, w, 12);
+            let body = text
+                .lines()
+                .find(|l| l.contains("228.88 MiB"))
+                .expect("a package row");
+            let inner = body.get(1..body.len() - 1).expect("inside the border");
+            let divider = inner.rfind('|').expect("the pane divider");
+            let ends = inner[..divider].trim_end().chars().count();
+            assert!(
+                divider - ends <= 3,
+                "{} dead columns at width {w}:\n{text}",
+                divider - ends
+            );
+        }
+    }
+
+    #[test]
     fn brackets_move_the_split() {
         fn divider(app: &App) -> usize {
             let text = render(app, 140, 18);
@@ -2649,8 +2733,9 @@ mod tests {
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.on_next(); // select the flatpak-user source
         app.open_packages();
-        // name-sorted: org.gnome.Platform is row 0.
-        let text = render(&app, 100, 22);
+        // name-sorted: org.gnome.Platform is row 0. Wide enough that the
+        // pane does not wrap the label being asserted.
+        let text = render(&app, 130, 22);
         assert!(text.contains("why · org.gnome.Platform"), "{text}");
         assert!(text.contains("flatpak runtime"), "{text}");
         assert!(
