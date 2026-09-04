@@ -492,13 +492,29 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
             theme.accent,
         )
     };
-    let mut lines = vec![
-        kv("plan", plan_span),
+    // Only a finding gets a row: a machine running what it has installed says
+    // nothing, the way a clean cache suggests nothing (#3).
+    let reboot = app.reboot_status();
+    let mut lines = vec![kv("plan", plan_span)];
+    if let Some(label) = reboot.label() {
+        lines.push(kv(
+            "reboot",
+            Span::styled(
+                label,
+                if reboot.is_required() {
+                    theme.accent
+                } else {
+                    theme.dim
+                },
+            ),
+        ));
+    }
+    lines.extend([
         kv("pacman cache", cache),
         kv("orphans", count(app.orphan_count())),
         kv("overlaps", count(app.overlap_count())),
         kv("scanned", scanned_span(app)),
-    ];
+    ]);
     if app.stale_update_counts() {
         lines.push(Line::from(Span::styled(
             "stale? install pacman-contrib",
@@ -1990,6 +2006,7 @@ mod tests {
             aur_helper: crate::providers::aur::HelperChoice::Detected(
                 crate::providers::aur::AurHelper::Paru,
             ),
+            kernel: None,
         }
     }
 
@@ -2752,6 +2769,35 @@ mod tests {
         assert!(
             !text.contains("by name"),
             "noise on the ordinary case:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_system_pane_reports_a_kernel_that_needs_a_reboot() {
+        use crate::analyzer::kernel::RunningKernel;
+        let mut s = scan_with(Vec::new());
+        let mut kernel = pkg("linux-cachyos", SourceId::pacman());
+        kernel.version = "7.2.3-1".to_string();
+        s.packages = vec![kernel];
+        s.kernel = Some(RunningKernel {
+            release: "7.2.2-1-cachyos".to_string(),
+            modules_present: false,
+        });
+        let app = App::new(s.clone(), Theme::none(), AppOptions::test());
+        let text = render(&app, 100, 24);
+        assert!(text.contains("reboot"), "no reboot row:\n{text}");
+        assert!(
+            text.contains("required · modules gone"),
+            "the stronger case must reach the pane:\n{text}"
+        );
+
+        // Running what is installed: the row is not furniture.
+        s.packages[0].version = "7.2.2-1".to_string();
+        let app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 100, 24);
+        assert!(
+            !text.contains("reboot"),
+            "furniture on a healthy system:\n{text}"
         );
     }
 

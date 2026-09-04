@@ -26,7 +26,7 @@ use super::{Package, PendingUpdate, Source};
 /// v10: `aur_helper` widens from the resolved helper to the whole
 /// `HelperChoice`, so the dashboard can say *why* — a stale pin needs the name
 /// that was configured, which the resolved value has already thrown away.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -57,6 +57,11 @@ pub struct ScanResult {
     /// that away.
     #[serde(default)]
     pub aur_helper: crate::providers::aur::HelperChoice,
+    /// The kernel this machine is running on, and whether its modules are
+    /// still on disk. Two facts read from `/proc` and the filesystem; whether
+    /// they mean "reboot required" is the analyzer's call (#3).
+    #[serde(default)]
+    pub kernel: Option<crate::analyzer::kernel::RunningKernel>,
 }
 
 impl ScanResult {
@@ -73,6 +78,7 @@ impl ScanResult {
             flatpak_profile_sizes: Default::default(),
             profile_dir_sizes: Default::default(),
             aur_helper: Default::default(),
+            kernel: None,
         }
     }
 }

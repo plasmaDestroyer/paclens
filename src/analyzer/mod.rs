@@ -6,11 +6,13 @@
 //! Built in v0.0.7 (dep graph + why) and v0.0.8 (overlap detection).
 
 mod graph;
+pub mod kernel;
 pub mod migrate;
 mod overlap;
 mod why;
 
 pub use graph::DepGraph;
+pub use kernel::{RebootStatus, reboot_status};
 pub use overlap::detect_overlaps;
 pub use why::{Verdict, WhyDetail, WhyReport, tree_lines, why};
 // Named in bin code only through WhyDetail.tree's type; tests construct it.

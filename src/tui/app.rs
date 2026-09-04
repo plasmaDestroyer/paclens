@@ -693,6 +693,12 @@ impl App {
         self.overlaps.len()
     }
 
+    /// Does the running kernel still match the installed one (#3)? Recomputed
+    /// per frame from the scan — it is a comparison of two strings, not work.
+    pub fn reboot_status(&self) -> crate::analyzer::RebootStatus {
+        crate::analyzer::reboot_status(self.scan.kernel.as_ref(), &self.scan.packages)
+    }
+
     /// The pacman source scanned via the stale `-Qu` fallback, if so.
     pub fn stale_update_counts(&self) -> bool {
         self.scan
@@ -1343,6 +1349,7 @@ mod tests {
             aur_helper: crate::providers::aur::HelperChoice::Detected(
                 crate::providers::aur::AurHelper::Paru,
             ),
+            kernel: None,
         }
     }
 

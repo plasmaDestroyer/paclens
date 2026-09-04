@@ -23,6 +23,26 @@ use crate::providers::{CommandRunner, Provider};
 
 /// pacman's package cache; its size is reported under cleanup advisories.
 const PACMAN_CACHE_DIR: &str = "/var/cache/pacman/pkg/";
+/// Where a kernel's modules live. Gone means the running kernel's were
+/// removed by an upgrade — anything not already loaded cannot load (#3).
+const MODULES_DIR: &str = "/usr/lib/modules";
+/// `uname -r` without a subprocess.
+const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
+
+/// The running kernel, as two facts read from the system. Whether they add up
+/// to "reboot required" is the analyzer's call (P5) — this only measures, the
+/// way it measures cache sizes.
+fn read_running_kernel() -> Option<crate::analyzer::kernel::RunningKernel> {
+    let release = std::fs::read_to_string(OSRELEASE).ok()?.trim().to_string();
+    if release.is_empty() {
+        return None;
+    }
+    let modules_present = Path::new(MODULES_DIR).join(&release).is_dir();
+    Some(crate::analyzer::kernel::RunningKernel {
+        release,
+        modules_present,
+    })
+}
 
 /// Return a usable `ScanResult`: a fresh cache hit when possible, otherwise a
 /// new scan that is then written back to the cache.
@@ -270,6 +290,7 @@ fn assemble(
         flatpak_profile_sizes,
         profile_dir_sizes: Default::default(),
         aur_helper,
+        kernel: read_running_kernel(),
     };
 
     // v0.4 migration-advisory probe. Which paths matter is pure analyzer

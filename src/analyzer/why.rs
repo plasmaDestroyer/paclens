@@ -305,6 +305,7 @@ mod tests {
             aur_helper: crate::providers::aur::HelperChoice::Detected(
                 crate::providers::aur::AurHelper::Paru,
             ),
+            kernel: None,
         }
     }
 

@@ -99,6 +99,17 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
         out.push_str(&s.dim(&format!("  {note}")));
         out.push('\n');
     }
+    // Same sentence the dashboard prints, from the same analyzer (#3).
+    let reboot = crate::analyzer::reboot_status(scan.kernel.as_ref(), &scan.packages);
+    if let Some(note) = reboot.note() {
+        let line = format!("  reboot {note}");
+        out.push_str(&if reboot.is_required() {
+            s.summary_updates(&line)
+        } else {
+            s.dim(&line)
+        });
+        out.push('\n');
+    }
     let mut meta = Vec::new();
     if let Some(bytes) = scan.cache_sizes.pacman_cache_bytes {
         meta.push(format!("cache {}", human_bytes(bytes)));
@@ -218,6 +229,7 @@ mod tests {
             aur_helper: crate::providers::aur::HelperChoice::Detected(
                 crate::providers::aur::AurHelper::Paru,
             ),
+            kernel: None,
         }
     }
 
@@ -379,6 +391,36 @@ mod tests {
         assert!(out.contains("* ok"), "source should still read ok:\n{out}");
         assert!(out.contains("config asks for yay"), "{out}");
         assert!(out.contains("using paru"), "{out}");
+    }
+
+    #[test]
+    fn a_stale_running_kernel_is_reported_and_a_current_one_is_silent() {
+        use crate::analyzer::kernel::RunningKernel;
+        let mut scan = scan_with(
+            vec![Package {
+                name: "linux-cachyos".to_string(),
+                version: "7.2.3-1".to_string(),
+                ..pkg("linux-cachyos", SourceId::pacman())
+            }],
+            Vec::new(),
+            true,
+        );
+        scan.kernel = Some(RunningKernel {
+            release: "7.2.2-1-cachyos".to_string(),
+            modules_present: true,
+        });
+        let out = render_status(&scan, &ascii_styles());
+        assert!(out.contains("reboot required"), "reboot missing:\n{out}");
+        assert!(out.contains("7.2.2-1-cachyos"), "{out}");
+        assert!(out.contains("7.2.3-1-cachyos"), "{out}");
+
+        // Running what is installed: no row at all.
+        scan.packages[0].version = "7.2.2-1".to_string();
+        let out = render_status(&scan, &ascii_styles());
+        assert!(
+            !out.contains("reboot"),
+            "furniture on a healthy system:\n{out}"
+        );
     }
 
     /// Nothing to explain, nothing printed — the note must not become a line
