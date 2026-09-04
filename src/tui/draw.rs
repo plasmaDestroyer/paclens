@@ -1402,6 +1402,9 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App) {
 fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) {
     let theme = &app.theme;
     let rows = app.pkg_rows();
+    // KIND only says something for Flatpak (app vs runtime); everywhere else
+    // it is a column of em dashes, so the width goes to DESCRIPTION instead.
+    let kind_col = !narrow && app.pkg_source_is_flatpak();
 
     if rows.is_empty() {
         let msg = if app.pkg_filter().is_empty() {
@@ -1421,14 +1424,16 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
     let header = if narrow {
         Row::new(vec![Cell::from("NAME"), Cell::from("REASON")])
     } else {
-        Row::new(vec![
-            Cell::from("NAME"),
-            Cell::from("VERSION"),
-            Cell::from("KIND"),
+        let mut cells = vec![Cell::from("NAME"), Cell::from("VERSION")];
+        if kind_col {
+            cells.push(Cell::from("KIND"));
+        }
+        cells.extend([
             Cell::from("REASON"),
             Cell::from(Line::from("SIZE").alignment(Alignment::Right)),
             Cell::from("DESCRIPTION"),
-        ])
+        ]);
+        Row::new(cells)
     }
     .style(theme.header);
 
@@ -1446,7 +1451,14 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
                         theme.dim,
                     );
                     let mut cells = vec![Cell::from(text)];
-                    cells.resize_with(if narrow { 2 } else { 6 }, || Cell::from(""));
+                    let width = if narrow {
+                        2
+                    } else if kind_col {
+                        6
+                    } else {
+                        5
+                    };
+                    cells.resize_with(width, || Cell::from(""));
                     return Row::new(cells);
                 }
                 crate::tui::app::PkgRow::Pkg(p) => p,
@@ -1464,42 +1476,47 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, narrow: bool) 
             if narrow {
                 return Row::new(vec![Cell::from(name), Cell::from(reason)]);
             }
-            let kind = if p.runtime {
-                Span::styled("runtime", theme.dim)
-            } else if p.source_id.as_str().starts_with("flatpak") {
-                Span::styled("app", theme.primary)
-            } else {
-                Span::styled("—", theme.dim)
-            };
             let size = match p.size_bytes {
                 Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
                 None => Span::styled("—".to_string(), theme.dim),
             };
             let description = Span::styled(p.description.clone().unwrap_or_default(), theme.dim);
-            Row::new(vec![
+            let mut cells = vec![
                 Cell::from(name),
                 Cell::from(Span::styled(p.version.clone(), theme.dim)),
-                Cell::from(kind),
+            ];
+            if kind_col {
+                let kind = if p.runtime {
+                    Span::styled("runtime", theme.dim)
+                } else {
+                    Span::styled("app", theme.primary)
+                };
+                cells.push(Cell::from(kind));
+            }
+            cells.extend([
                 Cell::from(reason),
                 Cell::from(Line::from(size).alignment(Alignment::Right)),
                 Cell::from(description),
-            ])
+            ]);
+            Row::new(cells)
         })
         .collect();
 
-    let widths: &[Constraint] = if narrow {
-        &[Constraint::Min(20), Constraint::Length(10)]
+    let widths: Vec<Constraint> = if narrow {
+        vec![Constraint::Min(20), Constraint::Length(10)]
     } else {
-        &[
-            Constraint::Min(20),
-            Constraint::Length(12),
-            Constraint::Length(7),
+        let mut w = vec![Constraint::Min(20), Constraint::Length(12)];
+        if kind_col {
+            w.push(Constraint::Length(7));
+        }
+        w.extend([
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Min(10),
-        ]
+        ]);
+        w
     };
-    let table = Table::new(body, widths.to_vec())
+    let table = Table::new(body, widths)
         .header(header)
         .column_spacing(2)
         .row_highlight_style(theme.selected)
@@ -2306,9 +2323,11 @@ mod tests {
         let text = render(&pkg_app(), 100, 18);
         assert!(text.contains("pacman"), "title missing:\n{text}");
         assert!(text.contains("3 packages"), "count missing:\n{text}");
-        for col in ["NAME", "VERSION", "KIND", "REASON", "SIZE", "DESCRIPTION"] {
+        for col in ["NAME", "VERSION", "REASON", "SIZE", "DESCRIPTION"] {
             assert!(text.contains(col), "column {col} missing:\n{text}");
         }
+        // KIND is Flatpak-only (#55) — on pacman it was a column of em dashes.
+        assert!(!text.contains("KIND"), "KIND on a pacman list:\n{text}");
         assert!(text.contains("firefox"), "{text}");
         assert!(text.contains("explicit"), "{text}");
         assert!(text.contains("dependency"), "{text}");
@@ -2337,6 +2356,7 @@ mod tests {
         app.on_next(); // select flatpak-user on the dashboard
         app.open_packages();
         let text = render(&app, 100, 18);
+        assert!(text.contains("KIND"), "kind column missing:\n{text}");
         assert!(text.contains("runtime"), "kind missing:\n{text}");
         assert!(text.contains("app"), "kind missing:\n{text}");
         assert!(

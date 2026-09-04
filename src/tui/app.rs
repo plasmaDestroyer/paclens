@@ -823,6 +823,13 @@ impl App {
     pub fn pkg_cursor(&self) -> usize {
         self.pkg_cursor
     }
+    /// Is the open package list a Flatpak source? Only there does `kind`
+    /// (app vs runtime) carry information — see `render_package_table`.
+    pub fn pkg_source_is_flatpak(&self) -> bool {
+        self.pkg_source
+            .as_ref()
+            .is_some_and(|s| s.as_str().starts_with("flatpak"))
+    }
     pub fn pkg_filter(&self) -> &str {
         &self.pkg_filter
     }
@@ -1438,6 +1445,19 @@ mod tests {
             .map(|p| p.name.as_str())
             .collect();
         assert_eq!(names, vec!["org.x.App"]);
+    }
+
+    #[test]
+    fn pkg_source_is_flatpak_only_for_flatpak_sources() {
+        let mut native = app();
+        assert!(!native.pkg_source_is_flatpak()); // nothing open
+        native.open_packages(); // pacman
+        assert!(!native.pkg_source_is_flatpak());
+
+        let mut flat = app();
+        flat.on_next(); // flatpak-user
+        flat.open_packages();
+        assert!(flat.pkg_source_is_flatpak());
     }
 
     #[test]
