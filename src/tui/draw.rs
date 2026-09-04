@@ -1613,13 +1613,25 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
             continue;
         };
         // The accent means "pending updates" everywhere else in the UI, so it
-        // means it here too; every other group is structure, not news.
+        // means it here too; every other group is structure, not news. Dimmed
+        // either way: a divider that shouts competes with the rows it heads.
         let style = if *label == "pending updates" {
-            theme.accent
+            theme.accent.add_modifier(Modifier::DIM)
         } else {
             theme.header
         };
-        let body = format!("{} ({count})", label.to_uppercase());
+        let titled = label
+            .split(' ')
+            .map(|word| {
+                let mut c = word.chars();
+                match c.next() {
+                    Some(first) => format!("{}{}", first.to_uppercase(), c.as_str()),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let body = format!("{titled} ({count})");
         // Two columns short of the edge, so the rule never butts against the
         // pane divider the way a row's last column does not.
         let rule = "─".repeat((area.width as usize).saturating_sub(body.chars().count() + 8));
@@ -2238,17 +2250,17 @@ mod tests {
         let text = render(&app, 140, 22);
         assert!(text.contains("sort: updates"), "chip missing:\n{text}");
         assert!(
-            text.contains("PENDING UPDATES (1)"),
+            text.contains("Pending Updates (1)"),
             "header missing:\n{text}"
         );
-        assert!(text.contains("UP TO DATE (1)"), "{text}");
+        assert!(text.contains("Up To Date (1)"), "{text}");
         assert!(text.contains("s sort"), "footer missing:\n{text}");
 
         app.cycle_sort(); // reason
         let text = render(&app, 140, 22);
         assert!(text.contains("sort: reason"), "{text}");
-        assert!(text.contains("EXPLICIT (1)"), "{text}");
-        assert!(text.contains("DEPENDENCIES (1)"), "{text}");
+        assert!(text.contains("Explicit (1)"), "{text}");
+        assert!(text.contains("Dependencies (1)"), "{text}");
     }
 
     #[test]
@@ -2670,16 +2682,16 @@ mod tests {
         let theme = Theme::dark();
         let bold = |s: Option<Style>| s.is_some_and(|s| s.add_modifier.contains(Modifier::BOLD));
         assert!(
-            bold(style_of("PENDING UPDATES")),
+            bold(style_of("Pending Updates")),
             "pending header is not set apart"
         );
         assert_eq!(
-            style_of("PENDING UPDATES").and_then(|s| s.fg),
+            style_of("Pending Updates").and_then(|s| s.fg),
             theme.accent.fg,
             "the pending group is the accent's own meaning"
         );
         assert!(
-            bold(style_of("UP TO DATE")),
+            bold(style_of("Up To Date")),
             "up-to-date header is not set apart"
         );
     }
