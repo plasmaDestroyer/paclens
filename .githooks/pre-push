@@ -1,54 +1,197 @@
 #!/usr/bin/env bash
 # Install what is being pushed, so `paclens` on PATH is the last thing that
-# actually landed.
+# actually landed, and publish a tagged release to the AUR.
 #
-# This used to be a post-commit hook, which meant an ~80s fat-LTO relink on
-# every commit — and commits here are deliberately granular. A push is the
+# The install used to be a post-commit hook, which meant an ~80s fat-LTO relink
+# on every commit — and commits here are deliberately granular. A push is the
 # point where a piece of work is finished, which is the granularity worth
 # paying for. (git has no post-push hook; pre-push is the standard place.)
 #
 # Never blocks the push. An install problem is not a reason to refuse to
-# publish work that already passed fmt, clippy and the tests at commit time.
+# publish work that already passed fmt, clippy and the tests at commit time,
+# and neither is anything the AUR half decides.
 #
-# Skip with PACLENS_SKIP_HOOKS=1 or PACLENS_NO_INSTALL=1.
+# Skip with PACLENS_SKIP_HOOKS=1, PACLENS_NO_INSTALL=1 or PACLENS_NO_AUR=1.
 set -uo pipefail
 
 [ "${PACLENS_SKIP_HOOKS:-0}" = "1" ] && exit 0
-[ "${PACLENS_NO_INSTALL:-0}" = "1" ] && exit 0
 
 say() { printf '\033[2mpre-push:\033[0m %s\n' "$1" >&2; }
 
 zero='0000000000000000000000000000000000000000'
 touches_build=0
+touches_packaging=0
+pushing_tag=0
 pushing=0
 
 # stdin: <local ref> <local oid> <remote ref> <remote oid>, one line per ref.
-while read -r _local_ref local_oid _remote_ref remote_oid; do
+while read -r local_ref local_oid _remote_ref remote_oid; do
   [ -z "${local_oid:-}" ] && continue
   # A deleted ref has a zero local oid — nothing to build.
   [ "$local_oid" = "$zero" ] && continue
   pushing=1
+  case "$local_ref" in refs/tags/v*) pushing_tag=1 ;; esac
   if [ "$remote_oid" = "$zero" ]; then
     # New branch on the remote: no range to diff against, so just install.
     touches_build=1
-  elif git diff --name-only "$remote_oid" "$local_oid" 2>/dev/null |
-    grep -qE '\.rs$|^Cargo\.(toml|lock)$|\.toml$'; then
-    touches_build=1
+  else
+    changed=$(git diff --name-only "$remote_oid" "$local_oid" 2>/dev/null)
+    printf '%s\n' "$changed" | grep -qE '\.rs$|^Cargo\.(toml|lock)$|\.toml$' && touches_build=1
+    printf '%s\n' "$changed" | grep -q '^packaging/' && touches_packaging=1
   fi
 done
 
-# Pushing only tags, or nothing at all.
+# Pushing nothing at all.
 [ "$pushing" = "1" ] || exit 0
-if [ "$touches_build" != "1" ]; then
+
+built=0
+if [ "${PACLENS_NO_INSTALL:-0}" = "1" ]; then
+  :
+elif [ "$touches_build" != "1" ]; then
   say "nothing in this push changes the build — skipping install"
-  exit 0
+else
+  say "installing $(git rev-parse --short HEAD) (fat-LTO relink, ~80s) ..."
+  if out=$(cargo install --path . --locked --force 2>&1); then
+    say "installed -> $(command -v paclens 2>/dev/null || echo "$HOME/.cargo/bin/paclens")"
+    built=1
+  else
+    say "install failed (push continues; binary on PATH is stale):"
+    printf '%s\n' "$out" | grep -E '^(error|warning: )' -A3 | head -20 >&2
+  fi
 fi
 
-say "installing $(git rev-parse --short HEAD) (fat-LTO relink, ~80s) ..."
-if out=$(cargo install --path . --locked --force 2>&1); then
-  say "installed -> $(command -v paclens 2>/dev/null || echo "$HOME/.cargo/bin/paclens")"
-else
-  say "install failed (push continues; binary on PATH is stale):"
-  printf '%s\n' "$out" | grep -E '^(error|warning: )' -A3 | head -20 >&2
+# --- AUR ---------------------------------------------------------------
+# The AUR is other people's install path, so this publishes only what it has
+# checked: the tag the PKGBUILD names is on origin, and — where the PKGBUILD
+# carries a real checksum — the release asset it points at exists and hashes
+# to what it claims. Anything short of that is skipped with a reason rather
+# than published broken.
+#
+# Pushing a tag is the trigger. pre-push runs *before* the tag reaches origin,
+# and the source package builds from that tag, so publishing here would name a
+# ref that does not exist yet: it waits in the background for the tag to land,
+# and gives up rather than publishing if the push never happens.
+#
+# paclens-bin is deliberately not part of that. Its checksum belongs to a
+# release asset the workflow builds minutes after the tag, and updating it is
+# `updpkgsums` — a decision, not a step. It publishes on the push that changes
+# packaging/, by which time the sum in the tree is the one to check.
+#
+# Skip with PACLENS_NO_AUR=1; force the check on an ordinary push with
+# PACLENS_AUR=1.
+[ "${PACLENS_NO_AUR:-0}" = "1" ] && exit 0
+[ "$pushing_tag" = "1" ] || [ "$touches_packaging" = "1" ] || [ "${PACLENS_AUR:-0}" = "1" ] || exit 0
+if [ "$touches_build" = "1" ] && [ "$built" != "1" ] && [ "${PACLENS_AUR:-0}" != "1" ]; then
+  say "aur: the build did not pass here — not publishing"
+  exit 0
+fi
+command -v makepkg >/dev/null || {
+  say "aur: no makepkg — skipping"
+  exit 0
+}
+
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/paclens"
+aur_dir="${PACLENS_AUR_DIR:-$cache/aur}"
+log="$cache/aur-push.log"
+root="$(git rev-parse --show-toplevel)"
+
+# Publish one packaging/<pkg> to its AUR repo. Every check that fails says why
+# and returns without touching the remote.
+aur_publish() {
+  pkg=$1
+  src="$root/packaging/$pkg"
+  [ -f "$src/PKGBUILD" ] || {
+    say "aur: $pkg has no PKGBUILD — skipping"
+    return
+  }
+
+  ver=$(sed -n 's/^pkgver=//p' "$src/PKGBUILD" | head -1)
+  rel=$(sed -n 's/^pkgrel=//p' "$src/PKGBUILD" | head -1)
+  [ -n "$ver" ] || {
+    say "aur: $pkg has no pkgver — skipping"
+    return
+  }
+
+  if ! git ls-remote --tags origin "v$ver" 2>/dev/null | grep -q .; then
+    say "aur: $pkg $ver — tag v$ver is not on origin, skipping"
+    return
+  fi
+
+  repo="$aur_dir/$pkg"
+  if [ ! -d "$repo/.git" ]; then
+    mkdir -p "$aur_dir"
+    git clone -q "ssh://aur@aur.archlinux.org/$pkg.git" "$repo" 2>/dev/null || {
+      say "aur: cannot reach $pkg.git (ssh key?) — skipping"
+      return
+    }
+  fi
+  git -C "$repo" fetch -q origin 2>/dev/null || {
+    say "aur: fetch failed for $pkg — skipping"
+    return
+  }
+  git -C "$repo" reset -q --hard origin/master 2>/dev/null ||
+    git -C "$repo" checkout -q -B master
+
+  cp "$src/PKGBUILD" "$repo/PKGBUILD"
+  (cd "$repo" && makepkg --printsrcinfo >.SRCINFO 2>/dev/null) || {
+    say "aur: could not generate .SRCINFO for $pkg — skipping"
+    return
+  }
+
+  # .SRCINFO carries the source and its checksum already expanded, which is
+  # the only honest place to read them from: the PKGBUILD text is written in
+  # terms of its own variables.
+  want=$(sed -n 's/^[[:space:]]*sha256sums = //p' "$repo/.SRCINFO" | head -1)
+  url=$(sed -n 's/^[[:space:]]*source = //p' "$repo/.SRCINFO" | head -1)
+  url=${url#*::}
+  case "$url" in
+  http*)
+    if [ -n "$want" ] && [ "$want" != "SKIP" ]; then
+      got=$(curl -fsL --max-time 120 "$url" 2>/dev/null | sha256sum | cut -d' ' -f1)
+      if [ -z "$got" ]; then
+        say "aur: $pkg $ver — the release asset is not published yet, skipping"
+        return
+      elif [ "$got" != "$want" ]; then
+        say "aur: $pkg $ver — sha256 is not the published asset's (run updpkgsums), skipping"
+        return
+      fi
+    fi
+    ;;
+  esac
+
+  git -C "$repo" add -A
+  if git -C "$repo" diff --cached --quiet; then
+    say "aur: $pkg $ver is already current"
+    return
+  fi
+  git -C "$repo" commit -q -m "$pkg $ver-$rel" || return
+  if git -C "$repo" push -q origin master 2>/dev/null; then
+    say "aur: published $pkg $ver-$rel"
+  else
+    say "aur: push failed for $pkg (this push continues)"
+  fi
+}
+
+if [ "$pushing_tag" = "1" ]; then
+  # Wait for the tag this push is carrying, then publish the source package.
+  # Detached, because the tag cannot land until this hook returns.
+  ver=$(sed -n 's/^pkgver=//p' "$root/packaging/paclens/PKGBUILD" | head -1)
+  mkdir -p "$cache"
+  (
+    for _ in $(seq 1 40); do
+      sleep 3
+      git ls-remote --tags origin "v$ver" 2>/dev/null | grep -q . && break
+    done
+    printf '\n=== %s ===\n' "$(date -Is)"
+    aur_publish paclens
+  ) >>"$log" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  say "aur: waiting for v$ver to land, then publishing paclens (log: $log)"
+fi
+
+if [ "$touches_packaging" = "1" ] || [ "${PACLENS_AUR:-0}" = "1" ]; then
+  for pkg in paclens paclens-bin; do
+    aur_publish "$pkg"
+  done
 fi
 exit 0
