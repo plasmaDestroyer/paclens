@@ -175,7 +175,7 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
     // Only suggest what would actually do something: an 11 GiB cache that
     // reclaims nothing should not carry a command that frees nothing.
     if sizes.pacman_cache_reclaimable_bytes != Some(0) {
-        suggestions.push("paccache -rk2".to_string());
+        suggestions.push("paccache -rk3".to_string());
     }
     if !unused.is_empty() {
         suggestions.push("flatpak uninstall --unused".to_string());

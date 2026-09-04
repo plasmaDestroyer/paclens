@@ -59,7 +59,7 @@ your shell. Everything else is advisory: paclens never removes anything.
   deliberate `R`.
 - **Cleanup report** — orphan candidates derived from the dependency graph
   (no `pacman -Qtd`), unused Flatpak runtimes, and cache sizes with an
-  *honest* reclaimable figure: an 11 GiB pacman cache that `paccache -rk2`
+  *honest* reclaimable figure: an 11 GiB pacman cache that `paccache -rk3`
   would free nothing from says exactly that, rather than implying the total is
   cleanable. The AUR build cache (`~/.cache/paru`) gets its own row. Every
   suggestion is text for *you* to run.

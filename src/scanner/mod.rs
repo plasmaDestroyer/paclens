@@ -427,10 +427,10 @@ fn gather_cache_sizes(
         .then(|| runner.run("du", &["-sb", PACMAN_CACHE_DIR]))
         .and_then(Result::ok)
         .and_then(|out| parse_du_bytes(&out.stdout));
-    // The dry run mirrors the suggested `paccache -rk2`. paccache missing →
+    // The dry run mirrors the suggested `paccache -rk3`. paccache missing →
     // command fails → None (the pane shows the total alone).
     let pacman_cache_reclaimable_bytes = pacman_available
-        .then(|| runner.run("paccache", &["-dk2"]))
+        .then(|| runner.run("paccache", &["-dk3"]))
         .and_then(Result::ok)
         .and_then(|out| parse_paccache_saved(&format!("{}\n{}", out.stdout, out.stderr)));
     // All three helpers keep their build cache at `~/.cache/<binary name>`,
@@ -1046,7 +1046,7 @@ mod tests {
     fn cache_sizes_include_reclaimable_and_the_aur_build_cache() {
         let runner = full_runner()
             .with(
-                "paccache -dk2",
+                "paccache -dk3",
                 "==> finished dry run: 3 candidates (disk space saved: 100.00 MiB)\n",
                 0,
             )

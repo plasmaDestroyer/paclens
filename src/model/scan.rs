@@ -94,7 +94,7 @@ impl ScanResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheSizes {
     pub pacman_cache_bytes: Option<u64>,
-    /// What `paccache -rk2` would actually free (its dry run) — the honest
+    /// What `paccache -rk3` would actually free (its dry run) — the honest
     /// number next to the total, which is mostly current-version tarballs
     /// (v0.5 cleanup honesty; dev-notes 2026-07-14). `None` = no paccache.
     #[serde(default)]

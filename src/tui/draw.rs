@@ -1200,7 +1200,7 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     let sizes = &app.scan().cache_sizes;
     // Honesty rule (dev-notes 2026-07-14): the total is mostly the
     // current-version tarballs paccache never touches — show what a
-    // `paccache -rk2` would actually free next to it.
+    // `paccache -rk3` would actually free next to it.
     let pacman_cache = match (
         sizes.pacman_cache_bytes,
         sizes.pacman_cache_reclaimable_bytes,
@@ -1282,7 +1282,7 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     ]);
     // Only suggest what would actually do something.
     if sizes.pacman_cache_reclaimable_bytes != Some(0) {
-        lines.push(Line::from(Span::styled("  paccache -rk2", theme.primary)));
+        lines.push(Line::from(Span::styled("  paccache -rk3", theme.primary)));
     }
     lines.push(Line::from(Span::styled(
         "  flatpak uninstall --unused",
@@ -3407,7 +3407,7 @@ mod tests {
             "honesty note missing:\n{text}"
         );
         assert!(
-            !text.contains("paccache -rk2"),
+            !text.contains("paccache -rk3"),
             "pointless suggestion must be hidden:\n{text}"
         );
         assert!(text.contains("paru build cache"), "{text}");
@@ -3425,7 +3425,7 @@ mod tests {
             text.contains("(806.81 MiB reclaimable)"),
             "reclaimable missing:\n{text}"
         );
-        assert!(text.contains("paccache -rk2"), "{text}");
+        assert!(text.contains("paccache -rk3"), "{text}");
         assert!(!text.contains("paru build cache"), "no paru row:\n{text}");
         assert!(!text.contains("paru -Sc --aur"), "{text}");
     }
@@ -3450,7 +3450,7 @@ mod tests {
         assert!(text.contains("7.08 GiB"), "cache size missing:\n{text}");
         assert!(text.contains("unused runtimes"), "{text}");
         assert!(text.contains("435.83 MiB"), "runtime size missing:\n{text}");
-        assert!(text.contains("paccache -rk2"), "{text}");
+        assert!(text.contains("paccache -rk3"), "{text}");
         assert!(text.contains("flatpak uninstall --unused"), "{text}");
         assert!(
             text.contains("sudo pacman -Rns leafdep"),
