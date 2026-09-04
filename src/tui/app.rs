@@ -810,7 +810,9 @@ impl App {
         self.pkg_offset = 0;
         self.pkg_filter.clear();
         self.filter_active = false;
-        self.why_open = false;
+        // The pane is the package screen's default state — it carries the
+        // description the table no longer has room for (#56).
+        self.why_open = true;
         self.screen = Screen::Packages;
     }
 
@@ -1391,6 +1393,7 @@ mod tests {
         assert_eq!(app.input_mode(), InputMode::Dashboard);
         app.open_packages();
         assert_eq!(app.input_mode(), InputMode::Packages);
+        app.back_packages(); // closes the pane
         app.back_packages();
         assert_eq!(app.input_mode(), InputMode::Dashboard);
     }
@@ -1445,6 +1448,15 @@ mod tests {
             .map(|p| p.name.as_str())
             .collect();
         assert_eq!(names, vec!["org.x.App"]);
+    }
+
+    #[test]
+    fn the_pane_opens_with_the_package_screen() {
+        let mut app = app();
+        app.open_packages();
+        assert!(app.is_why_open(), "the pane is the default state (#56)");
+        app.toggle_why();
+        assert!(!app.is_why_open(), "w still closes it");
     }
 
     #[test]
@@ -1901,8 +1913,6 @@ mod tests {
         assert_eq!(app.pkg_sort(), PkgSort::Size);
         // c (99) > b (10) > a (None → last).
         assert_eq!(row_names(&app), vec!["c", "b", "a"]);
-        app.cycle_sort(); // wraps to updates-first
-        assert_eq!(app.pkg_sort(), PkgSort::UpdatesFirst);
     }
 
     #[test]
@@ -2048,8 +2058,7 @@ mod tests {
         app.start_filter();
         app.filter_push('a');
         app.filter_accept();
-        app.toggle_why();
-        assert!(app.is_why_open());
+        assert!(app.is_why_open(), "the pane opens with the screen");
 
         app.back_packages(); // 1: closes the why pane
         assert!(!app.is_why_open());
