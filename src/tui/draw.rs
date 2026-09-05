@@ -1404,7 +1404,7 @@ fn render_cleanup_why_pane(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(Paragraph::new("no selection").style(theme.dim), inner);
         return;
     };
-    let lines = why_pane_lines(&report, theme, true);
+    let lines = why_pane_lines(&report, theme, true, why_history(app, &report));
     frame.render_widget(
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
         inner,
@@ -1825,7 +1825,12 @@ fn render_why_pane(frame: &mut Frame, area: Rect, app: &App, borders: Borders) {
         )));
         lines.push(Line::default());
     }
-    lines.extend(why_pane_lines(&report, theme, false));
+    lines.extend(why_pane_lines(
+        &report,
+        theme,
+        false,
+        why_history(app, &report),
+    ));
     frame.render_widget(
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
         inner,
@@ -1838,6 +1843,7 @@ fn why_pane_lines(
     report: &crate::analyzer::WhyReport,
     theme: &Theme,
     title: bool,
+    history: Option<String>,
 ) -> Vec<Line<'static>> {
     use crate::analyzer::{Verdict, WhyReport};
     use crate::model::{InstallReason, SourceId};
@@ -1887,6 +1893,12 @@ fn why_pane_lines(
                 }
             };
             lines.push(kv("reason", reason, theme.primary));
+            // When the package arrived and how often it has moved (#8). Absent
+            // for anything the log tail predates, and for Flatpak, which keeps
+            // no equivalent log.
+            if let Some(history) = history {
+                lines.push(kv("history", history, theme.dim));
+            }
             for caveat in &p.caveats {
                 lines.push(Line::from(vec![
                     Span::styled(format!("{:10}", "caveat"), theme.dim),
@@ -1943,6 +1955,15 @@ fn why_pane_lines(
         WhyReport::NotFound { .. } => {
             vec![Line::from(Span::styled("no data for this row", theme.dim))]
         }
+    }
+}
+
+/// The history line for whatever the report is about, or `None` when the
+/// report found nothing to ask about.
+fn why_history(app: &App, report: &crate::analyzer::WhyReport) -> Option<String> {
+    match report {
+        crate::analyzer::WhyReport::Found(p) => app.package_history(&p.package),
+        crate::analyzer::WhyReport::NotFound { .. } => None,
     }
 }
 
@@ -3113,6 +3134,29 @@ mod tests {
         assert!(text.contains("glibc  1"), "pane must follow:\n{text}");
         assert!(text.contains("is a dependency"), "{text}");
         assert!(text.contains("bash, firefox"), "{text}");
+    }
+
+    #[test]
+    fn why_pane_shows_when_the_package_arrived() {
+        let mut app = pkg_app();
+        app.set_history(
+            "\
+[2026-05-29T10:00:00+0530] [ALPM] transaction started
+[2026-05-29T10:00:01+0530] [ALPM] installed firefox (1.0-1)
+[2026-05-29T10:00:02+0530] [ALPM] transaction completed
+",
+        );
+        let text = render(&app, 110, 20);
+        assert!(text.contains("history"), "history row missing:\n{text}");
+        assert!(text.contains("2026-05-29"), "install date missing:\n{text}");
+    }
+
+    #[test]
+    fn why_pane_omits_history_the_log_does_not_have() {
+        // Nothing seeded — the pane says nothing rather than guessing.
+        let app = pkg_app();
+        let text = render(&app, 110, 20);
+        assert!(!text.contains("history"), "history claimed:\n{text}");
     }
 
     #[test]

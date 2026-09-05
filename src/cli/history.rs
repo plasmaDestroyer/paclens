@@ -19,8 +19,8 @@ use crate::cli::style::Styles;
 /// second to parse, while a full log on a years-old install can be 50 MB.
 /// Reading the tail is what keeps a history question cheap; the parser is
 /// built to start mid-file for exactly this reason.
-const PACMAN_LOG: &str = "/var/log/pacman.log";
-const TAIL_BYTES: u64 = 4 * 1024 * 1024;
+pub const PACMAN_LOG: &str = "/var/log/pacman.log";
+pub const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Read the last [`TAIL_BYTES`] of a log. The first line is likely cut in
 /// half, which the parser drops rather than guesses at.

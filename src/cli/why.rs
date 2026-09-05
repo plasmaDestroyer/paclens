@@ -36,26 +36,53 @@ pub fn run(
             };
             anyhow::bail!("no installed package named {package:?}{hint}");
         }
-        _ => {
+        WhyReport::Found(detail) => {
             print!(
                 "{}",
-                render_report(&report, config.why.show_transitive, styles)
+                render_report(
+                    &report,
+                    config.why.show_transitive,
+                    package_history(&detail.package).as_deref(),
+                    styles
+                )
             );
             Ok(())
         }
     }
 }
 
+/// When the package arrived and how often it has moved, from the pacman log
+/// (#8). `None` when the log cannot be read, or its tail predates the
+/// package — an absent line claims nothing, which a wrong date would.
+fn package_history(package: &str) -> Option<String> {
+    let text = crate::cli::history::read_tail(
+        Path::new(crate::cli::history::PACMAN_LOG),
+        crate::cli::history::TAIL_BYTES,
+    )
+    .ok()?;
+    analyzer::history::package_summary(&analyzer::history::parse(&text), package)
+}
+
 /// Render a found report (any source — unified in v0.1.3). Pure for
 /// testability.
-fn render_report(report: &WhyReport, show_transitive: bool, s: &Styles) -> String {
+fn render_report(
+    report: &WhyReport,
+    show_transitive: bool,
+    history: Option<&str>,
+    s: &Styles,
+) -> String {
     match report {
-        WhyReport::Found(p) => render_detail(p, show_transitive, s),
+        WhyReport::Found(p) => render_detail(p, show_transitive, history, s),
         WhyReport::NotFound { .. } => String::new(), // handled by the caller
     }
 }
 
-fn render_detail(p: &WhyDetail, show_transitive: bool, s: &Styles) -> String {
+fn render_detail(
+    p: &WhyDetail,
+    show_transitive: bool,
+    history: Option<&str>,
+    s: &Styles,
+) -> String {
     let is_alpm = p.source_id == SourceId::pacman() || p.source_id == SourceId::aur();
     let mut out = String::new();
     out.push_str(&format!("{}\n", s.title(&p.package)));
@@ -81,6 +108,9 @@ fn render_detail(p: &WhyDetail, show_transitive: bool, s: &Styles) -> String {
         }
     };
     out.push_str(&field(s, "reason", &reason));
+    if let Some(history) = history {
+        out.push_str(&field(s, "history", &s.dim(history)));
+    }
     if !is_alpm && !p.runtime {
         out.push_str(&field(
             s,
@@ -192,7 +222,7 @@ mod tests {
 
     #[test]
     fn explicit_safe_report_matches_the_spec_shape() {
-        let text = render_report(&WhyReport::Found(base()), true, &plain());
+        let text = render_report(&WhyReport::Found(base()), true, None, &plain());
         assert!(text.starts_with("firefox\n"), "{text}");
         assert!(text.contains("source:"), "{text}");
         assert!(text.contains("explicitly installed"), "{text}");
@@ -238,7 +268,7 @@ mod tests {
             confidence: Confidence::Confirmed,
             ..base()
         };
-        let text = render_report(&WhyReport::Found(p), true, &plain());
+        let text = render_report(&WhyReport::Found(p), true, None, &plain());
         assert!(
             text.contains("installed as a dependency (1 hop from an explicit install)"),
             "{text}"
@@ -273,8 +303,8 @@ mod tests {
             verdict: Verdict::IsADependency,
             ..base()
         };
-        let on = render_report(&WhyReport::Found(p.clone()), true, &plain());
-        let off = render_report(&WhyReport::Found(p), false, &plain());
+        let on = render_report(&WhyReport::Found(p.clone()), true, None, &plain());
+        let off = render_report(&WhyReport::Found(p), false, None, &plain());
         assert!(on.contains("chain:"), "{on}");
         assert!(!off.contains("chain:"), "{off}");
     }
@@ -287,11 +317,21 @@ mod tests {
             confidence: Confidence::Unknown,
             ..base()
         };
-        let text = render_report(&WhyReport::Found(p), true, &plain());
+        let text = render_report(&WhyReport::Found(p), true, None, &plain());
         assert!(
             text.contains("unclear — check manually [unknown]"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn history_renders_as_a_field_and_is_omitted_when_the_log_is_silent() {
+        let summary = "installed 2026-05-29, upgraded once, last 2026-09-03";
+        let with = render_report(&WhyReport::Found(base()), true, Some(summary), &plain());
+        assert!(with.contains("history:"), "{with}");
+        assert!(with.contains(summary), "{with}");
+        let without = render_report(&WhyReport::Found(base()), true, None, &plain());
+        assert!(!without.contains("history:"), "{without}");
     }
 
     #[test]
@@ -311,7 +351,7 @@ mod tests {
             caveats: vec!["AUR package — review PKGBUILD changes before updating".to_string()],
             ..base()
         };
-        let text = render_report(&WhyReport::Found(p), true, &plain());
+        let text = render_report(&WhyReport::Found(p), true, None, &plain());
         assert!(text.contains("aur"), "{text}");
         assert!(text.contains("caveat:"), "{text}");
         assert!(text.contains("review PKGBUILD"), "{text}");
@@ -331,7 +371,7 @@ mod tests {
             would_remove: vec!["org.gnome.Platform".to_string()],
             ..base()
         };
-        let text = render_report(&WhyReport::Found(p), true, &plain());
+        let text = render_report(&WhyReport::Found(p), true, None, &plain());
         assert!(text.contains("flatpak app (self-contained)"), "{text}");
         assert!(
             text.contains("flatpak uninstall org.gnome.Calculator"),
@@ -360,7 +400,7 @@ mod tests {
             confidence: Confidence::Inferred,
             ..base()
         };
-        let text = render_report(&WhyReport::Found(p), true, &plain());
+        let text = render_report(&WhyReport::Found(p), true, None, &plain());
         assert!(text.contains("flatpak runtime"), "{text}");
         assert!(
             text.contains("org.gnome.Calculator [inferred]"),

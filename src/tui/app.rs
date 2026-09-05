@@ -176,6 +176,11 @@ pub struct App {
     scan: ScanResult,
     /// Rebuilt with every scan (never serialized) — powers the why pane.
     graph: DepGraph,
+    /// The pacman log, parsed on first use and kept for the session (#8).
+    /// The why pane follows the cursor, and re-reading megabytes of log on
+    /// every keystroke would be felt; the log only grows at the tail, so a
+    /// session-lifetime parse is as current as anything else on screen.
+    history: std::cell::OnceCell<Vec<crate::analyzer::history::Transaction>>,
     /// Session options captured at startup.
     opts: AppOptions,
     pub theme: Theme,
@@ -310,6 +315,26 @@ pub fn pkg_match(query: &str, p: &Package) -> Option<(MatchField, fuzzy::Score)>
     }
 }
 
+/// The tail of the pacman log, parsed. A log that cannot be read yields no
+/// history rather than an error: `why` is advisory, and the pane simply omits
+/// the line.
+#[cfg(not(test))]
+fn load_history() -> Vec<crate::analyzer::history::Transaction> {
+    crate::cli::history::read_tail(
+        std::path::Path::new(crate::cli::history::PACMAN_LOG),
+        crate::cli::history::TAIL_BYTES,
+    )
+    .map(|text| analyzer::history::parse(&text))
+    .unwrap_or_default()
+}
+
+/// Tests never read `/var/log`: an unseeded cache stays empty, and a test that
+/// wants history calls `set_history`.
+#[cfg(test)]
+fn load_history() -> Vec<crate::analyzer::history::Transaction> {
+    Vec::new()
+}
+
 impl App {
     pub fn new(scan: ScanResult, theme: Theme, opts: AppOptions) -> Self {
         let dash_selected = if scan.sources.is_empty() {
@@ -324,6 +349,7 @@ impl App {
         App {
             scan,
             graph,
+            history: std::cell::OnceCell::new(),
             opts,
             theme,
             screen: Screen::Dashboard,
@@ -1180,6 +1206,21 @@ impl App {
             &name,
             self.opts.why_depth,
         ))
+    }
+
+    /// One line of install history for `name`: when it arrived, how often it
+    /// has moved since (#8). `None` when the log tail says nothing about it —
+    /// which is not the same as "never installed", so the pane omits the row
+    /// rather than claiming anything.
+    pub fn package_history(&self, name: &str) -> Option<String> {
+        let transactions = self.history.get_or_init(load_history);
+        analyzer::history::package_summary(transactions, name)
+    }
+
+    /// Seed the history cache, so a test never reads `/var/log`.
+    #[cfg(test)]
+    pub fn set_history(&mut self, log: &str) {
+        let _ = self.history.set(analyzer::history::parse(log));
     }
 
     /// Move the package cursor by `delta` rows (±1 nav, ±20 page), clamped.
@@ -2348,6 +2389,40 @@ mod tests {
             crate::analyzer::WhyReport::Found(p) => assert_eq!(p.package, "a"),
             other => panic!("expected pacman report, got {other:?}"),
         }
+    }
+
+    /// Two transactions touching one package, in the shape pacman writes.
+    const LOG: &str = "\
+[2026-05-29T10:00:00+0530] [ALPM] transaction started
+[2026-05-29T10:00:01+0530] [ALPM] installed a (1.0-1)
+[2026-05-29T10:00:02+0530] [ALPM] transaction completed
+[2026-09-03T09:00:00+0530] [ALPM] transaction started
+[2026-09-03T09:00:01+0530] [ALPM] upgraded a (1.0-1 -> 2.0-1)
+[2026-09-03T09:00:02+0530] [ALPM] transaction completed
+";
+
+    #[test]
+    fn package_history_summarises_the_seeded_log() {
+        let mut app = app();
+        app.set_history(LOG);
+        assert_eq!(
+            app.package_history("a").as_deref(),
+            Some("installed 2026-05-29, upgraded once, last 2026-09-03")
+        );
+    }
+
+    #[test]
+    fn package_history_says_nothing_about_a_package_the_log_misses() {
+        let mut app = app();
+        app.set_history(LOG);
+        // Not the same claim as "never installed" — the pane omits the line.
+        assert_eq!(app.package_history("b"), None);
+    }
+
+    #[test]
+    fn package_history_is_empty_without_a_log() {
+        // Nothing seeded: no filesystem read, no history, no panic.
+        assert_eq!(app().package_history("a"), None);
     }
 
     #[test]

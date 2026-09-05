@@ -1,7 +1,7 @@
 //! CLI entry: argument parsing, the init sequence, and subcommand dispatch.
 
 mod cleanup;
-mod history;
+pub(crate) mod history;
 mod migrate;
 mod overlaps;
 mod status;
