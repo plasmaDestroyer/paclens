@@ -389,8 +389,14 @@ fn assemble(
 
     // Foreign packages keep their full pacman -Qi metadata but belong to the
     // aur source (v0.3) — everything downstream keys on source_id.
-    if scan_aur {
-        for pkg in packages.iter_mut().filter(|p| foreign.contains(&p.name)) {
+    //
+    // Foreign is not the same as from the AUR, though (#77). A repo that is
+    // removed from pacman.conf leaves its packages foreign without their ever
+    // having touched the AUR, so only the ones built on this machine are
+    // relabelled; the rest stay pacman's, which is what still manages them.
+    for pkg in packages.iter_mut().filter(|p| foreign.contains(&p.name)) {
+        pkg.foreign = true;
+        if scan_aur && crate::analyzer::provenance::built_here(pkg) {
             pkg.source_id = SourceId::aur();
         }
     }
@@ -768,16 +774,20 @@ mod tests {
     }
 
     const QM_FIXTURE: &str = include_str!("../../tests/fixtures/aur/qm.txt");
+    /// A package built on this machine, captured from a real system: makepkg
+    /// signs nothing and claims nobody, which is what tells it apart from a
+    /// package a repository shipped (#77).
+    const QI_LOCAL: &str = include_str!("../../tests/fixtures/pacman/qi_local_build.txt");
     const QUA_FIXTURE: &str = include_str!("../../tests/fixtures/aur/qua.txt");
 
     #[test]
     fn foreign_packages_move_to_the_aur_source_with_updates() {
-        // QI_SMALL has firefox/glibc/bash; mark bash foreign.
-        let runner = full_runner().with("pacman -Qm", "bash 5.2-1\n", 0).with(
-            "paru -Qua",
-            "bash 5.2-1 -> 5.3-1\n",
-            0,
-        );
+        // The foreign package has to look built-here, or it is a package from
+        // a repo that went away rather than an AUR one (#77).
+        let runner = full_runner()
+            .with("pacman -Qi", &format!("{QI_SMALL}\n{QI_LOCAL}"), 0)
+            .with("pacman -Qm", "antigravity 2.11.0-1\n", 0)
+            .with("paru -Qua", "antigravity 2.11.0-1 -> 2.12.0-1\n", 0);
         let scan = assemble(
             &runner,
             &Config::default(),
@@ -787,8 +797,13 @@ mod tests {
             HC::Detected(aur::AurHelper::Paru),
             None,
         );
-        let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
-        assert_eq!(bash.source_id, SourceId::aur());
+        let local = scan
+            .packages
+            .iter()
+            .find(|p| p.name == "antigravity")
+            .unwrap();
+        assert_eq!(local.source_id, SourceId::aur());
+        assert!(local.foreign, "the -Qm pass marks it");
         // Non-foreign packages stay pacman.
         let alac = scan
             .packages
@@ -800,7 +815,7 @@ mod tests {
         assert!(
             scan.updates
                 .iter()
-                .any(|u| u.package_name == "bash" && u.source_id == SourceId::aur()),
+                .any(|u| u.package_name == "antigravity" && u.source_id == SourceId::aur()),
             "{:?}",
             scan.updates
                 .iter()
@@ -867,7 +882,9 @@ mod tests {
 
     #[test]
     fn missing_paru_lists_foreign_packages_but_no_updates() {
-        let runner = full_runner().with("pacman -Qm", "bash 5.2-1\n", 0);
+        let runner = full_runner()
+            .with("pacman -Qi", &format!("{QI_SMALL}\n{QI_LOCAL}"), 0)
+            .with("pacman -Qm", "antigravity 2.11.0-1\n", 0);
         let scan = assemble(
             &runner,
             &Config::default(),
@@ -877,9 +894,13 @@ mod tests {
             HC::None,
             None,
         );
-        let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
+        let local = scan
+            .packages
+            .iter()
+            .find(|p| p.name == "antigravity")
+            .unwrap();
         assert_eq!(
-            bash.source_id,
+            local.source_id,
             SourceId::aur(),
             "labeling works without paru"
         );
@@ -1215,6 +1236,9 @@ mod tests {
             optional_deps: Vec::new(),
             provides: Vec::new(),
             runtime: false,
+            foreign: false,
+            signed: true,
+            packager: None,
         }
     }
 

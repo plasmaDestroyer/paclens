@@ -31,6 +31,19 @@ pub struct Package {
     /// Always false for pacman packages. Spec §4.3 deviation (design §13).
     #[serde(default)]
     pub runtime: bool,
+    /// In no configured sync database (`pacman -Qm`). Not the same as "from
+    /// the AUR" — a repo that is removed leaves its packages foreign (#77).
+    #[serde(default)]
+    pub foreign: bool,
+    /// `pacman -Qi`'s "Validated By" named a signature, which means something
+    /// built and signed this rather than the local machine. Locally built
+    /// packages validate as `None`.
+    #[serde(default)]
+    pub signed: bool,
+    /// Who packaged it, when that is anyone in particular — `Unknown Packager`
+    /// is makepkg's default and says only "built here".
+    #[serde(default)]
+    pub packager: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

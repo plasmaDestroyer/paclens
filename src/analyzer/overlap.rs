@@ -233,6 +233,9 @@ mod tests {
             optional_deps: Vec::new(),
             provides: Vec::new(),
             runtime: false,
+            foreign: false,
+            signed: true,
+            packager: None,
         }
     }
 
@@ -249,6 +252,9 @@ mod tests {
             optional_deps: Vec::new(),
             provides: Vec::new(),
             runtime: false,
+            foreign: false,
+            signed: true,
+            packager: None,
         }
     }
 

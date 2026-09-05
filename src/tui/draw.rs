@@ -1245,6 +1245,7 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
         .sum();
 
     let stale = app.stale_units();
+    let unowned = app.unowned_packages();
     let mut lines = vec![kv("pacman cache", pacman_cache)];
     // Named for the helper actually in use — "paru build cache" on a machine
     // with only yay is a figure attributed to the wrong tool.
@@ -1257,6 +1258,14 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     }
     lines.extend([
         kv("unused runtimes", vec![unused]),
+        kv(
+            "no repository",
+            vec![if unowned.is_empty() {
+                Span::styled("none".to_string(), theme.dim)
+            } else {
+                Span::styled(format!("{}", unowned.len()), theme.accent)
+            }],
+        ),
         kv(
             "stale services",
             vec![if stale.is_empty() {
@@ -1310,6 +1319,17 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
             theme.primary,
         )));
     }
+    // A package no repo carries can never update, and nothing else on this
+    // screen would say so (#77).
+    if !unowned.is_empty() {
+        for (who, n) in crate::analyzer::provenance::by_packager(&unowned) {
+            lines.push(Line::from(Span::styled(
+                format!("  {n} packaged by {who}, no repo"),
+                theme.dim,
+            )));
+        }
+    }
+
     // Inferred, so it says so: a deleted mapping proves the file changed,
     // not that anything is broken (#4).
     if !stale.is_empty() {
@@ -2028,6 +2048,9 @@ mod tests {
             optional_deps: Vec::new(),
             provides: Vec::new(),
             runtime: false,
+            foreign: false,
+            signed: true,
+            packager: None,
         }
     }
 
@@ -2873,6 +2896,28 @@ mod tests {
         assert!(
             !text.contains("reboot"),
             "furniture on a healthy system:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_cleanup_screen_names_who_shipped_the_packages_no_repo_carries() {
+        let mut s = scan_with(Vec::new());
+        let mut stranded = pkg("cachyos-hello", SourceId::pacman());
+        stranded.foreign = true;
+        stranded.signed = true;
+        stranded.packager = Some("CachyOS".to_string());
+        let mut built_here = pkg("antigravity", SourceId::aur());
+        built_here.foreign = true;
+        built_here.signed = false;
+        built_here.packager = None;
+        s.packages = vec![stranded, built_here];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.open_cleanup();
+        let text = render(&app, 110, 30);
+        assert!(text.contains("no repository"), "row missing:\n{text}");
+        assert!(
+            text.contains("1 packaged by CachyOS"),
+            "the explanation is who shipped it:\n{text}"
         );
     }
 

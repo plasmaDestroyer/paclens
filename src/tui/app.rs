@@ -727,6 +727,12 @@ impl App {
         self.opts.sudo_loop
     }
 
+    /// Packages in no configured repository (#77) — pacman manages them,
+    /// nothing can update them.
+    pub fn unowned_packages(&self) -> Vec<&crate::model::Package> {
+        crate::analyzer::provenance::unowned(&self.scan.packages)
+    }
+
     /// Units running against files an upgrade replaced (#4). Inferred, and
     /// only what this user could see.
     pub fn stale_units(&self) -> Vec<crate::analyzer::StaleUnit> {
@@ -1330,6 +1336,9 @@ mod tests {
             optional_deps: Vec::new(),
             provides: Vec::new(),
             runtime: false,
+            foreign: false,
+            signed: true,
+            packager: None,
         }
     }
 

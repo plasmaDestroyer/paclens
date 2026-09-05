@@ -155,6 +155,10 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
                 optional_deps: Vec::new(),
                 provides: Vec::new(),
                 runtime,
+                // Flatpak has no repo/AUR split to be wrong about (#77).
+                foreign: false,
+                signed: false,
+                packager: None,
             })
         })
         .collect()

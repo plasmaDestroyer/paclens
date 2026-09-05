@@ -191,6 +191,13 @@ fn parse_record(lines: &[&str]) -> Option<Package> {
         optional_deps: parse_optional_deps(fields.get("Optional Deps")),
         provides: parse_pkg_list(fields.get("Provides")),
         runtime: false,
+        // Facts, not a verdict: whether this package is in a repo at all is
+        // the scanner's `pacman -Qm` pass, and what the two mean together is
+        // the analyzer's (#77).
+        foreign: false,
+        signed: first(&fields, "Validated By").is_some_and(|v| v.contains("Signature")),
+        packager: first(&fields, "Packager")
+            .filter(|p| !p.is_empty() && p != "Unknown Packager" && p != "None"),
     })
 }
 

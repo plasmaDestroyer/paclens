@@ -42,6 +42,7 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
     use crate::analyzer::pacfiles;
     let pacfiles = pacfiles::review_order(&scan.pacfiles);
     let stale = crate::analyzer::stale_units(&scan.stale_processes);
+    let unowned = crate::analyzer::provenance::unowned(&scan.packages);
     let diff = pacfiles::diff_program(diff_prog, std::env::var("DIFFPROG").ok().as_deref());
     let orphans = graph.orphans(scan);
     let unused: Vec<_> = graph.unused_runtimes(scan);
@@ -60,7 +61,7 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
     let mut out = String::new();
     // The headline counts things a reader could act on, not bytes: the cache
     // total is mostly current-version tarballs that nothing should remove.
-    let actionable = orphans.len() + unused.len() + pacfiles.len() + stale.len();
+    let actionable = orphans.len() + unused.len() + pacfiles.len() + stale.len() + unowned.len();
     let headline = if actionable == 0 {
         s.summary_ok("nothing to clean up")
     } else {
@@ -110,6 +111,15 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
             s.dim("none")
         } else {
             format!("{} ({})", orphans.len(), human_bytes(orphan_bytes))
+        },
+        s,
+    ));
+    out.push_str(&row(
+        "no repository",
+        &if unowned.is_empty() {
+            s.dim("none")
+        } else {
+            format!("{}", unowned.len())
         },
         s,
     ));
@@ -178,6 +188,23 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
                 s.dim(f.kind.label())
             ));
         }
+    }
+
+    if !unowned.is_empty() {
+        out.push('\n');
+        out.push_str(&s.dim(
+            "no repository - installed, but in no configured repo, so nothing can update them:",
+        ));
+        out.push('\n');
+        for (who, n) in crate::analyzer::provenance::by_packager(&unowned) {
+            out.push_str(&format!("  {} {n} packaged by {who}\n", s.bullet()));
+        }
+        let names: Vec<&str> = unowned.iter().take(6).map(|p| p.name.as_str()).collect();
+        out.push_str(&s.dim(&format!("      {}", names.join(", "))));
+        if unowned.len() > names.len() {
+            out.push_str(&s.dim(&format!(", and {} more", unowned.len() - names.len())));
+        }
+        out.push('\n');
     }
 
     if !stale.is_empty() {
@@ -290,6 +317,9 @@ mod tests {
             optional_deps: Vec::new(),
             provides: Vec::new(),
             runtime: false,
+            foreign: false,
+            signed: true,
+            packager: None,
         }
     }
 
@@ -359,6 +389,50 @@ mod tests {
     /// An orphan is a package installed as a dependency that nothing now
     /// requires. It is listed with its size and a removal command, but the
     /// command is text — and it points at `why` first.
+    #[test]
+    fn packages_with_no_repository_are_named_with_who_shipped_them() {
+        let mut scan = scan(Vec::new(), CacheSizes::default());
+        let mut from_cachyos = pkg(
+            "cachyos-hello",
+            SourceId::pacman(),
+            InstallReason::Explicit,
+            None,
+        );
+        from_cachyos.foreign = true;
+        from_cachyos.signed = true;
+        from_cachyos.packager = Some("CachyOS <admin@cachyos.org>".to_string());
+        let mut from_aur = pkg(
+            "antigravity",
+            SourceId::aur(),
+            InstallReason::Explicit,
+            None,
+        );
+        from_aur.foreign = true;
+        from_aur.signed = false;
+        scan.packages = vec![
+            from_cachyos,
+            from_aur,
+            pkg("firefox", SourceId::pacman(), InstallReason::Explicit, None),
+        ];
+
+        let out = render(&scan);
+        assert!(out.contains("no repository"), "row missing:\n{out}");
+        // The packager is the explanation: 1 name is a mystery, "packaged by
+        // CachyOS" is an answer.
+        assert!(out.contains("packaged by CachyOS"), "{out}");
+        assert!(out.contains("cachyos-hello"), "{out}");
+        // A package built here is an AUR package, not a stranded one.
+        assert!(!out.contains("antigravity"), "AUR package listed:\n{out}");
+    }
+
+    #[test]
+    fn a_machine_with_all_its_repos_says_none() {
+        let scan = scan(Vec::new(), CacheSizes::default());
+        let out = render(&scan);
+        assert!(out.contains("no repository"), "the row must exist:\n{out}");
+        assert!(!out.contains("packaged by"), "nothing to explain:\n{out}");
+    }
+
     #[test]
     fn stale_services_are_inferred_and_session_critical_ones_are_not_suggested() {
         use crate::analyzer::services::{StaleProcess, UnitScope};

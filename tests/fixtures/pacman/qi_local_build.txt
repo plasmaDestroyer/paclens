@@ -1,0 +1,22 @@
+Name            : antigravity
+Version         : 2.11.0-1
+Description     : Google Antigravity 2.0 multi-agent orchestration platform
+Architecture    : x86_64
+URL             : https://antigravity.google/product/antigravity-2
+Licenses        : LicenseRef-Google-Antigravity
+Groups          : None
+Provides        : None
+Depends On      : alsa-lib  at-spi2-core  cairo  dbus  expat  glib2  glibc  gtk3  libcups  libgcc  libx11  libxcb  libxcomposite  libxdamage  libxext  libxfixes  libxkbcommon  libxrandr  mesa  nspr  nss  pango  systemd-libs
+Optional Deps   : None
+Required By     : None
+Optional For    : None
+Conflicts With  : None
+Replaces        : None
+Installed Size  : 498.21 MiB
+Packager        : Unknown Packager
+Build Date      : Thursday 03 September 2026 04:17:38 AM
+Install Date    : Thursday 03 September 2026 04:41:07 PM
+Install Reason  : Explicitly installed
+Install Script  : No
+Validated By    : None
+

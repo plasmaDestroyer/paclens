@@ -11,6 +11,7 @@ pub mod kernel;
 pub mod migrate;
 mod overlap;
 pub mod pacfiles;
+pub mod provenance;
 pub mod services;
 mod why;
 

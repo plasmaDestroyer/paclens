@@ -26,7 +26,7 @@ use super::{Package, PendingUpdate, Source};
 /// v10: `aur_helper` widens from the resolved helper to the whole
 /// `HelperChoice`, so the dashboard can say *why* — a stale pin needs the name
 /// that was configured, which the resolved value has already thrown away.
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {

@@ -1225,6 +1225,9 @@ YYYY-MM-DD | no --noconfirm for pacman
            | (paru -Sua). The graph/why/overlap treat aur as alpm (is_alpm):
            | Real/Confirmed edges, real install reasons, native side of
            | overlaps, orphan candidates.
+           |
+           | > **Narrowed (2026-09-05).** Foreign is not the same as from
+           | > the AUR — see the 2026-09-05 entry below.
 
 2026-07-12 | paru is never run under sudo
            | it builds as the user and self-elevates for the install step —
@@ -1510,6 +1513,38 @@ YYYY-MM-DD | no --noconfirm for pacman
            | the duration, which is why it is opt-in and why the run owns
            | the loop. sudo only; doas and pkexec have no timestamp to
            | refresh and it no-ops rather than pretending.
+
+2026-09-05 | foreign is not the same as from the AUR (#77)
+           | The 2026-07-12 rule above reads "in no configured sync
+           | database" as "from the AUR". That holds only while the repo
+           | set never changes. Found on a CachyOS machine whose plain
+           | [cachyos] repos had been removed from pacman.conf, leaving
+           | the -v3 ones: 63 packages became foreign without ever having
+           | touched the AUR, the aur row went from 23 installed to 91,
+           | and packages that can never update again were presented as
+           | healthy AUR ones. They are not in the AUR either, so paru
+           | offered nothing wrong — the count lied and a dead end was
+           | hidden.
+           | The fix is to stop reading identity out of an absence.
+           | makepkg signs nothing and claims nobody, so a locally built
+           | package carries `Validated By: None` and `Packager: Unknown
+           | Packager`, while anything a repository shipped is signed by
+           | someone. Both are already in the -Qi output the scanner
+           | parses. Only a package built here is relabelled aur; a
+           | signed foreign package stays pacman's, which is what still
+           | manages it.
+           | The rest is a finding rather than a source: "N packages are
+           | in no configured repository", grouped by who packaged them,
+           | because "59 packaged by CachyOS" is an explanation where 59
+           | names would be a list. Advisory only — the answer might be
+           | to re-add a repo, or to remove the packages, and paclens
+           | does not know which.
+           | Ceiling: a user who both signs their own builds and sets
+           | PACKAGER reads as "from a repo". The report names the
+           | packager, so the misreading is visible rather than silent;
+           | paru's clone directory is the upgrade path, though
+           | `paru -Sc --aur` deletes those.
+
 ```
 
 ---

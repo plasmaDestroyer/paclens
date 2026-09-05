@@ -250,6 +250,9 @@ mod tests {
             optional_deps: Vec::new(),
             provides: provides.iter().map(|p| p.to_string()).collect(),
             runtime: false,
+            foreign: false,
+            signed: true,
+            packager: None,
         }
     }
 
