@@ -1341,6 +1341,7 @@ YYYY-MM-DD | no --noconfirm for pacman
            | need — the codebase is deliberately sync.
 
 2026-08-24 | enter runs the update; the package list moves to i (user decision)
+           | **Reversed 2026-09-08 — see below.** Kept for the reasoning.
            | updating is what you open paclens to do, so it belongs on the
            | most default key. enter was drilling into the selected source's
            | package list — an inspection detour — while the primary action
@@ -1694,6 +1695,24 @@ YYYY-MM-DD | no --noconfirm for pacman
            | no such concept, which is the confident wrong answer §3
            | forbids. Each capability carries a test asserting what the
            | report looks like when it is false.
+
+2026-09-08 | enter never runs anything; `u` owns the update (user decision)
+           | Reverses 2026-08-24. That entry argued the primary action
+           | belongs on the most default key, which is true of a primary
+           | action and wrong about this one: the most default key is the
+           | one pressed by reflex, and on every other screen paclens
+           | trained that reflex to mean "look closer". Overlaps opens the
+           | migration report with Enter, cleanup the why pane, history the
+           | package pane, the package list its why. The dashboard was the
+           | single screen where the same reflex started a system upgrade.
+           | Enter now opens the selected source's package list — the
+           | meaning it carries everywhere else, and `i` stays as its
+           | alias. `u` runs the plan and is the only key that does; it
+           | takes the hint rank Enter held, so it is the last hint to drop
+           | at any width.
+           | P1/P4 are untouched: the dashboard still shows the whole plan
+           | before anything runs. What changed is that the key which
+           | changes the machine is now a key you have to mean.
 
 ```
 

@@ -411,7 +411,7 @@ fn fit_hints<'a>(
 
 /// The dashboard key hints in display order, each with a drop rank.
 ///
-/// `enter update` is rank 0 and never drops — running the update is what the
+/// `u update` is rank 0 and never drops — running the update is what the
 /// tool is for. `q quit` is next safest to keep, since a user who cannot find
 /// the exit is stuck. `L log` goes first: it is the least urgent thing on the
 /// screen and the log is reachable again from anywhere.
@@ -419,9 +419,9 @@ fn dashboard_hints<'a>(updown: &'a str, leftright: &'a str) -> [(u8, KeyHint<'a>
     [
         (4, (updown, "move")),
         (6, (leftright, "pane")),
-        (3, ("i", "packages")),
+        (3, ("enter", "packages")),
         (2, ("space", "toggle")),
-        (0, ("enter", "update")),
+        (0, ("u", "update")),
         (5, ("r", "refresh")),
         (7, ("o", "overlaps")),
         (8, ("c", "cleanup")),
@@ -2362,11 +2362,11 @@ mod tests {
         let text = render(&app, 70, 14);
         assert!(text.contains("paclens"));
         assert!(text.contains("SOURCE"));
+        assert!(text.contains("u update"), "footer hint missing:\n{text}");
         assert!(
-            text.contains("enter update"),
+            text.contains("enter packages"),
             "footer hint missing:\n{text}"
         );
-        assert!(text.contains("i packages"), "footer hint missing:\n{text}");
     }
 
     // --- key-hint wrapping ---
@@ -2420,8 +2420,8 @@ mod tests {
             let rows = fit_hints(&r, width, 1);
             let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
             assert!(
-                shown.contains(&"enter"),
-                "enter dropped at width {width}: {shown:?}"
+                shown.contains(&"u"),
+                "the update key dropped at width {width}: {shown:?}"
             );
         }
     }
@@ -2433,7 +2433,7 @@ mod tests {
         let rows = fit_hints(&r, 26, 1);
         let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
         assert!(!shown.contains(&"L"), "log should have dropped: {shown:?}");
-        assert!(shown.contains(&"enter"), "{shown:?}");
+        assert!(shown.contains(&"u"), "{shown:?}");
     }
 
     #[test]
@@ -2713,8 +2713,8 @@ mod tests {
         assert!(text.contains("[x] pacman"), "toggle missing:\n{text}");
         assert!(text.contains("-  flatpak"), "dash missing:\n{text}");
         assert!(text.contains("space toggle"), "footer missing:\n{text}");
-        assert!(text.contains("enter update"), "{text}");
-        assert!(text.contains("i packages"), "{text}");
+        assert!(text.contains("u update"), "{text}");
+        assert!(text.contains("enter packages"), "{text}");
 
         app.toggle_selected(); // pacman off
         let text = render(&app, 96, 24);

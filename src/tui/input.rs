@@ -75,11 +75,16 @@ fn is_quit(key: &KeyEvent) -> bool {
 }
 
 /// Dashboard key map: nav, toggle, run, inspect, refresh, quit. The dashboard
-/// owns the update flow — Space toggles the selected source and Enter runs the
-/// plan, because updating is what you open paclens to do (user decision
-/// 2026-08-24). `u` stays as an alias. Drilling into a source's package list
-/// moved to `i` (info); `d` was avoided because it reads as "delete" in a
-/// package tool.
+/// owns the update flow: Space toggles the selected source and **`u` runs the
+/// plan** — the one key on the dashboard that changes the machine is its own,
+/// and it is not the key you press by reflex.
+///
+/// Enter means what it means on every other screen: look closer at the
+/// selection. Overlaps opens the migration report with it, cleanup the why
+/// pane, history the package pane — the dashboard was the one screen where
+/// Enter ran something instead (user decision 2026-09-08, amending
+/// 2026-08-24). `i` (info) stays as an alias; `d` was avoided because it
+/// reads as "delete" in a package tool.
 pub fn map_dashboard_key(key: KeyEvent) -> Action {
     if is_quit(&key) {
         return Action::Quit;
@@ -91,8 +96,8 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Right | KeyCode::Char('l') => Action::FocusRight,
         KeyCode::Char(' ') => Action::Toggle,
         KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Enter | KeyCode::Char('u') => Action::Execute,
-        KeyCode::Char('i') | KeyCode::Char('I') => Action::OpenPackages,
+        KeyCode::Char('u') | KeyCode::Char('U') => Action::Execute,
+        KeyCode::Enter | KeyCode::Char('i') | KeyCode::Char('I') => Action::OpenPackages,
         KeyCode::Char('o') | KeyCode::Char('O') => Action::OpenOverlaps,
         KeyCode::Char('c') | KeyCode::Char('C') => Action::OpenCleanup,
         // Shift, because plain `h` is the pane focus every screen shares.
@@ -291,15 +296,22 @@ mod tests {
             map_dashboard_key(plain(KeyCode::Char('r'))),
             Action::Refresh
         );
-        // The dashboard owns the update flow: space toggles, enter runs.
+        // The dashboard owns the update flow: space toggles, `u` runs.
         assert_eq!(map_dashboard_key(plain(KeyCode::Char(' '))), Action::Toggle);
-        assert_eq!(map_dashboard_key(plain(KeyCode::Enter)), Action::Execute);
-        // u stays as an alias for enter.
         assert_eq!(
             map_dashboard_key(plain(KeyCode::Char('u'))),
             Action::Execute
         );
-        // The package list moved off enter onto i (info).
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('U'))),
+            Action::Execute
+        );
+        // Enter never runs anything: it looks closer, like everywhere else
+        // (2026-09-08). Pressing it by reflex must not update the machine.
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Enter)),
+            Action::OpenPackages
+        );
         assert_eq!(
             map_dashboard_key(plain(KeyCode::Char('i'))),
             Action::OpenPackages

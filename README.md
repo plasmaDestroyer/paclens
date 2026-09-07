@@ -17,7 +17,7 @@ your system uninvited.
 | +------------------------------++-----------------------------------------+|
 | + system ----------------------++ keys -----------------------------------+|
 | | - plan          62 packages  || ^/v move   ←/→ pane   i packages        ||
-| | - pacman cache  7.6 GiB      || space toggle   enter update   r refresh ||
+| | - pacman cache  7.6 GiB      || space toggle   u update   r refresh     ||
 | | - orphans       3            || o overlaps   c cleanup   L log   q quit ||
 | +------------------------------++-----------------------------------------+|
 +----------------------------------------------------------------------------+
@@ -120,8 +120,8 @@ detection and the update step go away.
 | `↑/↓` `j/k` | everywhere | move |
 | `←/→` `h/l` | dashboard, history | switch pane focus |
 | `space` | dashboard | toggle a source in/out of the update plan |
-| `enter` / `u` | dashboard | run the update (pty console; sudo/pacman prompt as usual) |
-| `i` | dashboard | open the selected source's package list |
+| `u` | dashboard | run the update (pty console; sudo/pacman prompt as usual) |
+| `enter` / `i` | dashboard | open the selected source's package list |
 | `o` / `c` | dashboard | overlap screen / cleanup screen |
 | `H` | dashboard | history screen — what past upgrades changed |
 | `r` / `L` | dashboard | refresh scan / view the update log |
