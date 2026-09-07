@@ -89,23 +89,87 @@ impl Transaction {
         }
         counts
     }
+}
 
-    /// "38 upgraded, 1 installed" — the counts as one line. Empty is
-    /// impossible: a transaction with no events is dropped at parse time.
-    pub fn change_summary(&self) -> String {
-        let (installed, upgraded, removed) = self.counts();
-        let mut parts = Vec::new();
-        if upgraded > 0 {
-            parts.push(format!("{upgraded} upgraded"));
-        }
-        if installed > 0 {
-            parts.push(format!("{installed} installed"));
-        }
-        if removed > 0 {
-            parts.push(format!("{removed} removed"));
-        }
-        parts.join(", ")
+/// "38 upgraded, 1 installed" — counts as one line, in the order that answers
+/// "how much moved" before "what kind of moving".
+fn summarize_counts((installed, upgraded, removed): (usize, usize, usize)) -> String {
+    let mut parts = Vec::new();
+    if upgraded > 0 {
+        parts.push(format!("{upgraded} upgraded"));
     }
+    if installed > 0 {
+        parts.push(format!("{installed} installed"));
+    }
+    if removed > 0 {
+        parts.push(format!("{removed} removed"));
+    }
+    parts.join(", ")
+}
+
+/// How long a run may pause before the next transaction belongs to a new one.
+///
+/// An AUR helper installs each package it builds with its own `pacman -U`, so
+/// one `paru -Sua` writes a transaction per package with a build in between —
+/// which is why an upgrade done as a single action arrives here as five rows.
+/// Fifteen minutes covers an ordinary build. A longer one splits the run, and
+/// since every row says how many transactions it holds, a split is visible
+/// rather than silent.
+const RUN_GAP_SECS: i64 = 15 * 60;
+
+/// Consecutive transactions, grouped into the runs that produced them.
+///
+/// A run is a **slice** of the parsed list: nothing is copied, nothing is
+/// merged away, and the caller can still reach every transaction inside it.
+/// The grouping is inferred — pacman logs no run boundary, only what alpm did
+/// — so surfaces that show a run say how many transactions it holds.
+pub type Run<'a> = &'a [Transaction];
+
+/// Split a newest-first transaction list into runs, newest first.
+pub fn runs(transactions: &[Transaction]) -> Vec<Run<'_>> {
+    let gap = chrono::TimeDelta::seconds(RUN_GAP_SECS);
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 1..transactions.len() {
+        // Newest first, so `newer` sits above `older` in the list; the pause
+        // is measured from where the older one finished.
+        let newer = &transactions[i - 1];
+        let older = &transactions[i];
+        let ended = older.completed.unwrap_or(older.started);
+        if newer.started - ended > gap {
+            out.push(&transactions[start..i]);
+            start = i;
+        }
+    }
+    if start < transactions.len() {
+        out.push(&transactions[start..]);
+    }
+    out
+}
+
+/// When a run began — the oldest transaction in it, since a run is newest
+/// first like the list it came from.
+pub fn run_started(run: Run<'_>) -> Option<DateTime<FixedOffset>> {
+    run.last().map(|tx| tx.started)
+}
+
+/// When a run finished, or `None` if its newest transaction never completed.
+pub fn run_ended(run: Run<'_>) -> Option<DateTime<FixedOffset>> {
+    run.first().and_then(|tx| tx.completed)
+}
+
+/// Every event in a run, newest transaction first.
+pub fn run_events(run: Run<'_>) -> Vec<&PackageEvent> {
+    run.iter().flat_map(|tx| tx.events.iter()).collect()
+}
+
+/// The run's counts as one line, over every transaction it holds.
+pub fn run_summary(run: Run<'_>) -> String {
+    let counts = run.iter().fold((0, 0, 0), |acc, tx| {
+        let c = tx.counts();
+        (acc.0 + c.0, acc.1 + c.1, acc.2 + c.2)
+    });
+    summarize_counts(counts)
 }
 
 /// The timestamp and the rest of a log line: `[2026-09-04T17:12:34+0530] …`.
@@ -210,14 +274,15 @@ const GROUP_ORDER: [EventKind; 5] = [
     EventKind::Upgraded,
 ];
 
-/// One transaction's events grouped by kind, alphabetical within a group.
-/// Empty groups are dropped, so the caller renders exactly what happened.
-pub fn grouped(tx: &Transaction) -> Vec<(EventKind, Vec<&PackageEvent>)> {
+/// Events grouped by kind, alphabetical within a group. Empty groups are
+/// dropped, so the caller renders exactly what happened. Takes the events
+/// rather than a transaction, because a run's events span several.
+pub fn grouped<'a>(events: &[&'a PackageEvent]) -> Vec<(EventKind, Vec<&'a PackageEvent>)> {
     GROUP_ORDER
         .iter()
         .filter_map(|kind| {
             let mut events: Vec<&PackageEvent> =
-                tx.events.iter().filter(|e| e.kind == *kind).collect();
+                events.iter().copied().filter(|e| e.kind == *kind).collect();
             if events.is_empty() {
                 return None;
             }
@@ -281,7 +346,7 @@ mod tests {
 [2026-09-05T09:14:05+0530] [ALPM] transaction completed
 ";
         let txs = parse(log);
-        let groups = grouped(&txs[0]);
+        let groups = grouped(&run_events(&txs[..1]));
         let kinds: Vec<EventKind> = groups.iter().map(|(k, _)| *k).collect();
         assert_eq!(
             kinds,
@@ -300,7 +365,7 @@ mod tests {
     fn grouping_a_transaction_of_one_kind_yields_one_group() {
         let txs = parse(REMOVAL);
         for tx in &txs {
-            let groups = grouped(tx);
+            let groups = grouped(&run_events(std::slice::from_ref(tx)));
             assert!(!groups.is_empty(), "a parsed transaction has events");
             assert_eq!(
                 groups.iter().map(|(_, e)| e.len()).sum::<usize>(),
@@ -308,6 +373,72 @@ mod tests {
                 "grouping must not drop or duplicate an event"
             );
         }
+    }
+
+    /// One paru run, exactly as this machine logged it: a `-Syu` batch, a
+    /// make dependency, then one `pacman -U` per built AUR package.
+    const PARU_RUN: &str = "\
+[2026-09-07T19:57:50+0530] [ALPM] transaction started
+[2026-09-07T19:57:51+0530] [ALPM] upgraded vlc (3.0.23-13 -> 3.0.23-14)
+[2026-09-07T19:57:51+0530] [ALPM] transaction completed
+[2026-09-07T19:58:48+0530] [ALPM] transaction started
+[2026-09-07T19:58:48+0530] [ALPM] installed go-md2man (2.0.7-2)
+[2026-09-07T19:58:49+0530] [ALPM] transaction completed
+[2026-09-07T20:01:51+0530] [ALPM] transaction started
+[2026-09-07T20:01:52+0530] [ALPM] upgraded antigravity (2.11.0-1 -> 2.12.2-1)
+[2026-09-07T20:01:52+0530] [ALPM] transaction completed
+[2026-09-07T20:03:28+0530] [ALPM] transaction started
+[2026-09-07T20:03:29+0530] [ALPM] upgraded t3code-bin (0.0.38-1 -> 0.0.39-1)
+[2026-09-07T20:03:29+0530] [ALPM] transaction completed
+";
+
+    #[test]
+    fn one_helper_run_is_one_run_however_many_transactions_it_wrote() {
+        let txs = parse(PARU_RUN);
+        assert_eq!(txs.len(), 4, "alpm wrote a transaction per package");
+        let runs = runs(&txs);
+        assert_eq!(runs.len(), 1, "the user did this once");
+        let run = runs[0];
+        assert_eq!(run_summary(run), "3 upgraded, 1 installed");
+        assert_eq!(
+            run_started(run).expect("start").format("%H:%M").to_string(),
+            "19:57"
+        );
+        assert_eq!(
+            run_ended(run).expect("end").format("%H:%M").to_string(),
+            "20:03"
+        );
+        assert_eq!(run_events(run).len(), 4);
+    }
+
+    #[test]
+    fn a_gap_longer_than_a_build_starts_a_new_run() {
+        let mut log = PARU_RUN.to_string();
+        log.push_str(
+            "\
+[2026-09-07T21:30:00+0530] [ALPM] transaction started
+[2026-09-07T21:30:01+0530] [ALPM] installed later-thing (1.0-1)
+[2026-09-07T21:30:02+0530] [ALPM] transaction completed
+",
+        );
+        let txs = parse(&log);
+        let runs = runs(&txs);
+        assert_eq!(runs.len(), 2, "87 minutes apart is not one run");
+        // Newest first, like the list it came from.
+        assert_eq!(run_summary(runs[0]), "1 installed");
+        assert_eq!(run_summary(runs[1]), "3 upgraded, 1 installed");
+    }
+
+    #[test]
+    fn an_empty_log_has_no_runs() {
+        assert!(runs(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_run_keeps_every_transaction_it_holds() {
+        let txs = parse(PARU_RUN);
+        let total: usize = runs(&txs).iter().map(|r| r.len()).sum();
+        assert_eq!(total, txs.len(), "grouping must not drop a transaction");
     }
 
     #[test]

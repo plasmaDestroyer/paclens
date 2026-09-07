@@ -238,7 +238,7 @@ pub struct App {
     orphans: Vec<String>,
     /// Cleanup screen: cursor over `orphans`.
     cleanup_cursor: usize,
-    /// History screen: cursor over the parsed transactions.
+    /// History screen: cursor over the runs (see `analyzer::history::runs`).
     history_cursor: usize,
     /// History screen: which pane j/k moves.
     history_focus: HistoryPane,
@@ -511,7 +511,7 @@ impl App {
             }
             (Screen::History, _) => match self.history_focus {
                 HistoryPane::Transactions => {
-                    let max = self.history_transactions().len().saturating_sub(1);
+                    let max = self.history_runs().len().saturating_sub(1);
                     self.history_cursor = (self.history_cursor + 1).min(max);
                     // A new transaction is a new list; keeping row 40 of the
                     // last one would open the pane somewhere arbitrary.
@@ -757,7 +757,7 @@ impl App {
     pub fn open_history(&mut self) {
         self.history_cursor = self
             .history_cursor
-            .min(self.history_transactions().len().saturating_sub(1));
+            .min(self.history_runs().len().saturating_sub(1));
         self.history_focus = HistoryPane::Transactions;
         self.history_scroll = 0;
         self.screen = Screen::History;
@@ -779,18 +779,28 @@ impl App {
     pub fn history_scroll(&self) -> usize {
         self.history_scroll
     }
-    pub fn selected_transaction(&self) -> Option<&crate::analyzer::history::Transaction> {
-        self.history_transactions().get(self.history_cursor)
+    /// The transactions grouped into the runs that produced them (#8). An
+    /// AUR helper writes one transaction per package it builds, so the raw
+    /// list answers "what did alpm do" where the reader asked "what did I
+    /// just upgrade".
+    pub fn history_runs(&self) -> Vec<crate::analyzer::history::Run<'_>> {
+        crate::analyzer::history::runs(self.history_transactions())
+    }
+    pub fn selected_run(&self) -> Option<crate::analyzer::history::Run<'_>> {
+        self.history_runs().get(self.history_cursor).copied()
     }
     /// Rows the package pane would draw for the selection — a heading per
     /// group plus its events. The scroll clamp needs the count, and the
     /// renderer needs the same grouping, so both ask this.
     fn history_detail_rows(&self) -> usize {
-        match self.selected_transaction() {
-            Some(tx) => crate::analyzer::history::grouped(tx)
-                .iter()
-                .map(|(_, events)| events.len() + 1)
-                .sum(),
+        match self.selected_run() {
+            Some(run) => {
+                let events = crate::analyzer::history::run_events(run);
+                crate::analyzer::history::grouped(&events)
+                    .iter()
+                    .map(|(_, events)| events.len() + 1)
+                    .sum()
+            }
             None => 0,
         }
     }
@@ -2556,9 +2566,12 @@ mod tests {
         assert_eq!(app.screen(), Screen::History);
         assert_eq!(app.input_mode(), InputMode::History);
         assert_eq!(app.history_focus(), HistoryPane::Transactions);
-        let tx = app.selected_transaction().expect("a selection");
+        let run = app.selected_run().expect("a selection");
         assert_eq!(
-            tx.started.format("%Y-%m-%d %H:%M").to_string(),
+            crate::analyzer::history::run_started(run)
+                .expect("start")
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
             "2026-09-03 22:01",
             "newest first"
         );
@@ -2578,9 +2591,12 @@ mod tests {
             0,
             "a new transaction opens at its first row"
         );
-        let tx = app.selected_transaction().expect("a selection");
-        assert_eq!(tx.change_summary(), "2 upgraded");
-        assert!(tx.completed.is_none(), "the interrupted run is kept");
+        let run = app.selected_run().expect("a selection");
+        assert_eq!(crate::analyzer::history::run_summary(run), "2 upgraded");
+        assert!(
+            run.iter().any(|tx| tx.completed.is_none()),
+            "the interrupted run is kept"
+        );
     }
 
     #[test]
@@ -2608,6 +2624,30 @@ mod tests {
     }
 
     #[test]
+    fn a_helper_run_is_one_row_not_one_per_built_package() {
+        // What paru actually writes: a transaction per package it builds.
+        let mut app = app();
+        app.set_history(
+            "\
+[2026-09-07T20:01:51+0530] [ALPM] transaction started
+[2026-09-07T20:01:52+0530] [ALPM] upgraded antigravity (2.11.0-1 -> 2.12.2-1)
+[2026-09-07T20:01:52+0530] [ALPM] transaction completed
+[2026-09-07T20:02:04+0530] [ALPM] transaction started
+[2026-09-07T20:02:05+0530] [ALPM] upgraded pikaur (1.33.3-1 -> 1.34-1)
+[2026-09-07T20:02:05+0530] [ALPM] transaction completed
+[2026-09-07T20:03:28+0530] [ALPM] transaction started
+[2026-09-07T20:03:29+0530] [ALPM] upgraded t3code-bin (0.0.38-1 -> 0.0.39-1)
+[2026-09-07T20:03:29+0530] [ALPM] transaction completed
+",
+        );
+        app.open_history();
+        assert_eq!(app.history_transactions().len(), 3);
+        assert_eq!(app.history_runs().len(), 1, "the user upgraded once");
+        let run = app.selected_run().expect("a selection");
+        assert_eq!(crate::analyzer::history::run_summary(run), "3 upgraded");
+    }
+
+    #[test]
     fn esc_unwinds_the_pane_focus_before_the_screen() {
         let mut app = history_app();
         app.focus_right();
@@ -2622,7 +2662,7 @@ mod tests {
     fn a_log_with_nothing_in_it_navigates_without_panicking() {
         let mut app = app();
         app.open_history(); // nothing seeded — no log, no rows
-        assert!(app.selected_transaction().is_none());
+        assert!(app.selected_run().is_none());
         app.on_next();
         app.focus_right();
         app.on_next();

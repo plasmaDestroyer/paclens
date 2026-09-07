@@ -53,38 +53,53 @@ fn render(transactions: &[Transaction], package: Option<&str>, limit: usize, s: 
         return render_package(transactions, name, s);
     }
 
-    let shown = transactions.len().min(limit);
+    // Grouped into runs: an AUR helper installs each package it builds with
+    // its own `pacman -U`, so the raw list answers "what did alpm do" where
+    // the reader asked "what did I upgrade" (#8).
+    let runs = history::runs(transactions);
+    let shown = runs.len().min(limit);
     out.push_str(&format!(
         "{} {} {}\n\n",
         s.title("paclens"),
         s.dim(s.bullet()),
-        if transactions.is_empty() {
+        if runs.is_empty() {
             s.dim("no transactions in the log tail")
         } else {
-            s.summary_ok(&format!("{shown} of {} transactions", transactions.len()))
+            s.summary_ok(&format!("{shown} of {} runs", runs.len()))
         }
     ));
 
-    for tx in transactions.iter().take(limit) {
+    for run in runs.iter().take(limit) {
         // An interrupted upgrade is the one worth seeing, so it says so
         // rather than being quietly indistinguishable from a clean run.
-        let state = match tx.completed {
-            Some(_) => String::new(),
-            None => format!(" {}", s.dim("(did not complete)")),
+        let mut notes = Vec::new();
+        if run.len() > 1 {
+            notes.push(format!("{} transactions", run.len()));
+        }
+        if run.iter().any(|tx| tx.completed.is_none()) {
+            notes.push("did not complete".to_string());
+        }
+        let note = match notes.is_empty() {
+            true => String::new(),
+            false => format!(" {}", s.dim(&format!("({})", notes.join(", ")))),
+        };
+        let when = match history::run_started(run) {
+            Some(at) => at.format("%Y-%m-%d %H:%M").to_string(),
+            None => String::new(),
         };
         out.push_str(&format!(
             "  {} {}  {}{}\n",
             s.bullet(),
-            tx.started.format("%Y-%m-%d %H:%M"),
-            tx.change_summary(),
-            state
+            when,
+            history::run_summary(run),
+            note
         ));
     }
 
-    if transactions.len() > limit {
+    if runs.len() > limit {
         out.push_str(&s.dim(&format!(
             "\n  {} more — paclens history --limit N\n",
-            transactions.len() - limit
+            runs.len() - limit
         )));
     }
     if !transactions.is_empty() {
@@ -155,7 +170,7 @@ mod tests {
     fn transactions_list_newest_first_with_counts() {
         let txs = crate::analyzer::history::parse(LOG);
         let out = render(&txs, None, 10, &ascii());
-        assert!(out.contains("2 of 2 transactions"), "{out}");
+        assert!(out.contains("2 of 2 runs"), "{out}");
         let newest = out.find("2026-07-02").expect("newest listed");
         let oldest = out.find("2026-03-14").expect("oldest listed");
         assert!(newest < oldest, "not newest-first:\n{out}");
@@ -168,10 +183,28 @@ mod tests {
     }
 
     #[test]
+    fn a_helper_run_lists_as_one_row_that_says_how_many_transactions() {
+        let log = "\
+[2026-09-07T20:01:51+0530] [ALPM] transaction started
+[2026-09-07T20:01:52+0530] [ALPM] upgraded antigravity (2.11.0-1 -> 2.12.2-1)
+[2026-09-07T20:01:52+0530] [ALPM] transaction completed
+[2026-09-07T20:02:04+0530] [ALPM] transaction started
+[2026-09-07T20:02:05+0530] [ALPM] upgraded pikaur (1.33.3-1 -> 1.34-1)
+[2026-09-07T20:02:05+0530] [ALPM] transaction completed
+";
+        let txs = crate::analyzer::history::parse(log);
+        let out = render(&txs, None, 10, &ascii());
+        assert!(out.contains("1 of 1 runs"), "{out}");
+        assert!(out.contains("2 upgraded"), "{out}");
+        // The grouping is inferred, so the row says what it grouped.
+        assert!(out.contains("(2 transactions)"), "{out}");
+    }
+
+    #[test]
     fn the_limit_says_what_it_hid() {
         let txs = crate::analyzer::history::parse(LOG);
         let out = render(&txs, None, 1, &ascii());
-        assert!(out.contains("1 of 2 transactions"), "{out}");
+        assert!(out.contains("1 of 2 runs"), "{out}");
         assert!(out.contains("1 more"), "{out}");
         assert!(!out.contains("2026-03-14"), "hid the wrong end:\n{out}");
     }

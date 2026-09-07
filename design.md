@@ -1585,6 +1585,32 @@ YYYY-MM-DD | no --noconfirm for pacman
            | that upgrades all day would eventually want a re-parse on
            | scan; nothing here has needed one.
 
+2026-09-07 | history rows are runs, not alpm transactions (#8)
+           | Reported the day the screen shipped: five AUR packages
+           | upgraded in one action showed up as separate rows, and one
+           | of them was missing entirely. The log agrees with both
+           | halves. paru installs each package it builds with its own
+           | `pacman --upgrade -- <file>`, so alpm opens a transaction
+           | per package; that machine's 19:57 paru run wrote five of
+           | them across six minutes. Nothing was misparsed — the screen
+           | was answering "what did alpm do" where the reader asked
+           | "what did I just upgrade".
+           | Rows are now runs: consecutive transactions less than
+           | fifteen minutes apart, measured end-to-start, presented as
+           | one. The grouping is inferred — pacman logs no run boundary
+           | — so it is never presented as fact: a grouped row says how
+           | many transactions it holds, and a run is a *slice* of the
+           | parsed list, so nothing is merged away. Fifteen minutes
+           | covers an ordinary build; a longer one splits the run, and
+           | the split is visible in the same count.
+           | The missing package cannot be fixed here and the screen
+           | should not pretend otherwise. A build that fails never
+           | reaches alpm, so `/var/log/pacman.log` has no line for it —
+           | not a failure line, not an attempt. Knowing what was tried
+           | needs the helper's output, which paclens already captures
+           | for runs started inside it; cross-referencing that with the
+           | log is its own feature, not a patch to this one.
+
 ```
 
 ---

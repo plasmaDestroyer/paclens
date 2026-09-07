@@ -1169,29 +1169,28 @@ fn render_transaction_pane(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(pane, area);
 
     let body: Vec<Row> = app
-        .history_transactions()
-        .iter()
-        .map(|tx| {
-            // An interrupted upgrade is the run worth looking at, so it says
-            // so instead of passing for a clean one.
+        .history_runs()
+        .into_iter()
+        .map(|run| {
+            use crate::analyzer::history;
+            let summary = history::run_summary(run);
             // The marker leads: a narrow pane truncates the tail, and
             // "did not complete" is the half of the row that matters.
-            let changes = match tx.completed {
-                Some(_) => Span::styled(tx.change_summary(), theme.primary),
-                None => Span::styled(
-                    format!(
-                        "{} did not complete — {}",
-                        theme.glyphs.warning,
-                        tx.change_summary()
-                    ),
+            let incomplete = run.iter().any(|tx| tx.completed.is_none());
+            let changes = if incomplete {
+                Span::styled(
+                    format!("{} did not complete — {summary}", theme.glyphs.warning),
                     theme.accent,
-                ),
+                )
+            } else {
+                Span::styled(summary, theme.primary)
+            };
+            let when = match history::run_started(run) {
+                Some(at) => at.format("%Y-%m-%d %H:%M").to_string(),
+                None => String::new(),
             };
             Row::new(vec![
-                Cell::from(Span::styled(
-                    tx.started.format("%Y-%m-%d %H:%M").to_string(),
-                    theme.dim,
-                )),
+                Cell::from(Span::styled(when, theme.dim)),
                 Cell::from(Line::from(changes)),
             ])
         })
@@ -1211,9 +1210,10 @@ fn render_transaction_pane(frame: &mut Frame, area: Rect, app: &App) {
 /// would otherwise sit below three hundred upgrades.
 fn render_transaction_detail(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let Some(tx) = app.selected_transaction() else {
+    let Some(run) = app.selected_run() else {
         return;
     };
+    use crate::analyzer::history;
     let focused = app.history_focus() == crate::tui::app::HistoryPane::Packages;
     let pane = Block::default()
         .borders(Borders::ALL)
@@ -1224,7 +1224,10 @@ fn render_transaction_detail(frame: &mut Frame, area: Rect, app: &App) {
             theme.border
         })
         .title(Span::styled(
-            format!(" {} ", tx.started.format("%Y-%m-%d %H:%M")),
+            match history::run_started(run) {
+                Some(at) => format!(" {} ", at.format("%Y-%m-%d %H:%M")),
+                None => " run ".to_string(),
+            },
             theme.header,
         ))
         .padding(Padding::horizontal(1));
@@ -1232,7 +1235,19 @@ fn render_transaction_detail(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(pane, area);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (kind, events) in crate::analyzer::history::grouped(tx) {
+    // A helper's run is many transactions; the row says so rather than
+    // passing the grouping off as something the log stated (P3).
+    if run.len() > 1 {
+        let ended = history::run_ended(run)
+            .map(|at| at.format("%H:%M").to_string())
+            .unwrap_or_else(|| "?".to_string());
+        lines.push(Line::from(Span::styled(
+            format!("{} transactions, ending {ended}", run.len()),
+            theme.dim,
+        )));
+    }
+    let events = history::run_events(run);
+    for (kind, events) in history::grouped(&events) {
         lines.push(Line::from(Span::styled(
             format!("{} ({})", kind.label(), events.len()),
             theme.header,
@@ -3935,6 +3950,34 @@ mod tests {
             !scrolled.contains("removed (1)"),
             "the first row should have scrolled off:\n{scrolled}"
         );
+    }
+
+    #[test]
+    fn a_helper_run_is_one_row_and_says_what_it_grouped() {
+        // paru installs each package it builds with its own `pacman -U`.
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.set_history(
+            "\
+[2026-09-07T20:01:51+0530] [ALPM] transaction started
+[2026-09-07T20:01:52+0530] [ALPM] upgraded antigravity (2.11.0-1 -> 2.12.2-1)
+[2026-09-07T20:01:52+0530] [ALPM] transaction completed
+[2026-09-07T20:02:04+0530] [ALPM] transaction started
+[2026-09-07T20:02:05+0530] [ALPM] upgraded pikaur (1.33.3-1 -> 1.34-1)
+[2026-09-07T20:02:05+0530] [ALPM] transaction completed
+[2026-09-07T20:03:28+0530] [ALPM] transaction started
+[2026-09-07T20:03:29+0530] [ALPM] upgraded t3code-bin (0.0.38-1 -> 0.0.39-1)
+[2026-09-07T20:03:29+0530] [ALPM] transaction completed
+",
+        );
+        app.open_history();
+        let text = render(&app, 110, 20);
+        assert!(text.contains("3 upgraded"), "one row for the run:\n{text}");
+        assert!(
+            text.contains("3 transactions, ending 20:03"),
+            "the grouping must say what it grouped:\n{text}"
+        );
+        assert!(text.contains("antigravity"), "{text}");
+        assert!(text.contains("t3code-bin"), "{text}");
     }
 
     #[test]
