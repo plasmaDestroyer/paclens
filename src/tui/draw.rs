@@ -54,6 +54,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Packages => draw_packages(frame, area, app),
         Screen::Overlaps => draw_overlaps(frame, area, app),
         Screen::Cleanup => draw_cleanup(frame, area, app),
+        Screen::History => draw_history(frame, area, app),
     }
 }
 
@@ -414,7 +415,7 @@ fn fit_hints<'a>(
 /// tool is for. `q quit` is next safest to keep, since a user who cannot find
 /// the exit is stuck. `L log` goes first: it is the least urgent thing on the
 /// screen and the log is reachable again from anywhere.
-fn dashboard_hints<'a>(updown: &'a str, leftright: &'a str) -> [(u8, KeyHint<'a>); 10] {
+fn dashboard_hints<'a>(updown: &'a str, leftright: &'a str) -> [(u8, KeyHint<'a>); 11] {
     [
         (4, (updown, "move")),
         (6, (leftright, "pane")),
@@ -424,7 +425,8 @@ fn dashboard_hints<'a>(updown: &'a str, leftright: &'a str) -> [(u8, KeyHint<'a>
         (5, ("r", "refresh")),
         (7, ("o", "overlaps")),
         (8, ("c", "cleanup")),
-        (9, ("L", "log")),
+        (9, ("H", "history")),
+        (10, ("L", "log")),
         (1, ("q", "quit")),
     ]
 }
@@ -1089,6 +1091,180 @@ fn render_overlaps_footer(
     };
     line.spans.push(Span::styled(note, theme.dim));
     frame.render_widget(Paragraph::new(line), area);
+}
+
+// ---------------------------------------------------------------------------
+// History screen (#8) — what past upgrades actually changed
+// ---------------------------------------------------------------------------
+
+/// Transactions on the left, the selected one's packages on the right. The
+/// panes follow the cursor rather than a mode: moving down the list changes
+/// what the right pane shows, and ←/→ (or Enter) hands j/k to the other pane
+/// so a 300-package upgrade can be scrolled.
+fn draw_history(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let transactions = app.history_transactions();
+    let title = if transactions.is_empty() {
+        " paclens · history ".to_string()
+    } else {
+        format!(" paclens · history ({} transactions) ", transactions.len())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(theme.border)
+        .title(Span::styled(title, theme.title))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::vertical([Constraint::Min(4), Constraint::Length(1)]).split(inner);
+
+    if transactions.is_empty() {
+        // Either the log is unreadable or the tail held nothing — both mean
+        // there is nothing to show, and neither is a claim about the system.
+        frame.render_widget(
+            Paragraph::new("nothing in the pacman log tail to show")
+                .style(theme.dim)
+                .alignment(Alignment::Center),
+            centered(chunks[0], chunks[0].width, 1),
+        );
+    } else {
+        let panes = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(chunks[0]);
+        render_transaction_pane(frame, panes[0], app);
+        render_transaction_detail(frame, panes[1], app);
+    }
+
+    let g = theme.glyphs;
+    let updown = format!("{}/{}", g.up, g.down);
+    let leftright = format!("{}/{}", g.left, g.right);
+    let mut footer = keys_line(
+        theme,
+        &[
+            (&updown, "move"),
+            (&leftright, "pane"),
+            ("esc", "back"),
+            ("q", "quit"),
+        ],
+    );
+    footer.spans.push(Span::styled(
+        "   pacman only — Flatpak keeps no equivalent log",
+        theme.dim,
+    ));
+    frame.render_widget(Paragraph::new(footer), chunks[1]);
+}
+
+/// The transaction list, newest first. A `Table` carries the cursor so the
+/// list scrolls itself — the same thing every other list on screen does.
+fn render_transaction_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let focused = app.history_focus() == crate::tui::app::HistoryPane::Transactions;
+    let pane = subpane(theme, " transactions ").border_style(if focused {
+        theme.selected
+    } else {
+        theme.border
+    });
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    let body: Vec<Row> = app
+        .history_transactions()
+        .iter()
+        .map(|tx| {
+            // An interrupted upgrade is the run worth looking at, so it says
+            // so instead of passing for a clean one.
+            // The marker leads: a narrow pane truncates the tail, and
+            // "did not complete" is the half of the row that matters.
+            let changes = match tx.completed {
+                Some(_) => Span::styled(tx.change_summary(), theme.primary),
+                None => Span::styled(
+                    format!(
+                        "{} did not complete — {}",
+                        theme.glyphs.warning,
+                        tx.change_summary()
+                    ),
+                    theme.accent,
+                ),
+            };
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    tx.started.format("%Y-%m-%d %H:%M").to_string(),
+                    theme.dim,
+                )),
+                Cell::from(Line::from(changes)),
+            ])
+        })
+        .collect();
+    let table = Table::new(body, [Constraint::Length(16), Constraint::Min(10)])
+        .header(Row::new(vec![Cell::from("WHEN"), Cell::from("CHANGED")]).style(theme.header))
+        .column_spacing(2)
+        .row_highlight_style(theme.selected)
+        .highlight_symbol(theme.glyphs.pointer);
+    let mut state = TableState::default();
+    state.select(Some(app.history_cursor()));
+    frame.render_stateful_widget(table, inner, &mut state);
+}
+
+/// The selected transaction's packages, grouped by kind — removals first,
+/// because a removal is what you are hunting when something broke, and it
+/// would otherwise sit below three hundred upgrades.
+fn render_transaction_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let Some(tx) = app.selected_transaction() else {
+        return;
+    };
+    let focused = app.history_focus() == crate::tui::app::HistoryPane::Packages;
+    let pane = Block::default()
+        .borders(Borders::ALL)
+        .border_set(theme.border_set)
+        .border_style(if focused {
+            theme.selected
+        } else {
+            theme.border
+        })
+        .title(Span::styled(
+            format!(" {} ", tx.started.format("%Y-%m-%d %H:%M")),
+            theme.header,
+        ))
+        .padding(Padding::horizontal(1));
+    let inner = pane.inner(area);
+    frame.render_widget(pane, area);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (kind, events) in crate::analyzer::history::grouped(tx) {
+        lines.push(Line::from(Span::styled(
+            format!("{} ({})", kind.label(), events.len()),
+            theme.header,
+        )));
+        for e in events {
+            let versions = match (&e.from, &e.to) {
+                (Some(from), Some(to)) => format!("{from} {} {to}", theme.glyphs.arrow),
+                (_, Some(to)) => to.clone(),
+                _ => String::new(),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {}", e.name), theme.primary),
+                Span::styled(format!("  {versions}"), theme.dim),
+            ]));
+        }
+    }
+
+    let total = lines.len();
+    let height = inner.height as usize;
+    let scroll = app.history_scroll().min(total.saturating_sub(1));
+    let hidden = total.saturating_sub(scroll + height);
+    let mut shown: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(height).collect();
+    // The last visible row becomes the marker rather than sitting on top of
+    // it — a hidden count that hides a package would be its own small lie.
+    if hidden > 0 && !shown.is_empty() {
+        let last = shown.len() - 1;
+        shown[last] = Line::from(Span::styled(
+            format!("{} {hidden} more", theme.glyphs.down),
+            theme.dim,
+        ));
+    }
+    frame.render_widget(Paragraph::new(shown), inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -2174,7 +2350,7 @@ mod tests {
         row.iter().map(|&h| hint_width(h)).sum::<usize>() + HINT_SEP * row.len().saturating_sub(1)
     }
 
-    fn ranked() -> [(u8, KeyHint<'static>); 10] {
+    fn ranked() -> [(u8, KeyHint<'static>); 11] {
         dashboard_hints("^/v", "</>")
     }
 
@@ -2237,9 +2413,9 @@ mod tests {
     #[test]
     fn a_wide_pane_shows_every_hint() {
         let r = ranked();
-        let rows = fit_hints(&r, 48, 3);
+        let rows = fit_hints(&r, 64, 3);
         let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
-        assert_eq!(shown.len(), 10, "not all hints shown: {shown:?}");
+        assert_eq!(shown.len(), 11, "not all hints shown: {shown:?}");
     }
 
     #[test]
@@ -3668,6 +3844,116 @@ mod tests {
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         let text = render(&app, 96, 24);
         assert!(text.contains("c cleanup"), "hint missing:\n{text}");
+    }
+
+    // --- history screen (#8) ---
+
+    const HISTORY_LOG: &str = "\
+[2026-09-01T18:30:00+0530] [ALPM] transaction started
+[2026-09-01T18:30:01+0530] [ALPM] upgraded zsh (5.9-1 -> 5.9-2)
+[2026-09-03T22:01:00+0530] [ALPM] transaction started
+[2026-09-03T22:01:01+0530] [ALPM] upgraded firefox (151.0.4-1 -> 151.0.5-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p1 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p2 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p3 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p4 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p5 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p6 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p7 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] upgraded p8 (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:03+0530] [ALPM] installed ttf-fira-code (2.0-1)
+[2026-09-03T22:01:04+0530] [ALPM] removed obsolete-thing (1.0-1)
+[2026-09-03T22:01:05+0530] [ALPM] transaction completed
+";
+
+    fn history_app() -> App {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.set_history(HISTORY_LOG);
+        app.open_history();
+        app
+    }
+
+    #[test]
+    fn dashboard_hints_the_history_screen() {
+        let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        let text = render(&app, 110, 26);
+        assert!(text.contains("H history"), "hint missing:\n{text}");
+    }
+
+    #[test]
+    fn history_lists_transactions_newest_first_with_their_counts() {
+        let app = history_app();
+        let text = render(&app, 130, 20);
+        assert!(text.contains("2 transactions"), "title count:\n{text}");
+        assert!(text.contains("2026-09-03 22:01"), "{text}");
+        assert!(text.contains("2026-09-01 18:30"), "{text}");
+        // The column truncates at this width; the counts lead, so what
+        // survives is the part that answers "how much moved".
+        assert!(text.contains("9 upgraded, 1 installed"), "{text}");
+        assert!(
+            text.contains("pacman only"),
+            "the flatpak caveat belongs on screen:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_detail_pane_groups_the_selection_with_removals_first() {
+        let app = history_app();
+        let text = render(&app, 100, 20);
+        let removed = text.find("removed (1)").expect("removed group");
+        let upgraded = text.find("upgraded (9)").expect("upgraded group");
+        assert!(
+            removed < upgraded,
+            "a removal must not sit below the upgrades:\n{text}"
+        );
+        assert!(text.contains("obsolete-thing"), "{text}");
+        assert!(text.contains("151.0.4-1"), "version delta missing:\n{text}");
+    }
+
+    #[test]
+    fn the_detail_pane_follows_the_transaction_cursor() {
+        let mut app = history_app();
+        app.on_next();
+        let text = render(&app, 100, 20);
+        assert!(text.contains("zsh"), "second transaction:\n{text}");
+        assert!(
+            !text.contains("obsolete-thing"),
+            "the first transaction leaked:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_taller_list_than_the_pane_scrolls_and_says_how_much_is_hidden() {
+        let mut app = history_app();
+        app.focus_right();
+        // 14 detail rows (3 headings + 11 packages) in a shorter pane.
+        let text = render(&app, 100, 16);
+        assert!(text.contains("more"), "hidden-row marker missing:\n{text}");
+        app.on_next();
+        let scrolled = render(&app, 100, 16);
+        assert!(
+            !scrolled.contains("removed (1)"),
+            "the first row should have scrolled off:\n{scrolled}"
+        );
+    }
+
+    #[test]
+    fn an_interrupted_transaction_leads_with_its_marker() {
+        let mut app = history_app();
+        app.on_next();
+        let text = render(&app, 100, 20);
+        assert!(
+            text.contains("! did not complete"),
+            "the marker must survive a narrow pane:\n{text}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_log_says_so_rather_than_drawing_an_empty_list() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.open_history(); // nothing seeded
+        let text = render(&app, 100, 20);
+        assert!(text.contains("nothing in the pacman log"), "{text}");
     }
 
     // --- inline exec console + log viewer ---

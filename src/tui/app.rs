@@ -90,6 +90,16 @@ pub enum Screen {
     Overlaps,
     /// Cleanup summary (roadmap v0.1.5), entered with `c`.
     Cleanup,
+    /// pacman transaction history (#8), entered with `H`.
+    History,
+}
+
+/// Which pane of the history screen owns j/k: the transaction list, or the
+/// selected transaction's packages. Same two-pane focus the dashboard uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryPane {
+    Transactions,
+    Packages,
 }
 
 /// Package-list sort modes; `s` cycles them in this order (user decision
@@ -142,6 +152,7 @@ pub enum InputMode {
     PackageFilter,
     Overlaps,
     Cleanup,
+    History,
     /// Inline log viewer overlay.
     LogView,
     /// Inline execution console: keys pass through to the running command.
@@ -227,6 +238,14 @@ pub struct App {
     orphans: Vec<String>,
     /// Cleanup screen: cursor over `orphans`.
     cleanup_cursor: usize,
+    /// History screen: cursor over the parsed transactions.
+    history_cursor: usize,
+    /// History screen: which pane j/k moves.
+    history_focus: HistoryPane,
+    /// History screen: first visible row of the package pane. A single
+    /// upgrade can touch hundreds of packages, so the pane scrolls; the
+    /// transaction list is short enough not to need it yet.
+    history_scroll: usize,
     /// Cleanup screen: the why side pane is open for the selected orphan.
     cleanup_why: bool,
     /// Detected overlaps, recomputed per scan (never cached — design §7).
@@ -372,6 +391,9 @@ impl App {
             pkg_viewport: 0,
             orphans,
             cleanup_cursor: 0,
+            history_cursor: 0,
+            history_focus: HistoryPane::Transactions,
+            history_scroll: 0,
             cleanup_why: false,
             overlaps,
             overlap_cursor: 0,
@@ -430,6 +452,7 @@ impl App {
             Screen::Packages => InputMode::Packages,
             Screen::Overlaps => InputMode::Overlaps,
             Screen::Cleanup => InputMode::Cleanup,
+            Screen::History => InputMode::History,
         }
     }
     pub fn total_updates(&self) -> usize {
@@ -486,6 +509,19 @@ impl App {
                 let max = self.orphans.len().saturating_sub(1);
                 self.cleanup_cursor = (self.cleanup_cursor + 1).min(max);
             }
+            (Screen::History, _) => match self.history_focus {
+                HistoryPane::Transactions => {
+                    let max = self.history_transactions().len().saturating_sub(1);
+                    self.history_cursor = (self.history_cursor + 1).min(max);
+                    // A new transaction is a new list; keeping row 40 of the
+                    // last one would open the pane somewhere arbitrary.
+                    self.history_scroll = 0;
+                }
+                HistoryPane::Packages => {
+                    let max = self.history_detail_rows().saturating_sub(1);
+                    self.history_scroll = (self.history_scroll + 1).min(max);
+                }
+            },
         }
     }
     pub fn on_prev(&mut self) {
@@ -505,6 +541,15 @@ impl App {
             (Screen::Cleanup, _) => {
                 self.cleanup_cursor = self.cleanup_cursor.saturating_sub(1);
             }
+            (Screen::History, _) => match self.history_focus {
+                HistoryPane::Transactions => {
+                    self.history_cursor = self.history_cursor.saturating_sub(1);
+                    self.history_scroll = 0;
+                }
+                HistoryPane::Packages => {
+                    self.history_scroll = self.history_scroll.saturating_sub(1);
+                }
+            },
         }
     }
 
@@ -517,6 +562,20 @@ impl App {
     }
     pub fn focus_updates(&mut self) {
         self.dash_focus = DashPane::Updates;
+    }
+    /// ←/h: the screen decides which pane that is.
+    pub fn focus_left(&mut self) {
+        match self.screen {
+            Screen::History => self.history_focus = HistoryPane::Transactions,
+            _ => self.focus_sources(),
+        }
+    }
+    /// →/l (and Enter on the history screen): likewise.
+    pub fn focus_right(&mut self) {
+        match self.screen {
+            Screen::History => self.history_focus = HistoryPane::Packages,
+            _ => self.focus_updates(),
+        }
     }
     pub fn updates_scroll(&self) -> usize {
         self.updates_scroll
@@ -688,6 +747,54 @@ impl App {
             self.screen = Screen::Dashboard;
         }
     }
+    // --- history screen (#8) ---
+
+    /// The parsed pacman log, shared with the why pane's one-liner — one
+    /// parse per session serves both.
+    pub fn history_transactions(&self) -> &[crate::analyzer::history::Transaction] {
+        self.history.get_or_init(load_history)
+    }
+    pub fn open_history(&mut self) {
+        self.history_cursor = self
+            .history_cursor
+            .min(self.history_transactions().len().saturating_sub(1));
+        self.history_focus = HistoryPane::Transactions;
+        self.history_scroll = 0;
+        self.screen = Screen::History;
+    }
+    /// Esc unwinds one layer: the package pane's focus first, then the screen.
+    pub fn back_history(&mut self) {
+        if self.history_focus == HistoryPane::Packages {
+            self.history_focus = HistoryPane::Transactions;
+        } else {
+            self.screen = Screen::Dashboard;
+        }
+    }
+    pub fn history_cursor(&self) -> usize {
+        self.history_cursor
+    }
+    pub fn history_focus(&self) -> HistoryPane {
+        self.history_focus
+    }
+    pub fn history_scroll(&self) -> usize {
+        self.history_scroll
+    }
+    pub fn selected_transaction(&self) -> Option<&crate::analyzer::history::Transaction> {
+        self.history_transactions().get(self.history_cursor)
+    }
+    /// Rows the package pane would draw for the selection — a heading per
+    /// group plus its events. The scroll clamp needs the count, and the
+    /// renderer needs the same grouping, so both ask this.
+    fn history_detail_rows(&self) -> usize {
+        match self.selected_transaction() {
+            Some(tx) => crate::analyzer::history::grouped(tx)
+                .iter()
+                .map(|(_, events)| events.len() + 1)
+                .sum(),
+            None => 0,
+        }
+    }
+
     /// Unused flatpak runtimes for the cache pane: (count, total bytes of
     /// the sized ones).
     pub fn unused_runtime_summary(&self) -> (usize, u64) {
@@ -2423,6 +2530,104 @@ mod tests {
     fn package_history_is_empty_without_a_log() {
         // Nothing seeded: no filesystem read, no history, no panic.
         assert_eq!(app().package_history("a"), None);
+    }
+
+    /// Two transactions: a mixed one, and an interrupted one below it.
+    const SCREEN_LOG: &str = "\
+[2026-09-01T18:30:00+0530] [ALPM] transaction started
+[2026-09-01T18:30:01+0530] [ALPM] upgraded a (1.0-1 -> 2.0-1)
+[2026-09-01T18:30:02+0530] [ALPM] upgraded b (1.0-1 -> 2.0-1)
+[2026-09-03T22:01:00+0530] [ALPM] transaction started
+[2026-09-03T22:01:01+0530] [ALPM] removed c (1.0-1)
+[2026-09-03T22:01:02+0530] [ALPM] installed d (1.0-1)
+[2026-09-03T22:01:03+0530] [ALPM] transaction completed
+";
+
+    fn history_app() -> App {
+        let mut app = app();
+        app.set_history(SCREEN_LOG);
+        app.open_history();
+        app
+    }
+
+    #[test]
+    fn history_opens_on_the_newest_transaction_with_the_list_focused() {
+        let app = history_app();
+        assert_eq!(app.screen(), Screen::History);
+        assert_eq!(app.input_mode(), InputMode::History);
+        assert_eq!(app.history_focus(), HistoryPane::Transactions);
+        let tx = app.selected_transaction().expect("a selection");
+        assert_eq!(
+            tx.started.format("%Y-%m-%d %H:%M").to_string(),
+            "2026-09-03 22:01",
+            "newest first"
+        );
+    }
+
+    #[test]
+    fn moving_the_transaction_cursor_changes_the_detail_and_resets_its_scroll() {
+        let mut app = history_app();
+        app.focus_right();
+        app.on_next(); // scroll the package pane
+        assert_eq!(app.history_scroll(), 1);
+        app.focus_left();
+        app.on_next(); // next transaction
+        assert_eq!(app.history_cursor(), 1);
+        assert_eq!(
+            app.history_scroll(),
+            0,
+            "a new transaction opens at its first row"
+        );
+        let tx = app.selected_transaction().expect("a selection");
+        assert_eq!(tx.change_summary(), "2 upgraded");
+        assert!(tx.completed.is_none(), "the interrupted run is kept");
+    }
+
+    #[test]
+    fn the_focused_pane_owns_the_cursor() {
+        let mut app = history_app();
+        app.focus_right();
+        assert_eq!(app.history_focus(), HistoryPane::Packages);
+        app.on_next();
+        assert_eq!(app.history_cursor(), 0, "the list must not move");
+        assert_eq!(app.history_scroll(), 1);
+        app.on_prev();
+        assert_eq!(app.history_scroll(), 0);
+    }
+
+    #[test]
+    fn the_package_pane_scroll_stops_at_the_last_row() {
+        let mut app = history_app();
+        app.focus_right();
+        // Selection is the removed+installed transaction: two groups, two
+        // events, four rows.
+        for _ in 0..50 {
+            app.on_next();
+        }
+        assert_eq!(app.history_scroll(), 3);
+    }
+
+    #[test]
+    fn esc_unwinds_the_pane_focus_before_the_screen() {
+        let mut app = history_app();
+        app.focus_right();
+        app.back_history();
+        assert_eq!(app.history_focus(), HistoryPane::Transactions);
+        assert_eq!(app.screen(), Screen::History);
+        app.back_history();
+        assert_eq!(app.screen(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn a_log_with_nothing_in_it_navigates_without_panicking() {
+        let mut app = app();
+        app.open_history(); // nothing seeded — no log, no rows
+        assert!(app.selected_transaction().is_none());
+        app.on_next();
+        app.focus_right();
+        app.on_next();
+        assert_eq!(app.history_cursor(), 0);
+        assert_eq!(app.history_scroll(), 0);
     }
 
     #[test]

@@ -66,17 +66,6 @@ fn render(transactions: &[Transaction], package: Option<&str>, limit: usize, s: 
     ));
 
     for tx in transactions.iter().take(limit) {
-        let (installed, upgraded, removed) = tx.counts();
-        let mut parts = Vec::new();
-        if upgraded > 0 {
-            parts.push(format!("{upgraded} upgraded"));
-        }
-        if installed > 0 {
-            parts.push(format!("{installed} installed"));
-        }
-        if removed > 0 {
-            parts.push(format!("{removed} removed"));
-        }
         // An interrupted upgrade is the one worth seeing, so it says so
         // rather than being quietly indistinguishable from a clean run.
         let state = match tx.completed {
@@ -87,7 +76,7 @@ fn render(transactions: &[Transaction], package: Option<&str>, limit: usize, s: 
             "  {} {}  {}{}\n",
             s.bullet(),
             tx.started.format("%Y-%m-%d %H:%M"),
-            parts.join(", "),
+            tx.change_summary(),
             state
         ));
     }

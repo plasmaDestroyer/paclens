@@ -38,6 +38,8 @@ pub enum Action {
     OpenOverlaps,
     /// Dashboard → open the cleanup screen.
     OpenCleanup,
+    /// Dashboard → open the pacman history screen (#8).
+    OpenHistory,
     /// Package list → jump a page of rows.
     NextPage,
     PrevPage,
@@ -93,6 +95,8 @@ pub fn map_dashboard_key(key: KeyEvent) -> Action {
         KeyCode::Char('i') | KeyCode::Char('I') => Action::OpenPackages,
         KeyCode::Char('o') | KeyCode::Char('O') => Action::OpenOverlaps,
         KeyCode::Char('c') | KeyCode::Char('C') => Action::OpenCleanup,
+        // Shift, because plain `h` is the pane focus every screen shares.
+        KeyCode::Char('H') => Action::OpenHistory,
         KeyCode::Char('L') => Action::OpenLog,
         _ => Action::Ignore,
     }
@@ -131,6 +135,24 @@ pub fn map_cleanup_key(key: KeyEvent) -> Action {
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
         KeyCode::Enter | KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
         KeyCode::Esc => Action::Back,
+        _ => Action::Ignore,
+    }
+}
+
+/// History key map: nav, pane focus, back, quit (#8). Enter is an alias for
+/// `l` — the packages of the selected transaction are what Enter means here,
+/// and the issue's wording ("enter expands one") should still do something.
+pub fn map_history_key(key: KeyEvent) -> Action {
+    if is_quit(&key) {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => Action::Next,
+        KeyCode::Up | KeyCode::Char('k') => Action::Prev,
+        KeyCode::Left | KeyCode::Char('h') => Action::FocusLeft,
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => Action::FocusRight,
+        KeyCode::Esc => Action::Back,
+        KeyCode::Char('L') => Action::OpenLog,
         _ => Action::Ignore,
     }
 }
@@ -389,6 +411,35 @@ mod tests {
         assert_eq!(map_overlaps_key(plain(KeyCode::Char('L'))), Action::OpenLog);
         // Lowercase r stays unmapped — removal is a deliberate shift-key.
         assert_eq!(map_overlaps_key(plain(KeyCode::Char('r'))), Action::Ignore);
+    }
+
+    #[test]
+    fn shift_h_opens_history_and_plain_h_still_focuses_left() {
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('H'))),
+            Action::OpenHistory
+        );
+        assert_eq!(
+            map_dashboard_key(plain(KeyCode::Char('h'))),
+            Action::FocusLeft
+        );
+    }
+
+    #[test]
+    fn history_keys_map_to_nav_pane_focus_and_back() {
+        assert_eq!(map_history_key(plain(KeyCode::Char('j'))), Action::Next);
+        assert_eq!(map_history_key(plain(KeyCode::Char('k'))), Action::Prev);
+        assert_eq!(
+            map_history_key(plain(KeyCode::Char('h'))),
+            Action::FocusLeft
+        );
+        // Enter is the issue's "expand": it hands j/k to the package pane.
+        for right in [KeyCode::Char('l'), KeyCode::Enter, KeyCode::Right] {
+            assert_eq!(map_history_key(plain(right)), Action::FocusRight);
+        }
+        assert_eq!(map_history_key(plain(KeyCode::Esc)), Action::Back);
+        assert_eq!(map_history_key(plain(KeyCode::Char('L'))), Action::OpenLog);
+        assert_eq!(map_history_key(plain(KeyCode::Char('q'))), Action::Quit);
     }
 
     #[test]

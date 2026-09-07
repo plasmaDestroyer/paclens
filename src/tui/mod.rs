@@ -29,8 +29,8 @@ use crate::scanner;
 
 use app::{App, InputMode};
 use input::{
-    Action, map_cleanup_key, map_dashboard_key, map_exec_key, map_filter_key, map_log_key,
-    map_overlaps_key, map_packages_key,
+    Action, map_cleanup_key, map_dashboard_key, map_exec_key, map_filter_key, map_history_key,
+    map_log_key, map_overlaps_key, map_packages_key,
 };
 use theme::Theme;
 
@@ -188,9 +188,11 @@ fn run_loop(
             Action::OpenPackages => app.open_packages(),
             Action::OpenOverlaps => app.open_overlaps(),
             Action::OpenCleanup => app.open_cleanup(),
+            Action::OpenHistory => app.open_history(),
             Action::Back => match app.screen() {
                 app::Screen::Overlaps => app.close_overlaps(),
                 app::Screen::Cleanup => app.back_cleanup(),
+                app::Screen::History => app.back_history(),
                 _ => app.back_packages(),
             },
             Action::NextPage => {
@@ -303,8 +305,8 @@ fn run_loop(
                     }
                 }
             },
-            Action::FocusLeft => app.focus_sources(),
-            Action::FocusRight => app.focus_updates(),
+            Action::FocusLeft => app.focus_left(),
+            Action::FocusRight => app.focus_right(),
             Action::ExecKey(key) => {
                 if let (Some(session), Some(bytes)) = (&exec_session, input::encode_key(key)) {
                     session.forward(bytes);
@@ -348,6 +350,7 @@ fn read_action(mode: InputMode, exec_done: bool) -> anyhow::Result<Action> {
             InputMode::Packages => map_packages_key(key),
             InputMode::Overlaps => map_overlaps_key(key),
             InputMode::Cleanup => map_cleanup_key(key),
+            InputMode::History => map_history_key(key),
             InputMode::PackageFilter => map_filter_key(key),
             InputMode::LogView => map_log_key(key),
             InputMode::Exec => map_exec_key(key, exec_done),

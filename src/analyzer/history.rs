@@ -89,6 +89,23 @@ impl Transaction {
         }
         counts
     }
+
+    /// "38 upgraded, 1 installed" — the counts as one line. Empty is
+    /// impossible: a transaction with no events is dropped at parse time.
+    pub fn change_summary(&self) -> String {
+        let (installed, upgraded, removed) = self.counts();
+        let mut parts = Vec::new();
+        if upgraded > 0 {
+            parts.push(format!("{upgraded} upgraded"));
+        }
+        if installed > 0 {
+            parts.push(format!("{installed} installed"));
+        }
+        if removed > 0 {
+            parts.push(format!("{removed} removed"));
+        }
+        parts.join(", ")
+    }
 }
 
 /// The timestamp and the rest of a log line: `[2026-09-04T17:12:34+0530] …`.
@@ -179,6 +196,37 @@ pub fn parse(log: &str) -> Vec<Transaction> {
     out
 }
 
+/// The order the detail view groups by: what is rare and alarming first.
+///
+/// A big upgrade is three hundred `upgraded` lines, and the removal you are
+/// hunting after something broke is one of them — putting removals last would
+/// bury the answer at row 301. Upgrades come last because they are the bulk,
+/// and the bulk is what scrolling is for.
+const GROUP_ORDER: [EventKind; 5] = [
+    EventKind::Removed,
+    EventKind::Downgraded,
+    EventKind::Reinstalled,
+    EventKind::Installed,
+    EventKind::Upgraded,
+];
+
+/// One transaction's events grouped by kind, alphabetical within a group.
+/// Empty groups are dropped, so the caller renders exactly what happened.
+pub fn grouped(tx: &Transaction) -> Vec<(EventKind, Vec<&PackageEvent>)> {
+    GROUP_ORDER
+        .iter()
+        .filter_map(|kind| {
+            let mut events: Vec<&PackageEvent> =
+                tx.events.iter().filter(|e| e.kind == *kind).collect();
+            if events.is_empty() {
+                return None;
+            }
+            events.sort_by(|a, b| a.name.cmp(&b.name));
+            Some((*kind, events))
+        })
+        .collect()
+}
+
 /// Every event for one package, newest first — the answer to "when did this
 /// arrive, and how often has it moved since".
 pub fn package_history<'a>(transactions: &'a [Transaction], name: &str) -> Vec<&'a PackageEvent> {
@@ -221,6 +269,46 @@ mod tests {
     /// Captured from a real machine's `/var/log/pacman.log`.
     const RECENT: &str = include_str!("../../tests/fixtures/pacman-log/recent.log");
     const REMOVAL: &str = include_str!("../../tests/fixtures/pacman-log/removal.log");
+
+    #[test]
+    fn grouping_puts_the_rare_kinds_first_and_sorts_within_a_group() {
+        let log = "\
+[2026-09-05T09:14:00+0530] [ALPM] transaction started
+[2026-09-05T09:14:01+0530] [ALPM] upgraded zsh (5.9-1 -> 5.9-2)
+[2026-09-05T09:14:02+0530] [ALPM] upgraded firefox (1.0-1 -> 2.0-1)
+[2026-09-05T09:14:03+0530] [ALPM] installed ttf-fira-code (2.0-1)
+[2026-09-05T09:14:04+0530] [ALPM] removed obsolete-thing (1.0-1)
+[2026-09-05T09:14:05+0530] [ALPM] transaction completed
+";
+        let txs = parse(log);
+        let groups = grouped(&txs[0]);
+        let kinds: Vec<EventKind> = groups.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                EventKind::Removed,
+                EventKind::Installed,
+                EventKind::Upgraded
+            ],
+            "a removal must not sit below the upgrades that buried it"
+        );
+        let upgraded: Vec<&str> = groups[2].1.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(upgraded, vec!["firefox", "zsh"], "sorted within the group");
+    }
+
+    #[test]
+    fn grouping_a_transaction_of_one_kind_yields_one_group() {
+        let txs = parse(REMOVAL);
+        for tx in &txs {
+            let groups = grouped(tx);
+            assert!(!groups.is_empty(), "a parsed transaction has events");
+            assert_eq!(
+                groups.iter().map(|(_, e)| e.len()).sum::<usize>(),
+                tx.events.len(),
+                "grouping must not drop or duplicate an event"
+            );
+        }
+    }
 
     #[test]
     fn a_real_log_tail_parses_into_transactions_newest_first() {

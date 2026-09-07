@@ -1545,6 +1545,46 @@ YYYY-MM-DD | no --noconfirm for pacman
            | paru's clone directory is the upgrade path, though
            | `paru -Sc --aur` deletes those.
 
+2026-09-07 | history in the TUI: a screen of its own, and a line in why
+           | (#8)
+           | why answered "what depends on this" and said nothing about
+           | how long it had been there, which is half of deciding
+           | whether a package is load-bearing or a leftover. The
+           | one-line summary now sits under `reason:` on both surfaces.
+           | It is omitted, never guessed: a log that cannot be read or
+           | a tail that predates the package prints no line. The tail
+           | can only mislead in one direction — the earliest event it
+           | holds might be an upgrade rather than the install — and the
+           | summary labels the event it actually saw, so a truncated
+           | tail says "upgraded 2026-05-29" rather than inventing an
+           | install date.
+           | The TUI parses the log once per session and keeps it. The
+           | why pane follows the cursor, and re-reading megabytes per
+           | keystroke would be felt; the log only grows at the tail, so
+           | a session-lifetime parse is as current as anything else on
+           | screen. Both the pane and the history screen read that one
+           | parse — the same "one source of truth" instinct as the scan
+           | cache, applied to a file the cache deliberately does not
+           | hold.
+           | The screen itself is master-detail rather than the
+           | drill-down the issue sketched: transactions left, the
+           | selected one's packages right, ←/→ (or Enter) moving j/k
+           | between them. It follows the cursor with no mode to be in,
+           | which is what the package list and the cleanup screen
+           | already do; a drill-down would have added a second list
+           | state and another layer for Esc to unwind.
+           | Detail rows group by kind, rarest first: removed,
+           | downgraded, reinstalled, installed, upgraded. A big upgrade
+           | is three hundred `upgraded` lines and the removal being
+           | hunted is not one of them — log order or A–Z would bury the
+           | answer at row 301. The interrupted-run marker leads its row
+           | for the same reason: the counts column truncates in a
+           | narrow pane, and "did not complete" is the half worth
+           | keeping.
+           | Ceiling: 4 MiB of tail, re-read only on restart. A machine
+           | that upgrades all day would eventually want a re-parse on
+           | scan; nothing here has needed one.
+
 ```
 
 ---

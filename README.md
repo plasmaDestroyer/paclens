@@ -118,11 +118,12 @@ detection and the update step go away.
 | Key | Where | Action |
 |---|---|---|
 | `↑/↓` `j/k` | everywhere | move |
-| `←/→` `h/l` | dashboard | switch pane focus |
+| `←/→` `h/l` | dashboard, history | switch pane focus |
 | `space` | dashboard | toggle a source in/out of the update plan |
 | `enter` / `u` | dashboard | run the update (pty console; sudo/pacman prompt as usual) |
 | `i` | dashboard | open the selected source's package list |
 | `o` / `c` | dashboard | overlap screen / cleanup screen |
+| `H` | dashboard | history screen — what past upgrades changed |
 | `r` / `L` | dashboard | refresh scan / view the update log |
 | `/` | package list | fuzzy filter |
 | `s` | package list | cycle sort: size → updates → reason → name |
@@ -132,6 +133,7 @@ detection and the update step go away.
 | `x` | overlaps | run the migration copy — backup first, unprivileged |
 | `R` | overlaps | remove the source side — armed only after a clean copy |
 | `enter` | cleanup | why report for the selected orphan |
+| `enter` / `l` | history | scroll the selected transaction's packages |
 | `esc` | everywhere | back / unwind |
 | `q` | everywhere | quit |
 
@@ -144,6 +146,8 @@ paclens why firefox       # why is this installed, what breaks without it
 paclens overlaps          # Flatpak/native duplicates with tradeoffs
 paclens migrate firefox         # where both sides keep data + the steps
 paclens migrate firefox --run   # run the copy: plan, y/N, backup, rollback block
+paclens history                 # what past upgrades changed, newest first
+paclens history --package firefox   # one package: every line the log has
 ```
 
 (Or press `c` on the dashboard for the same report in the TUI.)
