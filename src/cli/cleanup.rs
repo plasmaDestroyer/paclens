@@ -294,8 +294,7 @@ mod tests {
     use super::*;
     use crate::config::ColorTheme;
     use crate::model::{
-        CacheSizes, FlatpakScope, InstallReason, Package, SCHEMA_VERSION, Source, SourceId,
-        SourceKind,
+        CacheSizes, InstallReason, Package, SCHEMA_VERSION, Source, SourceId, SourceKind,
     };
     use crate::providers::aur::{AurHelper, HelperChoice};
     use chrono::Utc;
@@ -306,6 +305,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId, reason: InstallReason, size: Option<u64>) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: source,
@@ -336,10 +336,8 @@ mod tests {
                     accurate_updates: true,
                 },
                 Source {
-                    id: SourceId::flatpak_user(),
-                    kind: SourceKind::Flatpak {
-                        scope: FlatpakScope::User,
-                    },
+                    id: SourceId::flatpak(),
+                    kind: SourceKind::Flatpak,
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,

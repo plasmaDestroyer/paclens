@@ -33,8 +33,17 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
         if targets.is_empty() {
             continue;
         }
-        let (command, needs_sudo) = match &source.kind {
-            SourceKind::Pacman => (pacman::update_command(), true),
+        // Most sources are one step. Flatpak is one source updated by one
+        // tool, but its two installations are two commands with different
+        // privilege — so a source contributes a *list* of steps (design §13,
+        // 2026-09-07).
+        let built: Vec<(Vec<String>, bool, Vec<String>, String)> = match &source.kind {
+            SourceKind::Pacman => vec![(
+                pacman::update_command(),
+                true,
+                targets,
+                source.id.to_string(),
+            )],
             // An AUR helper is never run under sudo — it self-elevates for the
             // install step after building as the user.
             //
@@ -45,22 +54,70 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
             // source unavailable and the loop already skipped it — but the
             // plan is what the user is asked to confirm, so it invents nothing.
             SourceKind::Aur => match scan.aur_helper.helper() {
-                Some(helper) => (aur::update_command(helper), false),
+                Some(helper) => vec![(
+                    aur::update_command(helper),
+                    false,
+                    targets,
+                    source.id.to_string(),
+                )],
                 None => continue,
             },
-            SourceKind::Flatpak { scope } => (
-                flatpak::update_command(*scope),
-                *scope == FlatpakScope::System,
-            ),
+            // One tool, two installations, two commands with different
+            // privilege. Which scope an update belongs to is the installed
+            // package's answer — `flatpak remote-ls` does not say, and the
+            // same app id can legitimately be installed in both, in which
+            // case both steps are right.
+            //
+            // `flatpak update` takes no package names: the command updates a
+            // whole installation, so `targets` here is what the plan *shows*
+            // and the scope is what it *does*. An update whose package the
+            // scan cannot place falls to user scope, the unprivileged half —
+            // it must not vanish from a plan the dashboard already counted.
+            SourceKind::Flatpak => {
+                let scope_of = |name: &String| {
+                    let scopes: Vec<FlatpakScope> = scan
+                        .packages
+                        .iter()
+                        .filter(|p| &p.name == name && p.source_id == source.id)
+                        .filter_map(|p| p.scope)
+                        .collect();
+                    if scopes.is_empty() {
+                        vec![FlatpakScope::User]
+                    } else {
+                        scopes
+                    }
+                };
+                [FlatpakScope::User, FlatpakScope::System]
+                    .into_iter()
+                    .filter_map(|scope| {
+                        let scoped: Vec<String> = targets
+                            .iter()
+                            .filter(|name| scope_of(name).contains(&scope))
+                            .cloned()
+                            .collect();
+                        (!scoped.is_empty()).then(|| {
+                            (
+                                flatpak::update_command(scope),
+                                scope.needs_privilege(),
+                                scoped,
+                                format!("{} · {}", source.id, scope.label()),
+                            )
+                        })
+                    })
+                    .collect()
+            }
         };
-        requires_sudo |= needs_sudo;
-        steps.push(ActionStep {
-            source_id: source.id.clone(),
-            kind: ActionKind::Update,
-            targets,
-            command,
-            privileged: needs_sudo,
-        });
+        for (command, needs_sudo, targets, label) in built {
+            requires_sudo |= needs_sudo;
+            steps.push(ActionStep {
+                source_id: source.id.clone(),
+                kind: ActionKind::Update,
+                targets,
+                command,
+                label,
+                privileged: needs_sudo,
+            });
+        }
     }
 
     ActionPlan {
@@ -110,6 +167,7 @@ pub fn plan_migration(
 ) -> ActionPlan {
     let source_id = target_source_id(report.direction, candidate);
     let step = |targets: Vec<String>, command: Vec<String>| ActionStep {
+        label: source_id.to_string(),
         source_id: source_id.clone(),
         kind: ActionKind::Migrate,
         targets,
@@ -184,7 +242,7 @@ pub fn rollback_lines(report: &MigrationReport, backup_dir: &Path) -> Vec<String
 /// verified the target works, and always behind its own confirmation. `None`
 /// when the candidate is missing that side.
 pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> Option<ActionPlan> {
-    let (source_id, targets, command) = match report.direction {
+    let (source_id, targets, command, requires_sudo) = match report.direction {
         // Migrating to flatpak → the native package goes. pacman does the
         // removing even for AUR packages, so the step is pacman's (and sudo's).
         Direction::ToFlatpak => {
@@ -193,33 +251,34 @@ pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> O
                 SourceId::pacman(),
                 vec![p.name.clone()],
                 vec!["pacman".to_string(), "-Rns".to_string(), p.name.clone()],
+                true,
             )
         }
-        // Migrating to native → the flatpak goes; scope flag follows its
-        // source. flatpak prompts for confirmation itself (no -y).
+        // Migrating to native → the flatpak goes; the scope flag follows the
+        // package, not the source. flatpak prompts for confirmation itself
+        // (no -y).
         Direction::ToNative => {
             let app = candidate.flatpak_app.as_ref()?;
-            let scope = if app.source_id == SourceId::flatpak_system() {
-                "--system"
-            } else {
-                "--user"
-            };
+            // A flatpak with no recorded scope is a scan that predates the
+            // field; user scope is the safe read — it is the unprivileged one.
+            let scope = app.scope.unwrap_or(FlatpakScope::User);
             (
                 app.source_id.clone(),
                 vec![app.name.clone()],
                 vec![
                     "flatpak".to_string(),
                     "uninstall".to_string(),
-                    scope.to_string(),
+                    scope.flag().to_string(),
                     app.name.clone(),
                 ],
+                scope.needs_privilege(),
             )
         }
     };
-    let requires_sudo = source_id != SourceId::flatpak_user();
     Some(ActionPlan {
         created_at: Utc::now(),
         steps: vec![ActionStep {
+            label: source_id.to_string(),
             source_id,
             kind: ActionKind::Remove,
             targets,
@@ -277,33 +336,40 @@ mod tests {
         }
     }
 
-    /// pacman (2 updates), flatpak-user (1), flatpak-system (0, available).
+    fn flatpak_pkg(name: &str, scope: FlatpakScope) -> crate::model::Package {
+        crate::model::Package {
+            name: name.to_string(),
+            version: "1".to_string(),
+            source_id: SourceId::flatpak(),
+            install_reason: crate::model::InstallReason::Unknown,
+            size_bytes: None,
+            description: None,
+            depends_on: Vec::new(),
+            required_by: Vec::new(),
+            optional_deps: Vec::new(),
+            provides: Vec::new(),
+            runtime: false,
+            scope: Some(scope),
+            foreign: false,
+            signed: false,
+            packager: None,
+        }
+    }
+
+    /// pacman (2 updates) and flatpak (1 update, a user-scope app).
     fn scan() -> ScanResult {
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
             sources: vec![
                 source(SourceId::pacman(), SourceKind::Pacman, true),
-                source(
-                    SourceId::flatpak_user(),
-                    SourceKind::Flatpak {
-                        scope: FlatpakScope::User,
-                    },
-                    true,
-                ),
-                source(
-                    SourceId::flatpak_system(),
-                    SourceKind::Flatpak {
-                        scope: FlatpakScope::System,
-                    },
-                    true,
-                ),
+                source(SourceId::flatpak(), SourceKind::Flatpak, true),
             ],
-            packages: Vec::new(),
+            packages: vec![flatpak_pkg("org.gimp.GIMP", FlatpakScope::User)],
             updates: vec![
                 upd("linux", SourceId::pacman()),
                 upd("firefox", SourceId::pacman()),
-                upd("org.gimp.GIMP", SourceId::flatpak_user()),
+                upd("org.gimp.GIMP", SourceId::flatpak()),
             ],
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
@@ -391,7 +457,7 @@ mod tests {
         assert_eq!(plan.steps[0].source_id, SourceId::pacman());
         assert_eq!(plan.steps[0].targets, vec!["linux", "firefox"]);
         assert_eq!(plan.steps[0].command, vec!["pacman", "-Syu"]);
-        assert_eq!(plan.steps[1].source_id, SourceId::flatpak_user());
+        assert_eq!(plan.steps[1].source_id, SourceId::flatpak());
         assert_eq!(plan.steps[1].targets, vec!["org.gimp.GIMP"]);
         assert_eq!(
             plan.steps[1].command,
@@ -407,13 +473,12 @@ mod tests {
         // recognising an id and guessing.
         let plan = plan_updates(&scan(), enable_all);
         for step in &plan.steps {
-            let expected = match step.source_id.as_str() {
-                "pacman" => true,
+            let expected = match (step.source_id.as_str(), step.command.get(2)) {
+                ("pacman", _) => true,
                 // The helper self-elevates after building as the user.
-                "aur" => false,
-                "flatpak-user" => false,
-                "flatpak-system" => true,
-                other => panic!("unexpected source in the plan: {other}"),
+                ("aur", _) => false,
+                ("flatpak", Some(flag)) => flag == "--system",
+                other => panic!("unexpected step in the plan: {other:?}"),
             };
             assert_eq!(
                 step.privileged, expected,
@@ -435,30 +500,69 @@ mod tests {
 
     #[test]
     fn flatpak_user_only_does_not_require_sudo() {
-        let plan = plan_updates(&scan(), |id| id == &SourceId::flatpak_user());
+        let plan = plan_updates(&scan(), |id| id == &SourceId::flatpak());
         assert_eq!(plan.source_count(), 1);
         assert!(!plan.requires_sudo);
     }
 
     #[test]
     fn flatpak_system_with_updates_requires_sudo() {
+        // One source, two installations: the scope comes from the installed
+        // package, and only the system half asks for root.
         let mut s = scan();
-        s.updates
-            .push(upd("org.sys.App", SourceId::flatpak_system()));
-        let plan = plan_updates(&s, |id| id == &SourceId::flatpak_system());
-        assert_eq!(plan.source_count(), 1);
+        s.packages
+            .push(flatpak_pkg("org.sys.App", FlatpakScope::System));
+        s.updates.push(upd("org.sys.App", SourceId::flatpak()));
+        let plan = plan_updates(&s, |id| id == &SourceId::flatpak());
+        assert_eq!(plan.source_count(), 1, "still one source");
+        assert_eq!(plan.steps.len(), 2, "one step per installation with work");
         assert!(plan.requires_sudo);
+
+        let user = &plan.steps[0];
         assert_eq!(
-            plan.steps[0].command,
+            user.command,
+            vec!["flatpak", "update", "--user", "--noninteractive"]
+        );
+        assert!(!user.privileged, "the user installation needs no root");
+        assert_eq!(user.targets, vec!["org.gimp.GIMP"]);
+
+        let system = &plan.steps[1];
+        assert_eq!(
+            system.command,
             vec!["flatpak", "update", "--system", "--noninteractive"]
         );
+        assert!(system.privileged);
+        assert_eq!(system.targets, vec!["org.sys.App"]);
+    }
+
+    #[test]
+    fn a_flatpak_update_the_scan_cannot_place_stays_in_the_plan() {
+        // A stale cache can hold an update whose package is not in the scan.
+        // Dropping it would leave the plan showing fewer packages than the
+        // dashboard counted; it falls to the unprivileged half instead.
+        let mut s = scan();
+        s.updates.push(upd("org.ghost.App", SourceId::flatpak()));
+        let plan = plan_updates(&s, |id| id == &SourceId::flatpak());
+        assert_eq!(plan.steps.len(), 1);
+        assert!(!plan.steps[0].privileged);
+        assert!(plan.steps[0].targets.contains(&"org.ghost.App".to_string()));
+    }
+
+    #[test]
+    fn an_app_installed_in_both_installations_updates_in_both() {
+        let mut s = scan();
+        s.packages
+            .push(flatpak_pkg("org.gimp.GIMP", FlatpakScope::System));
+        let plan = plan_updates(&s, |id| id == &SourceId::flatpak());
+        assert_eq!(plan.steps.len(), 2, "both installations hold it");
+        assert!(plan.steps.iter().all(|s| s.targets == ["org.gimp.GIMP"]));
     }
 
     #[test]
     fn predicate_excludes_a_source() {
         let plan = plan_updates(&scan(), |id| id != &SourceId::pacman());
         assert_eq!(plan.source_count(), 1);
-        assert_eq!(plan.steps[0].source_id, SourceId::flatpak_user());
+        assert_eq!(plan.steps[0].source_id, SourceId::flatpak());
         assert!(!plan.requires_sudo);
     }
 
@@ -468,7 +572,7 @@ mod tests {
         s.sources[0].available = false; // pacman unavailable
         let plan = plan_updates(&s, enable_all);
         assert_eq!(plan.source_count(), 1);
-        assert_eq!(plan.steps[0].source_id, SourceId::flatpak_user());
+        assert_eq!(plan.steps[0].source_id, SourceId::flatpak());
     }
 
     #[test]
@@ -502,14 +606,16 @@ mod tests {
         OverlapCandidate {
             display_name: "Firefox".to_string(),
             native_package: Some(PackageRef {
+                scope: None,
                 name: "firefox".to_string(),
                 version: "141.0-1".to_string(),
                 source_id: SourceId::pacman(),
             }),
             flatpak_app: Some(PackageRef {
+                scope: None,
                 name: "org.mozilla.firefox".to_string(),
                 version: "141.0".to_string(),
-                source_id: SourceId::flatpak_user(),
+                source_id: SourceId::flatpak(),
             }),
             match_method: MatchMethod::KnownMap,
             confidence: Confidence::Confirmed,
@@ -582,7 +688,7 @@ mod tests {
         assert!(
             plan.steps
                 .iter()
-                .all(|s| s.source_id == SourceId::flatpak_user()),
+                .all(|s| s.source_id == SourceId::flatpak()),
             "copy steps belong to the target side"
         );
         let cmds = commands(&plan);
@@ -725,7 +831,7 @@ mod tests {
         let plan = plan_removal(&r, &candidate()).expect("plan");
         assert!(!plan.requires_sudo);
         let step = &plan.steps[0];
-        assert_eq!(step.source_id, SourceId::flatpak_user());
+        assert_eq!(step.source_id, SourceId::flatpak());
         assert_eq!(
             step.command,
             vec!["flatpak", "uninstall", "--user", "org.mozilla.firefox"]
@@ -735,11 +841,14 @@ mod tests {
 
     #[test]
     fn removal_plan_system_flatpak_is_privileged() {
+        // The scope flag follows the package, not the source id — there is
+        // one flatpak id and it cannot answer this.
         let mut c = candidate();
-        c.flatpak_app.as_mut().unwrap().source_id = SourceId::flatpak_system();
+        c.flatpak_app.as_mut().expect("app").scope = Some(FlatpakScope::System);
         let r = report(Direction::ToNative, Vec::new());
         let plan = plan_removal(&r, &c).expect("plan");
         assert!(plan.requires_sudo);
+        assert!(plan.steps[0].privileged);
         assert_eq!(plan.steps[0].command[2], "--system");
     }
 
@@ -755,6 +864,7 @@ mod tests {
     fn migrate_steps_never_ask_for_privilege() {
         // Even with a pacman source id, a Migrate step stays unprivileged.
         let step = ActionStep {
+            label: "pacman".to_string(),
             source_id: SourceId::pacman(),
             kind: ActionKind::Migrate,
             targets: vec!["~/.config/x".to_string()],

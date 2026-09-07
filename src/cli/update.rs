@@ -219,11 +219,11 @@ fn render_report(report: &ExecutionReport, s: &Styles) -> String {
     let name_w = report
         .steps
         .iter()
-        .map(|st| st.source_id.as_str().len())
+        .map(|st| st.label.as_str().len())
         .max()
         .unwrap_or(0);
     for st in &report.steps {
-        let name = format!("{:name_w$}", st.source_id.as_str());
+        let name = format!("{:name_w$}", st.label.as_str());
         let line = match &st.status {
             StepStatus::Succeeded => format!(
                 "  {} {}  {} updated",
@@ -258,9 +258,7 @@ fn render_report(report: &ExecutionReport, s: &Styles) -> String {
 mod tests {
     use super::*;
     use crate::config::ColorTheme;
-    use crate::model::{
-        CacheSizes, FlatpakScope, PendingUpdate, SCHEMA_VERSION, Source, SourceId, SourceKind,
-    };
+    use crate::model::{CacheSizes, PendingUpdate, SCHEMA_VERSION, Source, SourceId, SourceKind};
     use chrono::Utc;
 
     /// Piped styler: Unicode glyphs, no ANSI — deterministic for assertions.
@@ -294,10 +292,8 @@ mod tests {
                     accurate_updates: true,
                 },
                 Source {
-                    id: SourceId::flatpak_user(),
-                    kind: SourceKind::Flatpak {
-                        scope: FlatpakScope::User,
-                    },
+                    id: SourceId::flatpak(),
+                    kind: SourceKind::Flatpak,
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
@@ -322,14 +318,14 @@ mod tests {
         let s = scan(vec![
             upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
             upd("firefox", "127.0", "127.0.1", SourceId::pacman()),
-            upd("org.gimp.GIMP", "2.10", "2.10.1", SourceId::flatpak_user()),
+            upd("org.gimp.GIMP", "2.10", "2.10.1", SourceId::flatpak()),
         ]);
         let plan = planner::plan_updates(&s, |_| true);
         let text = render_plan(&plan, &s, &plain());
 
         assert!(text.starts_with("paclens · 3 packages will update across 2 sources"));
         assert!(text.contains("pacman"));
-        assert!(text.contains("flatpak-user"));
+        assert!(text.contains("flatpak"));
         assert!(text.contains("linux"));
         assert!(text.contains("6.9.1 → 6.9.2"));
         assert!(text.contains("requires sudo")); // pacman in plan
@@ -350,12 +346,12 @@ mod tests {
             "org.gimp.GIMP",
             "2.10",
             "2.10.1",
-            SourceId::flatpak_user(),
+            SourceId::flatpak(),
         )]);
         let plan = planner::plan_updates(&s, |_| true);
         let text = render_plan(&plan, &s, &plain());
         assert!(text.starts_with("paclens · 1 package will update across 1 source"));
-        // flatpak-user only → no sudo note.
+        // A user-scope flatpak step only → no sudo note.
         assert!(!text.contains("requires sudo"));
     }
 
@@ -367,7 +363,7 @@ mod tests {
             "org.gnome.Calculator",
             "49.2",
             "",
-            SourceId::flatpak_user(),
+            SourceId::flatpak(),
         )]);
         let plan = planner::plan_updates(&s, |_| true);
         let text = render_plan(&plan, &s, &plain());
@@ -406,7 +402,19 @@ mod tests {
     }
 
     fn step(source: SourceId, targets: usize, status: StepStatus) -> StepReport {
+        labelled_step(source.to_string(), source, targets, status)
+    }
+
+    /// A step whose display name is not just its source id — flatpak's two
+    /// installations are two steps of one source.
+    fn labelled_step(
+        label: String,
+        source: SourceId,
+        targets: usize,
+        status: StepStatus,
+    ) -> StepReport {
         StepReport {
+            label,
             source_id: source,
             targets,
             status,
@@ -423,9 +431,15 @@ mod tests {
                     reason: "execution arrives in v0.1".to_string(),
                 },
             ),
-            step(SourceId::flatpak_user(), 2, StepStatus::Succeeded),
-            step(
-                SourceId::flatpak_system(),
+            labelled_step(
+                "flatpak · user".to_string(),
+                SourceId::flatpak(),
+                2,
+                StepStatus::Succeeded,
+            ),
+            labelled_step(
+                "flatpak · system".to_string(),
+                SourceId::flatpak(),
                 1,
                 StepStatus::Failed {
                     detail: "exit 1".to_string(),
@@ -438,17 +452,28 @@ mod tests {
             text.contains("2 sources ran · 1 succeeded · 1 failed"),
             "headline missing:\n{text}"
         );
+        // One source, two installations: the rows must be told apart, or a
+        // green flatpak and a red flatpak say nothing about which half failed.
+        let row = |needle: &str| {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle} row in:\n{text}"))
+                .to_string()
+        };
+        let ok = row("flatpak · user");
         assert!(
-            text.contains("✓ flatpak-user    2 flatpaks updated"),
-            "success line missing:\n{text}"
+            ok.contains('✓') && ok.contains("2 flatpaks updated"),
+            "{ok}"
         );
+        let failed = row("flatpak · system");
         assert!(
-            text.contains("✗ flatpak-system  failed (exit 1)"),
-            "failure line missing:\n{text}"
+            failed.contains('✗') && failed.contains("failed (exit 1)"),
+            "{failed}"
         );
+        let skipped = row("pacman");
         assert!(
-            text.contains("pacman          skipped — execution arrives in v0.1"),
-            "skip line missing:\n{text}"
+            skipped.contains("skipped — execution arrives in v0.1"),
+            "{skipped}"
         );
         assert!(
             text.contains("log: /tmp/paclens/2026-06-12.log"),
@@ -459,11 +484,7 @@ mod tests {
 
     #[test]
     fn all_green_report_has_no_failed_segment() {
-        let r = report(vec![step(
-            SourceId::flatpak_user(),
-            1,
-            StepStatus::Succeeded,
-        )]);
+        let r = report(vec![step(SourceId::flatpak(), 1, StepStatus::Succeeded)]);
         let text = render_report(&r, &plain());
         assert!(
             text.contains("1 source ran · 1 succeeded"),
@@ -476,9 +497,9 @@ mod tests {
     #[test]
     fn ascii_report_uses_the_ascii_marks() {
         let r = report(vec![
-            step(SourceId::flatpak_user(), 2, StepStatus::Succeeded),
+            step(SourceId::flatpak(), 2, StepStatus::Succeeded),
             step(
-                SourceId::flatpak_system(),
+                SourceId::flatpak(),
                 1,
                 StepStatus::Failed {
                     detail: "exit 1".to_string(),
@@ -486,8 +507,8 @@ mod tests {
             ),
         ]);
         let text = render_report(&r, &ascii());
-        assert!(text.contains("x flatpak-user"), "{text}");
-        assert!(text.contains("! flatpak-system"), "{text}");
+        assert!(text.contains("x flatpak"), "{text}");
+        assert!(text.contains("! flatpak"), "{text}");
         assert!(!text.contains('✓'));
         assert!(!text.contains('✗'));
     }

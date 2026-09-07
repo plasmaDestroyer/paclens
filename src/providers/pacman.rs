@@ -178,6 +178,8 @@ fn parse_record(lines: &[&str]) -> Option<Package> {
         .filter(|d| !d.is_empty() && d != "None");
 
     Some(Package {
+        // pacman has no scopes; the field belongs to flatpak.
+        scope: None,
         name,
         version,
         source_id: SourceId::pacman(),

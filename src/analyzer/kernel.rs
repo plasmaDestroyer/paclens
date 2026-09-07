@@ -184,6 +184,7 @@ mod tests {
 
     fn kernel_pkg(name: &str, version: &str) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: version.to_string(),
             source_id: SourceId::pacman(),

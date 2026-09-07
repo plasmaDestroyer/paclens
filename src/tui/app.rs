@@ -1075,7 +1075,7 @@ impl App {
     pub fn pkg_source_is_flatpak(&self) -> bool {
         self.pkg_source
             .as_ref()
-            .is_some_and(|s| s.as_str().starts_with("flatpak"))
+            .is_some_and(|s| s == &SourceId::flatpak())
     }
     /// What the current filter matched on, best field first, with a count
     /// each. A row that hit on its description says nothing on its own — the
@@ -1135,6 +1135,17 @@ impl App {
     /// apps scan with an Unknown reason — they group as "apps", not
     /// "unknown" (that label is a pacman data gap).
     fn reason_group(p: &Package) -> &'static str {
+        // Flatpak records no install reason, so the group that would say
+        // "unknown" says something true instead: which installation it is in
+        // (design §13, 2026-09-07 — flatpak is one source, two installations).
+        if let Some(scope) = p.scope {
+            return match (scope, p.runtime) {
+                (crate::model::FlatpakScope::User, false) => "user apps",
+                (crate::model::FlatpakScope::User, true) => "user runtimes",
+                (crate::model::FlatpakScope::System, false) => "system apps",
+                (crate::model::FlatpakScope::System, true) => "system runtimes",
+            };
+        }
         if p.runtime {
             "runtimes"
         } else {
@@ -1213,7 +1224,17 @@ impl App {
             }
             PkgSort::Reason => {
                 let mut out = Vec::new();
-                for group in ["explicit", "dependencies", "apps", "runtimes", "unknown"] {
+                for group in [
+                    "explicit",
+                    "dependencies",
+                    "user apps",
+                    "user runtimes",
+                    "system apps",
+                    "system runtimes",
+                    "apps",
+                    "runtimes",
+                    "unknown",
+                ] {
                     let members: Vec<&Package> = pkgs
                         .iter()
                         .copied()
@@ -1475,14 +1496,15 @@ fn default_toggles(scan: &ScanResult) -> HashMap<SourceId, bool> {
 mod tests {
     use super::*;
     use crate::model::{
-        CacheSizes, FlatpakScope, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, Source,
-        SourceId, SourceKind,
+        CacheSizes, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, Source, SourceId,
+        SourceKind,
     };
     use crate::tui::theme::Theme;
     use chrono::Utc;
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: source,
@@ -1519,19 +1541,18 @@ mod tests {
                 accurate_updates: true,
             },
             Source {
-                id: SourceId::flatpak_user(),
-                kind: SourceKind::Flatpak {
-                    scope: FlatpakScope::User,
-                },
+                id: SourceId::flatpak(),
+                kind: SourceKind::Flatpak,
                 available: true,
                 last_scanned: None,
                 accurate_updates: true,
             },
+            // Third row: a source that is configured but cannot run — no
+            // helper on PATH. It used to be flatpak-system, back when a
+            // scope was a source of its own.
             Source {
-                id: SourceId::flatpak_system(),
-                kind: SourceKind::Flatpak {
-                    scope: FlatpakScope::System,
-                },
+                id: SourceId::aur(),
+                kind: SourceKind::Aur,
                 available: false,
                 last_scanned: None,
                 accurate_updates: true,
@@ -1547,7 +1568,7 @@ mod tests {
             packages: vec![
                 pkg("a", SourceId::pacman()),
                 pkg("b", SourceId::pacman()),
-                pkg("org.x.App", SourceId::flatpak_user()),
+                pkg("org.x.App", SourceId::flatpak()),
             ],
             updates: vec![upd("a", SourceId::pacman())],
             cache_sizes: CacheSizes::default(),
@@ -1584,7 +1605,7 @@ mod tests {
         assert_eq!(rows[0].id, "pacman");
         assert_eq!(rows[0].installed, 2);
         assert_eq!(rows[0].updates, 1);
-        assert!(rows[2].id == "flatpak-system" && !rows[2].available);
+        assert!(rows[2].id == "aur" && !rows[2].available);
     }
 
     #[test]
@@ -1602,8 +1623,8 @@ mod tests {
     // --- dashboard update toggles ---
     #[test]
     fn source_rows_carry_the_toggle_state() {
-        // pacman has the one update → toggled on; flatpak-user is clean and
-        // flatpak-system unavailable → nothing to toggle (None).
+        // pacman has the one update → toggled on; flatpak is clean and
+        // aur is unavailable → nothing to toggle (None).
         let rows = app().rows();
         assert_eq!(rows[0].enabled, Some(true));
         assert_eq!(rows[1].enabled, None);
@@ -1625,7 +1646,7 @@ mod tests {
         // Dashboard cursor row 0 = pacman (the source with updates).
         app.toggle_selected();
         assert!(!app.is_enabled(&SourceId::pacman()));
-        assert!(app.update_plan().is_empty()); // flatpak-user has no updates
+        assert!(app.update_plan().is_empty()); // flatpak has no updates
         app.toggle_selected();
         assert!(app.is_enabled(&SourceId::pacman()));
         assert_eq!(app.update_plan().source_count(), 1);
@@ -1634,24 +1655,18 @@ mod tests {
     #[test]
     fn toggling_a_clean_source_flashes_instead() {
         let mut app = app();
-        app.on_next(); // row 1 = flatpak-user, no updates
+        app.on_next(); // row 1 = flatpak, no updates
         app.toggle_selected();
-        assert!(
-            app.is_enabled(&SourceId::flatpak_user()),
-            "toggle must not flip"
-        );
+        assert!(app.is_enabled(&SourceId::flatpak()), "toggle must not flip");
         let flash = app.flash().expect("explanatory flash");
-        assert!(
-            flash.contains("flatpak-user has nothing to update"),
-            "{flash}"
-        );
+        assert!(flash.contains("flatpak has nothing to update"), "{flash}");
     }
 
     #[test]
     fn updates_for_filters_by_source() {
         let app = app();
         assert_eq!(app.updates_for(&SourceId::pacman()).len(), 1);
-        assert_eq!(app.updates_for(&SourceId::flatpak_user()).len(), 0);
+        assert_eq!(app.updates_for(&SourceId::flatpak()).len(), 0);
     }
 
     #[test]
@@ -1692,7 +1707,8 @@ mod tests {
         use crate::executor::{StepReport, StepStatus};
         ExecutionReport {
             steps: vec![StepReport {
-                source_id: SourceId::flatpak_user(),
+                label: "flatpak".to_string(),
+                source_id: SourceId::flatpak(),
                 targets: 1,
                 status: StepStatus::Succeeded,
             }],
@@ -1727,6 +1743,7 @@ mod tests {
         let report = ExecutionReport {
             steps: vec![
                 StepReport {
+                    label: "pacman".to_string(),
                     source_id: SourceId::pacman(),
                     targets: 3,
                     status: StepStatus::Failed {
@@ -1734,7 +1751,8 @@ mod tests {
                     },
                 },
                 StepReport {
-                    source_id: SourceId::flatpak_user(),
+                    label: "flatpak".to_string(),
+                    source_id: SourceId::flatpak(),
                     targets: 1,
                     status: StepStatus::Succeeded,
                 },
@@ -1750,11 +1768,11 @@ mod tests {
     #[test]
     fn enter_on_a_dashboard_row_opens_that_sources_packages() {
         let mut app = app();
-        app.on_next(); // select flatpak-user
+        app.on_next(); // select flatpak
         app.open_packages();
         assert_eq!(app.screen(), Screen::Packages);
         assert_eq!(app.input_mode(), InputMode::Packages);
-        assert_eq!(app.pkg_source(), Some(&SourceId::flatpak_user()));
+        assert_eq!(app.pkg_source(), Some(&SourceId::flatpak()));
         let names: Vec<&str> = app
             .visible_packages()
             .iter()
@@ -1799,7 +1817,7 @@ mod tests {
         assert!(!native.pkg_source_is_flatpak());
 
         let mut flat = app();
-        flat.on_next(); // flatpak-user
+        flat.on_next(); // flatpak
         flat.open_packages();
         assert!(flat.pkg_source_is_flatpak());
     }
@@ -1828,11 +1846,11 @@ mod tests {
         let mut s = scan_with_sources(three_sources());
         let mut ff_native = pkg("firefox", SourceId::pacman());
         ff_native.install_reason = InstallReason::Explicit;
-        let mut ff_flat = pkg("org.mozilla.firefox", SourceId::flatpak_user());
+        let mut ff_flat = pkg("org.mozilla.firefox", SourceId::flatpak());
         ff_flat.description = Some("Firefox".to_string());
         let mut gimp_native = pkg("gimp", SourceId::pacman());
         gimp_native.install_reason = InstallReason::Explicit;
-        let mut gimp_flat = pkg("org.gimp.GIMP", SourceId::flatpak_user());
+        let mut gimp_flat = pkg("org.gimp.GIMP", SourceId::flatpak());
         gimp_flat.description = Some("GIMP".to_string());
         s.packages = vec![ff_native, ff_flat, gimp_native, gimp_flat];
         s
@@ -1910,7 +1928,8 @@ mod tests {
         use crate::executor::{StepReport, StepStatus};
         ExecutionReport {
             steps: vec![StepReport {
-                source_id: SourceId::flatpak_user(),
+                label: "flatpak".to_string(),
+                source_id: SourceId::flatpak(),
                 targets: 1,
                 status: StepStatus::Failed {
                     detail: "exit 1".to_string(),
@@ -2058,12 +2077,12 @@ mod tests {
         user.install_reason = InstallReason::Explicit;
         user.depends_on = vec!["useddep".to_string()];
         // one unused runtime with a size, one used by an app.
-        let mut spare_rt = pkg("org.kde.Platform", SourceId::flatpak_user());
+        let mut spare_rt = pkg("org.kde.Platform", SourceId::flatpak());
         spare_rt.runtime = true;
         spare_rt.size_bytes = Some(457_000_000);
-        let mut used_rt = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        let mut used_rt = pkg("org.gnome.Platform", SourceId::flatpak());
         used_rt.runtime = true;
-        let mut fp_app = pkg("org.x.App", SourceId::flatpak_user());
+        let mut fp_app = pkg("org.x.App", SourceId::flatpak());
         fp_app.depends_on = vec!["org.gnome.Platform".to_string()];
         s.packages = vec![o1, o2, used, user, spare_rt, used_rt, fp_app];
         s
@@ -2117,7 +2136,7 @@ mod tests {
         let mut s = scan_with_sources(three_sources());
         let mut native = pkg("celluloid", SourceId::pacman());
         native.install_reason = InstallReason::Explicit;
-        let fp = pkg("io.github.x.celluloid", SourceId::flatpak_user());
+        let fp = pkg("io.github.x.celluloid", SourceId::flatpak());
         s.packages = vec![native, fp];
         let all = App::new(s.clone(), Theme::none(), AppOptions::test());
         assert_eq!(all.overlap_count(), 1);
@@ -2219,11 +2238,11 @@ mod tests {
     #[test]
     fn reason_sort_labels_flatpak_apps_and_runtimes() {
         let mut s = scan_with_sources(three_sources());
-        let mut rt = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        let mut rt = pkg("org.gnome.Platform", SourceId::flatpak());
         rt.runtime = true;
-        s.packages = vec![pkg("org.x.App", SourceId::flatpak_user()), rt];
+        s.packages = vec![pkg("org.x.App", SourceId::flatpak()), rt];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
-        app.on_next(); // flatpak-user
+        app.on_next(); // flatpak
         app.open_packages();
         app.cycle_sort(); // size → updates
         app.cycle_sort(); // updates → reason

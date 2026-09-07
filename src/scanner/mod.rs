@@ -361,30 +361,16 @@ fn assemble(
         });
     }
     if config.sources.flatpak {
-        let last_scanned = scan_flatpak.then_some(now);
-        // Flatpak spans two scopes; surface each as its own source per config.
-        if config.scan.flatpak_include_user {
-            sources.push(Source {
-                id: SourceId::flatpak_user(),
-                kind: SourceKind::Flatpak {
-                    scope: FlatpakScope::User,
-                },
-                available: flatpak_available,
-                last_scanned,
-                accurate_updates: true,
-            });
-        }
-        if config.scan.flatpak_include_system {
-            sources.push(Source {
-                id: SourceId::flatpak_system(),
-                kind: SourceKind::Flatpak {
-                    scope: FlatpakScope::System,
-                },
-                available: flatpak_available,
-                last_scanned,
-                accurate_updates: true,
-            });
-        }
+        // One tool keeps both installations up to date, so flatpak is one
+        // source; the scope rides on each package (design §13, 2026-09-07).
+        // The include knobs now filter packages rather than hide a source row.
+        sources.push(Source {
+            id: SourceId::flatpak(),
+            kind: SourceKind::Flatpak,
+            available: flatpak_available,
+            last_scanned: scan_flatpak.then_some(now),
+            accurate_updates: true,
+        });
     }
 
     // Foreign packages keep their full pacman -Qi metadata but belong to the
@@ -402,8 +388,29 @@ fn assemble(
     }
     updates.append(&mut aur_updates);
 
+    // The include knobs used to decide which flatpak *sources* existed. With
+    // one flatpak source they filter packages instead — same knob, same
+    // meaning ("show me user installs"), one row on the dashboard.
+    let keep_scope = |scope: Option<FlatpakScope>| match scope {
+        Some(FlatpakScope::User) => config.scan.flatpak_include_user,
+        Some(FlatpakScope::System) => config.scan.flatpak_include_system,
+        // A flatpak whose installation column was unreadable is kept: hiding
+        // an installed package is a worse answer than showing one whose scope
+        // is unknown.
+        None => true,
+    };
+    let flatpak_packages: Vec<Package> = flatpak_packages
+        .into_iter()
+        .filter(|p| keep_scope(p.scope))
+        .collect();
     packages.extend(flatpak_packages);
     reconcile_flatpak_updates(&mut flatpak_updates, &packages);
+    // An update for a package that was filtered out has nothing to update.
+    flatpak_updates.retain(|u| {
+        packages
+            .iter()
+            .any(|p| p.name == u.package_name && p.source_id == u.source_id)
+    });
     updates.append(&mut flatpak_updates);
 
     let mut scan = ScanResult {
@@ -590,22 +597,22 @@ fn collect_provider<P: Provider>(provider: &P, label: &str) -> (Vec<Package>, Ve
     (packages, updates)
 }
 
-/// Fill in scope + current version for flatpak updates by matching app ids
-/// against the installed list. The `remote-ls` command alone provides neither.
+/// Fill in the current version for flatpak updates by matching app ids
+/// against the installed list — `remote-ls` reports only what is available.
+///
+/// It used to fix up the source id too, when a scoped id had to be guessed
+/// back from the installed package. There is one flatpak id now, so the
+/// provider already sets it; the scope lives on the installed package and the
+/// planner reads it there.
 fn reconcile_flatpak_updates(updates: &mut [PendingUpdate], installed: &[Package]) {
     for update in updates.iter_mut() {
         if let Some(pkg) = installed
             .iter()
-            .find(|p| p.name == update.package_name && is_flatpak(&p.source_id))
+            .find(|p| p.name == update.package_name && p.source_id == SourceId::flatpak())
         {
-            update.source_id = pkg.source_id.clone();
             update.current_version = pkg.version.clone();
         }
     }
-}
-
-fn is_flatpak(id: &SourceId) -> bool {
-    id == &SourceId::flatpak_user() || id == &SourceId::flatpak_system()
 }
 
 #[cfg(test)]
@@ -969,8 +976,9 @@ mod tests {
             HC::None,
             None,
         );
-        // pacman + aur + flatpak-user + flatpak-system
-        assert_eq!(scan.sources.len(), 4);
+        // pacman + aur + flatpak (one source: one tool updates both
+        // installations, design §13)
+        assert_eq!(scan.sources.len(), 3);
         // Everything available except aur (no paru in this fixture).
         assert!(
             scan.sources
@@ -1044,19 +1052,36 @@ mod tests {
     }
 
     #[test]
-    fn assemble_omits_flatpak_scopes_when_excluded() {
+    fn excluding_a_flatpak_scope_hides_its_packages_not_the_source() {
+        // The include knobs used to add or drop a source row. Flatpak is one
+        // source now, so they filter packages — same knob, same meaning.
         let mut config = Config::default();
         config.scan.flatpak_include_system = false;
         let scan = assemble(&full_runner(), &config, true, true, true, HC::None, None);
         assert!(
-            scan.sources
-                .iter()
-                .all(|s| s.id != SourceId::flatpak_system())
+            scan.sources.iter().any(|s| s.id == SourceId::flatpak()),
+            "the source stays: flatpak is still installed and still updates"
         );
+        let flatpaks: Vec<&Package> = scan
+            .packages
+            .iter()
+            .filter(|p| p.source_id == SourceId::flatpak())
+            .collect();
+        assert!(!flatpaks.is_empty(), "user-scope apps still list");
         assert!(
-            scan.sources
+            flatpaks
                 .iter()
-                .any(|s| s.id == SourceId::flatpak_user())
+                .all(|p| p.scope != Some(FlatpakScope::System)),
+            "system-scope apps are excluded"
+        );
+        // An update for a hidden package would be an update the plan could
+        // never carry out.
+        assert!(
+            scan.updates
+                .iter()
+                .all(|u| u.source_id != SourceId::flatpak()
+                    || scan.packages.iter().any(|p| p.name == u.package_name)),
+            "no orphaned flatpak update survived the filter"
         );
     }
 
@@ -1225,6 +1250,7 @@ mod tests {
 
     fn flatpak_pkg(name: &str, version: &str, scope: SourceId) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: version.to_string(),
             source_id: scope,
@@ -1247,7 +1273,7 @@ mod tests {
         let installed = vec![flatpak_pkg(
             "org.mozilla.firefox",
             "128.0",
-            SourceId::flatpak_user(),
+            SourceId::flatpak(),
         )];
         let mut updates = vec![PendingUpdate {
             package_name: "org.mozilla.firefox".to_string(),
@@ -1256,7 +1282,7 @@ mod tests {
             source_id: SourceId::flatpak(),
         }];
         reconcile_flatpak_updates(&mut updates, &installed);
-        assert_eq!(updates[0].source_id, SourceId::flatpak_user());
+        assert_eq!(updates[0].source_id, SourceId::flatpak());
         assert_eq!(updates[0].current_version, "128.0");
     }
 

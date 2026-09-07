@@ -46,10 +46,12 @@ aur     = true
 
 [scan]
 
-# Include system-wide Flatpak installs.
+# Include system-wide Flatpak installs. Flatpak is one source (one tool keeps
+# both installations up to date), so this filters packages rather than hiding
+# a source row.
 flatpak_include_system = true
 
-# Include user-scope Flatpak installs.
+# Include user-scope Flatpak installs. Same again.
 flatpak_include_user = true
 
 # Timeout in seconds for any single provider command.

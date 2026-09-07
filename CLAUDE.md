@@ -33,7 +33,7 @@ without an explanation, no misleading numbers, and the rest).
 3. **Honest confidence.** Every inference carries a `Confirmed`, `Inferred`, or `Unknown` label. Never present inference as fact. Never promote a label — an `Unknown` edge in a path caps the verdict at `Unknown`.
 4. **Pipeline:** scan → analyze → plan → confirm → execute. No shortcuts, no "fix all" button.
 5. **One source of truth:** the scan cache. The TUI, `why`, and the overlap detector all read from it. Nothing re-derives what a scan already computed.
-6. **Source-specific logic.** pacman and Flatpak differ in every respect. No generic cross-source shortcuts. *(Under active review — see "What's next".)*
+6. **Source-specific logic, asked as questions.** pacman and Flatpak differ in every respect. What generalizes is the *question* a screen asks a source, never a generic answer — and **a source is the tool responsible for keeping its packages up to date**, so nothing about its behaviour is read out of its name. Settled 2026-09-07 (design §13, #10).
 
 `design.md` also carries **the test** that decides whether something becomes a
 rule at all: *can you state the harm?* If yes, it is a rule and it holds. If the
@@ -132,7 +132,7 @@ Where #75 and a tracking issue disagree, #75 wins on order and the tracking issu
 
 **Broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
 
-Before any of them: **the provider contract needs generalizing** for sources with no install reason, no dependency metadata and no orphan concept. This presses directly on principle 6 and on the "no extension points for deferred features" rule below — both were written when there were two sources. Settle it deliberately and record it in design §13 rather than drifting into it one provider at a time.
+Before any of them: **the provider contract is settled** (#10, design §13, 2026-09-07). A source is the tool that updates it, so ids are flat — flatpak's two installations are one source and the scope rides on the package. Privilege is declared by each step, never inferred from an id, and defaults to unprivileged. A screen asks a source only what a screen already branches on: dependency graph, install reason, orphans, removal. `why` degrades rather than refusing.
 
 The payoff that keeps this from becoming "topgrade with a TUI": overlap detection extended across sources. The same tool installed via pacman *and* cargo is the same duplicate problem as native-vs-Flatpak, and `PATH` precedence decides which one you actually run.
 

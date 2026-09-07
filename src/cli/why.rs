@@ -366,7 +366,7 @@ mod tests {
     fn flatpak_app_report_says_self_contained_with_uninstall_hint() {
         let p = WhyDetail {
             package: "org.gnome.Calculator".to_string(),
-            source_id: SourceId::flatpak_user(),
+            source_id: SourceId::flatpak(),
             reason: InstallReason::Unknown,
             would_remove: vec!["org.gnome.Platform".to_string()],
             ..base()
@@ -377,7 +377,7 @@ mod tests {
             text.contains("flatpak uninstall org.gnome.Calculator"),
             "{text}"
         );
-        assert!(text.contains("flatpak-user"), "{text}");
+        assert!(text.contains("flatpak"), "{text}");
         assert!(text.contains("org.gnome.Platform"), "{text}");
         assert!(!text.contains("unknown"), "no unclear leak: {text}");
     }
@@ -386,7 +386,7 @@ mod tests {
     fn flatpak_runtime_report_shows_inferred_dependents() {
         let p = WhyDetail {
             package: "org.gnome.Platform".to_string(),
-            source_id: SourceId::flatpak_user(),
+            source_id: SourceId::flatpak(),
             runtime: true,
             reason: InstallReason::Unknown,
             required_by: vec!["org.gnome.Calculator".to_string()],

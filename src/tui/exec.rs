@@ -134,12 +134,13 @@ fn run_session(
     for step in &plan.steps {
         let targets = step.targets.len();
         if let Some(reason) = skip_reason(step, tool) {
-            log.line(&format!("{}: skipped — {reason}", step.source_id));
+            log.line(&format!("{}: skipped — {reason}", step.label));
             let _ = events.send(ExecEvent::Bytes(
-                format!("\x1b[2m:: {} skipped — {reason}\x1b[0m\r\n", step.source_id).into_bytes(),
+                format!("\x1b[2m:: {} skipped — {reason}\x1b[0m\r\n", step.label).into_bytes(),
             ));
             steps.push(StepReport {
                 source_id: step.source_id.clone(),
+                label: step.label.clone(),
                 targets,
                 status: StepStatus::Skipped {
                     reason: reason.to_string(),
@@ -152,7 +153,7 @@ fn run_session(
         let cmd = argv.join(" ");
         log.line(&format!(
             "{}: running update ({})",
-            step.source_id,
+            step.label,
             target_noun(&step.source_id, targets)
         ));
         tracing::info!(source = %step.source_id, command = %cmd, "executing update step (pty)");
@@ -162,15 +163,16 @@ fn run_session(
 
         let status = run_step(&argv, size, &events, &input);
         match &status {
-            StepStatus::Succeeded => log.line(&format!("{}: completed, exit 0", step.source_id)),
+            StepStatus::Succeeded => log.line(&format!("{}: completed, exit 0", step.label)),
             StepStatus::Failed { detail } => {
-                log.line(&format!("{}: failed, {detail}", step.source_id));
+                log.line(&format!("{}: failed, {detail}", step.label));
                 tracing::error!(source = %step.source_id, detail, "update step failed");
             }
             StepStatus::Skipped { .. } => {}
         }
         steps.push(StepReport {
             source_id: step.source_id.clone(),
+            label: step.label.clone(),
             targets,
             status,
         });
@@ -320,7 +322,8 @@ mod tests {
         ActionPlan {
             created_at: Utc::now(),
             steps: vec![ActionStep {
-                source_id: SourceId::flatpak_user(),
+                label: "flatpak".to_string(),
+                source_id: SourceId::flatpak(),
                 kind: ActionKind::Update,
                 targets: vec!["x".to_string()],
                 command: vec!["sh".to_string(), "-c".to_string(), script.to_string()],

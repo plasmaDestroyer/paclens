@@ -19,14 +19,10 @@ const UPDATE_COLUMNS: &str = "--columns=application,version";
 /// User scope needs no sudo; system scope does (added by the executor in v0.0.6).
 /// Pure — building the command never runs anything.
 pub fn update_command(scope: FlatpakScope) -> Vec<String> {
-    let scope_flag = match scope {
-        FlatpakScope::User => "--user",
-        FlatpakScope::System => "--system",
-    };
     vec![
         FLATPAK_BIN.to_string(),
         "update".to_string(),
-        scope_flag.to_string(),
+        scope.flag().to_string(),
         "--noninteractive".to_string(),
     ]
 }
@@ -104,11 +100,11 @@ impl FlatpakProvider<'_> {
     }
 }
 
-/// Map the `installation` column to a scoped source id.
-fn scope_source_id(installation: &str) -> SourceId {
+/// Map the `installation` column to a scope.
+fn parse_scope(installation: &str) -> FlatpakScope {
     match installation.trim() {
-        "user" => SourceId::flatpak_user(),
-        _ => SourceId::flatpak_system(),
+        "user" => FlatpakScope::User,
+        _ => FlatpakScope::System,
     }
 }
 
@@ -146,7 +142,7 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
             Some(Package {
                 name: app_id.to_string(),
                 version: version.to_string(),
-                source_id: scope_source_id(installation),
+                source_id: SourceId::flatpak(),
                 install_reason: InstallReason::Unknown,
                 size_bytes,
                 description: (!display_name.is_empty()).then(|| display_name.to_string()),
@@ -155,6 +151,7 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
                 optional_deps: Vec::new(),
                 provides: Vec::new(),
                 runtime,
+                scope: Some(parse_scope(installation)),
                 // Flatpak has no repo/AUR split to be wrong about (#77).
                 foreign: false,
                 signed: false,
@@ -313,11 +310,13 @@ mod tests {
         assert_eq!(pkgs.len(), 2);
         // scan_installed name-sorts, so obsidian comes first.
         assert_eq!(pkgs[0].name, "md.obsidian.Obsidian");
-        assert_eq!(pkgs[0].source_id, SourceId::flatpak_user());
+        assert_eq!(pkgs[0].source_id, SourceId::flatpak());
+        assert_eq!(pkgs[0].scope, Some(FlatpakScope::User));
         assert_eq!(pkgs[1].name, "org.mozilla.firefox");
         assert_eq!(pkgs[1].version, "128.0");
         assert_eq!(pkgs[1].description.as_deref(), Some("Firefox"));
-        assert_eq!(pkgs[1].source_id, SourceId::flatpak_system());
+        assert_eq!(pkgs[1].source_id, SourceId::flatpak());
+        assert_eq!(pkgs[1].scope, Some(FlatpakScope::System));
     }
 
     #[test]
@@ -351,12 +350,12 @@ mod tests {
     }
 
     #[test]
-    fn scope_source_id_maps_installation_column() {
-        assert_eq!(scope_source_id("user"), SourceId::flatpak_user());
-        assert_eq!(scope_source_id("system"), SourceId::flatpak_system());
+    fn parse_scope_maps_installation_column() {
+        assert_eq!(parse_scope("user"), FlatpakScope::User);
+        assert_eq!(parse_scope("system"), FlatpakScope::System);
         // Anything unexpected defaults to system (conservative).
-        assert_eq!(scope_source_id("default"), SourceId::flatpak_system());
-        assert_eq!(scope_source_id(" user "), SourceId::flatpak_user());
+        assert_eq!(parse_scope("default"), FlatpakScope::System);
+        assert_eq!(parse_scope(" user "), FlatpakScope::User);
     }
 
     #[test]

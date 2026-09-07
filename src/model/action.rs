@@ -28,6 +28,13 @@ pub struct ActionStep {
     pub targets: Vec<String>,
     /// The exact argv to run (without any privilege prefix).
     pub command: Vec<String>,
+    /// What to call this step on screen and in the log.
+    ///
+    /// Usually the source id. It is not always: one source can produce more
+    /// than one step — flatpak's two installations are two commands with
+    /// different privilege — and two rows both reading `flatpak`, one green
+    /// and one red, would be ambiguous about which half failed.
+    pub label: String,
     /// Does this step need a privilege tool in front of its command?
     ///
     /// **Declared by whoever builds the step, never inferred from the source
@@ -56,9 +63,17 @@ impl ActionPlan {
         self.steps.iter().map(|s| s.targets.len()).sum()
     }
 
-    /// Number of sources (steps) in the plan.
+    /// Number of distinct sources in the plan.
+    ///
+    /// Not the step count: flatpak is one source whose two installations are
+    /// two steps with different privilege (design §13, 2026-09-07), and a
+    /// plan that said "2 sources" for one tool would be counting commands and
+    /// calling them sources.
     pub fn source_count(&self) -> usize {
-        self.steps.len()
+        let mut ids: Vec<&SourceId> = self.steps.iter().map(|s| &s.source_id).collect();
+        ids.sort_by_key(|id| id.as_str());
+        ids.dedup();
+        ids.len()
     }
 
     pub fn is_empty(&self) -> bool {

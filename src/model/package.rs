@@ -31,6 +31,11 @@ pub struct Package {
     /// Always false for pacman packages. Spec §4.3 deviation (design §13).
     #[serde(default)]
     pub runtime: bool,
+    /// Which flatpak installation this lives in — `None` for anything that is
+    /// not a flatpak. Scope rides on the package because flatpak is one
+    /// source: one tool updates both installations (design §13, 2026-09-07).
+    #[serde(default)]
+    pub scope: Option<super::FlatpakScope>,
     /// In no configured sync database (`pacman -Qm`). Not the same as "from
     /// the AUR" — a repo that is removed leaves its packages foreign (#77).
     #[serde(default)]

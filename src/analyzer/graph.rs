@@ -239,6 +239,7 @@ mod tests {
 
     fn pkg(name: &str, reason: InstallReason, depends: &[&str], provides: &[&str]) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: SourceId::pacman(),
@@ -266,9 +267,9 @@ mod tests {
             &["org.gnome.Platform"],
             &[],
         );
-        app.source_id = SourceId::flatpak_user();
+        app.source_id = SourceId::flatpak();
         let mut runtime = pkg("org.gnome.Platform", InstallReason::Unknown, &[], &[]);
-        runtime.source_id = SourceId::flatpak_user();
+        runtime.source_id = SourceId::flatpak();
         runtime.runtime = true;
         ScanResult {
             schema_version: SCHEMA_VERSION,
@@ -412,7 +413,7 @@ mod tests {
     fn unused_runtimes_are_runtime_flagged_with_no_users() {
         let mut s = scan();
         let mut spare = pkg("org.kde.Platform", InstallReason::Unknown, &[], &[]);
-        spare.source_id = SourceId::flatpak_user();
+        spare.source_id = SourceId::flatpak();
         spare.runtime = true;
         s.packages.push(spare);
         let g = DepGraph::build(&s);

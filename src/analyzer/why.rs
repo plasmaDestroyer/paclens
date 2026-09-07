@@ -245,6 +245,7 @@ mod tests {
 
     fn pkg(name: &str, reason: InstallReason, depends: &[&str], provides: &[&str]) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: SourceId::pacman(),
@@ -273,12 +274,12 @@ mod tests {
             &["org.gnome.Platform"],
             &[],
         );
-        app.source_id = SourceId::flatpak_user();
+        app.source_id = SourceId::flatpak();
         let mut runtime = pkg("org.gnome.Platform", InstallReason::Unknown, &[], &[]);
-        runtime.source_id = SourceId::flatpak_user();
+        runtime.source_id = SourceId::flatpak();
         runtime.runtime = true;
         let mut unused_runtime = pkg("org.kde.Platform", InstallReason::Unknown, &[], &[]);
-        unused_runtime.source_id = SourceId::flatpak_user();
+        unused_runtime.source_id = SourceId::flatpak();
         unused_runtime.runtime = true;
         ScanResult {
             schema_version: SCHEMA_VERSION,
@@ -380,7 +381,7 @@ mod tests {
     #[test]
     fn flatpak_app_is_a_confirmed_safe_leaf_that_orphans_its_runtime() {
         let p = detail("org.gnome.Calculator");
-        assert_eq!(p.source_id, SourceId::flatpak_user());
+        assert_eq!(p.source_id, SourceId::flatpak());
         assert!(!p.runtime);
         assert!(p.required_by.is_empty());
         assert_eq!(p.verdict, Verdict::LikelySafe);

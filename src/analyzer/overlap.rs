@@ -103,7 +103,7 @@ pub fn detect_overlaps(
         .packages
         .iter()
         // Runtimes are never overlap candidates (spec 9.1 + 9.3).
-        .filter(|p| p.source_id.as_str().starts_with("flatpak") && !p.runtime)
+        .filter(|p| p.source_id == crate::model::SourceId::flatpak() && !p.runtime)
         .filter(|app| !ignored(&app.name))
         .filter_map(|app| {
             let (pacman_pkg, method, confidence) = match_app(app, &native, &map)?;
@@ -207,6 +207,7 @@ fn candidate(
 
 fn package_ref(p: &Package) -> PackageRef {
     PackageRef {
+        scope: p.scope,
         name: p.name.clone(),
         version: p.version.clone(),
         source_id: p.source_id.clone(),
@@ -222,6 +223,7 @@ mod tests {
 
     fn pacman_pkg(name: &str, reason: InstallReason) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "128.0-1".to_string(),
             source_id: SourceId::pacman(),
@@ -241,9 +243,10 @@ mod tests {
 
     fn flatpak_app(id: &str, display: Option<&str>) -> Package {
         Package {
+            scope: None,
             name: id.to_string(),
             version: "128.0".to_string(),
-            source_id: SourceId::flatpak_user(),
+            source_id: SourceId::flatpak(),
             install_reason: InstallReason::Unknown,
             size_bytes: None,
             description: display.map(|d| d.to_string()),

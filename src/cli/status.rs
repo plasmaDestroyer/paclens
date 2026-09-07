@@ -42,7 +42,7 @@ pub fn run(
 }
 
 fn is_flatpak(id: &SourceId) -> bool {
-    id.as_str().starts_with("flatpak")
+    id == &SourceId::flatpak()
 }
 
 /// Build the whole status block. Pure (no IO) so the no-color rendering is
@@ -154,8 +154,7 @@ mod tests {
     use super::*;
     use crate::config::ColorTheme;
     use crate::model::{
-        CacheSizes, FlatpakScope, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, Source,
-        SourceKind,
+        CacheSizes, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, Source, SourceKind,
     };
     use chrono::Utc;
 
@@ -172,6 +171,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: source,
@@ -215,10 +215,8 @@ mod tests {
                     accurate_updates: true,
                 },
                 Source {
-                    id: SourceId::flatpak_user(),
-                    kind: SourceKind::Flatpak {
-                        scope: FlatpakScope::User,
-                    },
+                    id: SourceId::flatpak(),
+                    kind: SourceKind::Flatpak,
                     available: flatpak_ok,
                     last_scanned: None,
                     accurate_updates: true,

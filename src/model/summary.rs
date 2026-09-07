@@ -38,13 +38,13 @@ pub fn summarize(scan: &ScanResult, is_member: impl Fn(&SourceId) -> bool) -> So
 mod tests {
     use super::*;
     use crate::model::{
-        CacheSizes, FlatpakScope, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, Source,
-        SourceKind,
+        CacheSizes, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, Source, SourceKind,
     };
     use chrono::Utc;
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: source,
@@ -81,37 +81,24 @@ mod tests {
         }
     }
 
-    /// A scan with all three sources; flatpak-system is unavailable.
+    /// pacman and flatpak: two packages each, one update each.
     fn scan() -> ScanResult {
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
             sources: vec![
                 source(SourceId::pacman(), SourceKind::Pacman, true),
-                source(
-                    SourceId::flatpak_user(),
-                    SourceKind::Flatpak {
-                        scope: FlatpakScope::User,
-                    },
-                    true,
-                ),
-                source(
-                    SourceId::flatpak_system(),
-                    SourceKind::Flatpak {
-                        scope: FlatpakScope::System,
-                    },
-                    false,
-                ),
+                source(SourceId::flatpak(), SourceKind::Flatpak, true),
             ],
             packages: vec![
                 pkg("a", SourceId::pacman()),
                 pkg("b", SourceId::pacman()),
-                pkg("org.x.App", SourceId::flatpak_user()),
-                pkg("org.y.App", SourceId::flatpak_system()),
+                pkg("org.x.App", SourceId::flatpak()),
+                pkg("org.y.App", SourceId::flatpak()),
             ],
             updates: vec![
                 upd("a", SourceId::pacman()),
-                upd("org.x.App", SourceId::flatpak_user()),
+                upd("org.x.App", SourceId::flatpak()),
             ],
             cache_sizes: CacheSizes::default(),
             flatpak_profile_sizes: Default::default(),
@@ -126,12 +113,15 @@ mod tests {
     }
 
     #[test]
-    fn per_family_groups_both_flatpak_scopes() {
-        let flatpak = summarize(&scan(), |id| id.as_str().starts_with("flatpak"));
+    fn flatpak_counts_both_installations_as_one_source() {
+        // User and system are one source: one tool updates them, so one row
+        // and one pair of counts (design §13, 2026-09-07). This used to be a
+        // prefix match over two ids.
+        let flatpak = summarize(&scan(), |id| id == &SourceId::flatpak());
         assert_eq!(
             flatpak,
             SourceSummary {
-                available: true, // flatpak-user is available even though -system is not
+                available: true,
                 installed: 2,
                 updates: 1,
             }
@@ -150,22 +140,13 @@ mod tests {
                 updates: 1,
             }
         );
-        let user = summarize(&s, |id| id == &SourceId::flatpak_user());
+        let flatpak = summarize(&s, |id| id == &SourceId::flatpak());
         assert_eq!(
-            user,
+            flatpak,
             SourceSummary {
                 available: true,
-                installed: 1,
+                installed: 2,
                 updates: 1,
-            }
-        );
-        let system = summarize(&s, |id| id == &SourceId::flatpak_system());
-        assert_eq!(
-            system,
-            SourceSummary {
-                available: false,
-                installed: 1,
-                updates: 0,
             }
         );
     }

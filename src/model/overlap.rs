@@ -20,6 +20,10 @@ pub struct PackageRef {
     pub name: String,
     pub version: String,
     pub source_id: SourceId,
+    /// Which flatpak installation it lives in; `None` for anything else. The
+    /// removal command's scope flag reads this — flatpak is one source, so
+    /// the id cannot answer it (design §13, 2026-09-07).
+    pub scope: Option<super::FlatpakScope>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

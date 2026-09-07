@@ -144,7 +144,7 @@ fn create_dir_private(dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CacheSizes, FlatpakScope, Source, SourceId, SourceKind};
+    use crate::model::{CacheSizes, Source, SourceId, SourceKind};
 
     fn sample_scan(scanned_at: DateTime<Utc>, schema: u32) -> ScanResult {
         ScanResult {
@@ -159,10 +159,8 @@ mod tests {
                     accurate_updates: true,
                 },
                 Source {
-                    id: SourceId::flatpak_user(),
-                    kind: SourceKind::Flatpak {
-                        scope: FlatpakScope::User,
-                    },
+                    id: SourceId::flatpak(),
+                    kind: SourceKind::Flatpak,
                     available: true,
                     last_scanned: Some(scanned_at),
                     accurate_updates: true,

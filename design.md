@@ -479,7 +479,7 @@ Formal definition. Every piece of advisory output carries one of these labels.
 #### Input
 
 - all `Package` entries where `source_id` is pacman
-- all `Package` entries where `source_id` is flatpak-user or flatpak-system
+- all `Package` entries where `source_id` is flatpak (either installation)
 
 #### Matching pipeline
 
@@ -908,11 +908,11 @@ Keep `config.general.log_keep_count` most recent files (default: 10). Delete old
 
 ```
 [2026-05-20T14:32:11Z INFO] update session started
-[2026-05-20T14:32:11Z INFO] sources: [pacman, flatpak-user]
+[2026-05-20T14:32:11Z INFO] sources: [pacman, flatpak · user]
 [2026-05-20T14:32:11Z INFO] pacman: running update (19 packages)
 [2026-05-20T14:33:02Z INFO] pacman: completed, exit 0
-[2026-05-20T14:33:02Z INFO] flatpak-user: running update (3 apps)
-[2026-05-20T14:33:15Z INFO] flatpak-user: completed, exit 0
+[2026-05-20T14:33:02Z INFO] flatpak · user: running update (3 apps)
+[2026-05-20T14:33:15Z INFO] flatpak · user: completed, exit 0
 [2026-05-20T14:33:15Z INFO] update session complete: all sources succeeded
 ```
 

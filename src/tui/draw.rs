@@ -1814,7 +1814,7 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
             cells.push(Cell::from("KIND"));
         }
         cells.extend([
-            Cell::from("TYPE"),
+            Cell::from(if kind_col { "WHERE" } else { "TYPE" }),
             Cell::from(Line::from("SIZE").alignment(Alignment::Right)),
         ]);
         Row::new(cells)
@@ -1845,10 +1845,18 @@ fn render_package_table(frame: &mut Frame, area: Rect, app: &App, geo: &PkgGeome
             } else {
                 Span::styled(p.name.clone(), theme.primary)
             };
-            let reason = match p.install_reason {
-                crate::model::InstallReason::Explicit => Span::styled("explicit", theme.primary),
-                crate::model::InstallReason::Dependency => Span::styled("dependency", theme.dim),
-                crate::model::InstallReason::Unknown => Span::styled("—", theme.dim),
+            // Flatpak records no install reason, so TYPE would be a column
+            // of em dashes; it carries the installation instead — the thing
+            // that used to be a source of its own (design §13).
+            let reason = match (p.scope, p.install_reason) {
+                (Some(scope), _) => Span::styled(scope.label(), theme.primary),
+                (None, crate::model::InstallReason::Explicit) => {
+                    Span::styled("explicit", theme.primary)
+                }
+                (None, crate::model::InstallReason::Dependency) => {
+                    Span::styled("dependency", theme.dim)
+                }
+                (None, crate::model::InstallReason::Unknown) => Span::styled("—", theme.dim),
             };
             if narrow {
                 // Version over reason: at this width the question is what you
@@ -2014,6 +2022,12 @@ fn render_why_pane(frame: &mut Frame, area: Rect, app: &App, borders: Borders) {
                 .unwrap_or("no description".to_string()),
             theme.primary,
         )));
+        if let Some(scope) = p.scope {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:10}", "where"), theme.dim),
+                Span::styled(format!("{} installation", scope.label()), theme.primary),
+            ]));
+        }
         lines.push(Line::default());
     }
     lines.extend(why_pane_lines(
@@ -2237,8 +2251,8 @@ fn render_too_small(frame: &mut Frame, area: Rect, theme: &Theme) {
 mod tests {
     use super::*;
     use crate::model::{
-        CacheSizes, FlatpakScope, InstallReason, Package, PendingUpdate, SCHEMA_VERSION,
-        ScanResult, Source, SourceId, SourceKind,
+        CacheSizes, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, ScanResult, Source,
+        SourceId, SourceKind,
     };
     use crate::tui::app::{AppOptions, ExecKind};
     use crate::tui::theme::Theme;
@@ -2249,6 +2263,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            scope: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: source,
@@ -2288,19 +2303,16 @@ mod tests {
                     accurate_updates: true,
                 },
                 Source {
-                    id: SourceId::flatpak_user(),
-                    kind: SourceKind::Flatpak {
-                        scope: FlatpakScope::User,
-                    },
+                    id: SourceId::flatpak(),
+                    kind: SourceKind::Flatpak,
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
                 },
+                // A configured source that cannot run: no helper on PATH.
                 Source {
-                    id: SourceId::flatpak_system(),
-                    kind: SourceKind::Flatpak {
-                        scope: FlatpakScope::System,
-                    },
+                    id: SourceId::aur(),
+                    kind: SourceKind::Aur,
                     available: false,
                     last_scanned: None,
                     accurate_updates: true,
@@ -2517,7 +2529,7 @@ mod tests {
         let mut app = App::new(
             scan_with(vec![
                 upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
-                upd("org.x.App", "1.0", "1.1", SourceId::flatpak_user()),
+                upd("org.x.App", "1.0", "1.1", SourceId::flatpak()),
             ]),
             Theme::none(),
             AppOptions::test(),
@@ -2528,21 +2540,18 @@ mod tests {
         assert!(text.contains("linux"), "{text}");
         assert!(!text.contains("org.x.App"), "other source leaked:\n{text}");
 
-        // Row 1 = flatpak-user: swaps over.
+        // Row 1 = flatpak: swaps over.
         app.on_next();
         let text = render(&app, 96, 24);
-        assert!(
-            text.contains("pending updates · flatpak-user (1)"),
-            "{text}"
-        );
+        assert!(text.contains("pending updates · flatpak (1)"), "{text}");
         assert!(text.contains("org.x.App"), "{text}");
         assert!(!text.contains("linux"), "{text}");
 
-        // Row 2 = flatpak-system: nothing pending for it.
+        // Row 2 = aur: unavailable, nothing pending for it.
         app.on_next();
         let text = render(&app, 96, 24);
         assert!(
-            text.contains("flatpak-system is up to date"),
+            text.contains("aur is up to date"),
             "clean-source message missing:\n{text}"
         );
         assert!(!text.contains("org.x.App"), "{text}");
@@ -2703,7 +2712,7 @@ mod tests {
         // pacman has updates → toggled on; the clean/unavailable sources
         // have nothing to toggle and show a dash.
         assert!(text.contains("[x] pacman"), "toggle missing:\n{text}");
-        assert!(text.contains("-  flatpak-user"), "dash missing:\n{text}");
+        assert!(text.contains("-  flatpak"), "dash missing:\n{text}");
         assert!(text.contains("space toggle"), "footer missing:\n{text}");
         assert!(text.contains("enter update"), "{text}");
         assert!(text.contains("i packages"), "{text}");
@@ -2761,7 +2770,8 @@ mod tests {
     fn report() -> ExecutionReport {
         ExecutionReport {
             steps: vec![StepReport {
-                source_id: SourceId::flatpak_user(),
+                label: "flatpak".to_string(),
+                source_id: SourceId::flatpak(),
                 targets: 2,
                 status: StepStatus::Succeeded,
             }],
@@ -3273,16 +3283,60 @@ mod tests {
     }
 
     #[test]
+    fn a_flatpak_list_names_the_installation_each_app_is_in() {
+        // One flatpak source, two installations (design §13). The list is
+        // where they separate: TYPE would be a column of em dashes, since
+        // flatpak records no install reason.
+        let mut s = scan_with(Vec::new());
+        let mut user = pkg("org.gnome.Calculator", SourceId::flatpak());
+        user.scope = Some(crate::model::FlatpakScope::User);
+        user.description = Some("Calculator".to_string());
+        let mut system = pkg("org.gimp.GIMP", SourceId::flatpak());
+        system.scope = Some(crate::model::FlatpakScope::System);
+        system.description = Some("GIMP".to_string());
+        s.packages = vec![user, system];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.on_next(); // flatpak
+        app.open_packages();
+        let text = render(&app, 130, 18);
+        assert!(text.contains("WHERE"), "column header missing:\n{text}");
+        assert!(text.contains("user"), "{text}");
+        assert!(text.contains("system"), "{text}");
+        // And the pane names it for the row under the cursor.
+        assert!(text.contains("installation"), "pane line missing:\n{text}");
+    }
+
+    #[test]
+    fn the_reason_sort_groups_a_flatpak_list_by_installation() {
+        let mut s = scan_with(Vec::new());
+        let mut user = pkg("org.gnome.Calculator", SourceId::flatpak());
+        user.scope = Some(crate::model::FlatpakScope::User);
+        let mut system = pkg("org.gimp.GIMP", SourceId::flatpak());
+        system.scope = Some(crate::model::FlatpakScope::System);
+        s.packages = vec![user, system];
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        app.on_next();
+        app.open_packages();
+        while app.pkg_sort() != crate::tui::app::PkgSort::Reason {
+            app.cycle_sort();
+        }
+        let text = render(&app, 130, 18).to_lowercase();
+        let user_at = text.find("user apps").expect("user group");
+        let system_at = text.find("system apps").expect("system group");
+        assert!(user_at < system_at, "user comes first:\n{text}");
+    }
+
+    #[test]
     fn package_list_marks_runtimes_in_the_kind_column() {
         let mut s = scan_with(Vec::new());
-        let mut platform = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        let mut platform = pkg("org.gnome.Platform", SourceId::flatpak());
         platform.runtime = true;
         platform.description = Some("GNOME Platform".to_string());
-        let mut calc = pkg("org.gnome.Calculator", SourceId::flatpak_user());
+        let mut calc = pkg("org.gnome.Calculator", SourceId::flatpak());
         calc.description = Some("Calculator".to_string());
         s.packages = vec![platform, calc];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
-        app.on_next(); // select flatpak-user on the dashboard
+        app.on_next(); // select flatpak on the dashboard
         app.open_packages();
         // Flatpak IDs are long: below this the table drops to name + reason.
         let text = render(&app, 130, 18);
@@ -3377,9 +3431,9 @@ mod tests {
     #[test]
     fn why_pane_labels_flatpak_runtime_edges_inferred() {
         let mut s = scan_with(Vec::new());
-        let mut app_pkg = pkg("org.x.App", SourceId::flatpak_user());
+        let mut app_pkg = pkg("org.x.App", SourceId::flatpak());
         app_pkg.depends_on = vec!["org.gnome.Platform".to_string()];
-        let mut runtime = pkg("org.gnome.Platform", SourceId::flatpak_user());
+        let mut runtime = pkg("org.gnome.Platform", SourceId::flatpak());
         runtime.runtime = true;
         s.packages = vec![app_pkg, runtime];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
@@ -3404,7 +3458,7 @@ mod tests {
     #[test]
     fn why_pane_calls_a_flatpak_app_self_contained() {
         let mut s = scan_with(Vec::new());
-        s.packages = vec![pkg("org.x.App", SourceId::flatpak_user())];
+        s.packages = vec![pkg("org.x.App", SourceId::flatpak())];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.on_next(); // select the flatpak-user source
         app.open_packages();
@@ -3434,7 +3488,7 @@ mod tests {
         let mut s = scan_with(Vec::new());
         let mut native = rich_pkg("firefox", InstallReason::Explicit, None, &[]);
         native.version = "128.0-1".to_string();
-        let mut flat = pkg("org.mozilla.firefox", SourceId::flatpak_user());
+        let mut flat = pkg("org.mozilla.firefox", SourceId::flatpak());
         flat.description = Some("Firefox".to_string());
         flat.version = "128.0".to_string();
         s.packages = vec![native, flat];
@@ -3594,13 +3648,11 @@ mod tests {
         use crate::providers::aur::HelperChoice;
         let mut s = scan_with(Vec::new());
         s.aur_helper = HelperChoice::None;
-        s.sources.push(Source {
-            id: SourceId::aur(),
-            kind: SourceKind::Aur,
-            available: false,
-            last_scanned: None,
-            accurate_updates: true,
-        });
+        // The fixture already carries the aur row; this test only decides
+        // whether it can run.
+        for source in s.sources.iter_mut().filter(|s| s.id == SourceId::aur()) {
+            source.available = false;
+        }
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         // The status column says it regardless of the cursor.
         let text = render(&app, 110, 30);
@@ -3640,13 +3692,11 @@ mod tests {
             configured: "yay".to_string(),
             to: AurHelper::Paru,
         };
-        s.sources.push(Source {
-            id: SourceId::aur(),
-            kind: SourceKind::Aur,
-            available: true,
-            last_scanned: None,
-            accurate_updates: true,
-        });
+        // The fixture already carries an aur row; a helper was found, so it
+        // is available — degraded, not missing.
+        for source in s.sources.iter_mut().filter(|s| s.id == SourceId::aur()) {
+            source.available = true;
+        }
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         assert!(
             !render(&app, 110, 30).contains("no yay, using paru"),
@@ -3669,13 +3719,11 @@ mod tests {
             configured: "yay".to_string(),
             to: AurHelper::Paru,
         };
-        s.sources.push(Source {
-            id: SourceId::aur(),
-            kind: SourceKind::Aur,
-            available: true,
-            last_scanned: None,
-            accurate_updates: true,
-        });
+        // The fixture already carries the aur row; this test only decides
+        // whether it can run.
+        for source in s.sources.iter_mut().filter(|s| s.id == SourceId::aur()) {
+            source.available = true;
+        }
         let app = App::new(s, Theme::none(), AppOptions::test());
         let text = render(&app, 110, 30);
         assert!(source_row(&text, "aur").contains("! ok"));
@@ -3704,13 +3752,11 @@ mod tests {
         use crate::providers::aur::HelperChoice;
         let mut s = scan_with(Vec::new());
         s.aur_helper = HelperChoice::None;
-        s.sources.push(Source {
-            id: SourceId::aur(),
-            kind: SourceKind::Aur,
-            available: false,
-            last_scanned: None,
-            accurate_updates: true,
-        });
+        // The fixture already carries the aur row; this test only decides
+        // whether it can run.
+        for source in s.sources.iter_mut().filter(|s| s.id == SourceId::aur()) {
+            source.available = false;
+        }
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         select_aur(&mut app);
         assert!(render(&app, 110, 30).contains("install paru/yay/pikaur"));
@@ -3812,7 +3858,7 @@ mod tests {
         s.cache_sizes.pacman_cache_bytes = Some(7_600_000_000);
         let mut orphan = rich_pkg("leafdep", InstallReason::Dependency, Some(2_000_000), &[]);
         orphan.version = "1.0-1".to_string();
-        let mut rt = pkg("org.kde.Platform", SourceId::flatpak_user());
+        let mut rt = pkg("org.kde.Platform", SourceId::flatpak());
         rt.runtime = true;
         rt.size_bytes = Some(457_000_000);
         s.packages = vec![orphan, rt];

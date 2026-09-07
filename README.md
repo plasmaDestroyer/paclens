@@ -13,7 +13,7 @@ your system uninvited.
 | + sources ---------------------++ pending updates · pacman (62) ----------+|
 | |       SOURCE       INST  UPD || linux    6.9.1  -> 6.9.2                ||
 | | > [x] pacman       1832   62 || mesa     24.0   -> 24.1                 ||
-| |    -  flatpak-user   12    0 || ...                                     ||
+| |    -  flatpak        12    0 || ...                                     ||
 | +------------------------------++-----------------------------------------+|
 | + system ----------------------++ keys -----------------------------------+|
 | | - plan          62 packages  || ^/v move   ←/→ pane   i packages        ||

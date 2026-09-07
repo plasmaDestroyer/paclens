@@ -155,6 +155,7 @@ mod tests {
             scanned_at: Utc::now(),
             sources: Vec::new(),
             packages: vec![Package {
+                scope: None,
                 name: "firefox".to_string(),
                 version: "128.0-1".to_string(),
                 source_id: SourceId::pacman(),
@@ -187,14 +188,16 @@ mod tests {
         OverlapCandidate {
             display_name: "Firefox".to_string(),
             native_package: Some(PackageRef {
+                scope: None,
                 name: "firefox".to_string(),
                 version: "128.0-1".to_string(),
                 source_id: SourceId::pacman(),
             }),
             flatpak_app: Some(PackageRef {
+                scope: None,
                 name: "org.mozilla.firefox".to_string(),
                 version: "128.0".to_string(),
-                source_id: SourceId::flatpak_user(),
+                source_id: SourceId::flatpak(),
             }),
             match_method: method,
             confidence,
@@ -218,7 +221,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("org.mozilla.firefox 128.0  (flatpak-user)"),
+            text.contains("org.mozilla.firefox 128.0  (flatpak)"),
             "{text}"
         );
         assert!(text.contains("known map [confirmed]"), "{text}");

@@ -205,14 +205,16 @@ mod tests {
         OverlapCandidate {
             display_name: "Firefox".to_string(),
             native_package: Some(PackageRef {
+                scope: None,
                 name: native.to_string(),
                 version: "141.0-1".to_string(),
                 source_id: SourceId::pacman(),
             }),
             flatpak_app: Some(PackageRef {
+                scope: None,
                 name: app_id.to_string(),
                 version: "141.0".to_string(),
-                source_id: SourceId::flatpak_user(),
+                source_id: SourceId::flatpak(),
             }),
             match_method: MatchMethod::KnownMap,
             confidence: Confidence::Confirmed,

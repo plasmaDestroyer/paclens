@@ -3,7 +3,7 @@
 //! Contract (design §6): the executor never decides what to do — all
 //! decisions come from the user via the TUI/CLI. It logs every command before
 //! and after execution, and reports exit codes without interpretation (the
-//! renderers interpret). Privileged steps (pacman, flatpak-system) run through
+//! renderers interpret). Steps that declare themselves privileged run through
 //! the detected privilege tool ([`sudo`], design §11); with no tool on PATH they
 //! come back as `Skipped` with an explicit reason, never silently dropped.
 //!
@@ -56,6 +56,8 @@ pub enum StepStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepReport {
     pub source_id: SourceId,
+    /// The step's display name — see `ActionStep::label`.
+    pub label: String,
     /// How many packages/apps the step targeted.
     pub targets: usize,
     pub status: StepStatus,
@@ -145,7 +147,7 @@ pub fn executable_steps(plan: &ActionPlan, tool: Option<&str>) -> usize {
 /// ("flatpaks", not "apps": runtime updates count too).
 pub fn target_noun(source_id: &SourceId, count: usize) -> String {
     let s = source_id.as_str();
-    let unit = match (s.starts_with("flatpak"), s == "aur", count) {
+    let unit = match (s == "flatpak", s == "aur", count) {
         (true, _, 1) => "flatpak",
         (true, _, _) => "flatpaks",
         (_, true, 1) => "AUR package",
@@ -171,7 +173,7 @@ pub fn execute(
         .steps
         .iter()
         .filter(|s| skip_reason(s, tool).is_none())
-        .map(|s| s.source_id.as_str())
+        .map(|s| s.label.as_str())
         .collect();
     log.line(&format!("sources: [{}]", run_ids.join(", ")));
 
@@ -180,10 +182,11 @@ pub fn execute(
         let targets = step.targets.len();
 
         if let Some(reason) = skip_reason(step, tool) {
-            log.line(&format!("{}: skipped — {reason}", step.source_id));
+            log.line(&format!("{}: skipped — {reason}", step.label));
             tracing::info!(source = %step.source_id, reason, "update step skipped");
             steps.push(StepReport {
                 source_id: step.source_id.clone(),
+                label: step.label.clone(),
                 targets,
                 status: StepStatus::Skipped {
                     reason: reason.to_string(),
@@ -201,7 +204,7 @@ pub fn execute(
             crate::model::ActionKind::Migrate => format!("copying {}", step.targets.join(", ")),
             crate::model::ActionKind::Remove => format!("removing {}", step.targets.join(", ")),
         };
-        log.line(&format!("{}: {doing}", step.source_id));
+        log.line(&format!("{}: {doing}", step.label));
         tracing::info!(source = %step.source_id, command = %cmd, "executing update step");
         // The TUI is suspended (or we are in plain CLI mode): give the raw
         // terminal a header so the user knows whose output follows (P1).
@@ -209,25 +212,25 @@ pub fn execute(
 
         let status = match runner.run(&argv) {
             Ok(Some(0)) => {
-                log.line(&format!("{}: completed, exit 0", step.source_id));
+                log.line(&format!("{}: completed, exit 0", step.label));
                 StepStatus::Succeeded
             }
             Ok(Some(code)) => {
-                log.line(&format!("{}: failed, exit {code}", step.source_id));
+                log.line(&format!("{}: failed, exit {code}", step.label));
                 tracing::error!(source = %step.source_id, code, "update step failed");
                 StepStatus::Failed {
                     detail: format!("exit {code}"),
                 }
             }
             Ok(None) => {
-                log.line(&format!("{}: terminated by signal", step.source_id));
+                log.line(&format!("{}: terminated by signal", step.label));
                 tracing::error!(source = %step.source_id, "update step terminated by signal");
                 StepStatus::Failed {
                     detail: "terminated by signal".to_string(),
                 }
             }
             Err(err) => {
-                log.line(&format!("{}: failed to launch: {err:#}", step.source_id));
+                log.line(&format!("{}: failed to launch: {err:#}", step.label));
                 tracing::error!(source = %step.source_id, %err, "update step failed to launch");
                 StepStatus::Failed {
                     detail: format!("failed to launch: {err:#}"),
@@ -236,6 +239,7 @@ pub fn execute(
         };
         steps.push(StepReport {
             source_id: step.source_id.clone(),
+            label: step.label.clone(),
             targets,
             status,
         });
@@ -309,6 +313,7 @@ mod tests {
         privileged: bool,
     ) -> ActionStep {
         ActionStep {
+            label: source.to_string(),
             source_id: source,
             kind: ActionKind::Update,
             targets: targets.iter().map(|t| t.to_string()).collect(),
@@ -319,7 +324,7 @@ mod tests {
 
     fn flatpak_user_step() -> ActionStep {
         privileged_step(
-            SourceId::flatpak_user(),
+            SourceId::flatpak(),
             &["org.gimp.GIMP", "org.inkscape.Inkscape"],
             &["flatpak", "update", "--user", "--noninteractive"],
             false,
@@ -350,7 +355,7 @@ mod tests {
     fn only_flatpak_user_runs_unprivileged() {
         assert!(!needs_privilege(&flatpak_user_step()));
         assert!(needs_privilege(&step(
-            SourceId::flatpak_system(),
+            SourceId::flatpak(),
             &["a"],
             &["flatpak"]
         )));
@@ -369,7 +374,7 @@ mod tests {
             Some("no privilege tool found (sudo/doas/pkexec)")
         );
         assert_eq!(skip_reason(&pac, Some("sudo")), None);
-        // flatpak-user never needs one.
+        // A user-scope flatpak step never needs one.
         assert_eq!(skip_reason(&flatpak_user_step(), None), None);
     }
 
@@ -432,10 +437,10 @@ mod tests {
 
     #[test]
     fn target_noun_matches_each_sources_vocabulary() {
-        assert_eq!(target_noun(&SourceId::flatpak_user(), 1), "1 flatpak");
+        assert_eq!(target_noun(&SourceId::flatpak(), 1), "1 flatpak");
         assert_eq!(target_noun(&SourceId::aur(), 2), "2 AUR packages");
         assert_eq!(target_noun(&SourceId::aur(), 1), "1 AUR package");
-        assert_eq!(target_noun(&SourceId::flatpak_system(), 3), "3 flatpaks");
+        assert_eq!(target_noun(&SourceId::flatpak(), 3), "3 flatpaks");
         assert_eq!(target_noun(&SourceId::pacman(), 1), "1 package");
         assert_eq!(target_noun(&SourceId::pacman(), 19), "19 packages");
     }
@@ -509,7 +514,7 @@ mod tests {
         assert_eq!(report.succeeded(), 2);
         assert_eq!(report.skipped(), 0);
         assert!(
-            log_text(&dir).contains("sources: [pacman, flatpak-user]"),
+            log_text(&dir).contains("sources: [pacman, flatpak]"),
             "{}",
             log_text(&dir)
         );
@@ -580,16 +585,16 @@ mod tests {
 
         let text = log_text(&dir);
         assert!(text.contains("update session started"), "{text}");
-        assert!(text.contains("sources: [flatpak-user]"), "{text}");
+        assert!(text.contains("sources: [flatpak]"), "{text}");
         assert!(
             text.contains("pacman: skipped — no privilege tool found (sudo/doas/pkexec)"),
             "{text}"
         );
         assert!(
-            text.contains("flatpak-user: running update (2 flatpaks)"),
+            text.contains("flatpak: running update (2 flatpaks)"),
             "{text}"
         );
-        assert!(text.contains("flatpak-user: completed, exit 0"), "{text}");
+        assert!(text.contains("flatpak: completed, exit 0"), "{text}");
         assert!(
             text.contains("update session complete: all sources succeeded"),
             "{text}"
@@ -610,7 +615,7 @@ mod tests {
         execute(&plan(vec![flatpak_user_step()]), &runner, &mut log, None);
 
         let text = log_text(&dir);
-        assert!(text.contains("flatpak-user: failed, exit 2"), "{text}");
+        assert!(text.contains("flatpak: failed, exit 2"), "{text}");
         assert!(
             text.contains("update session complete: 1 of 1 sources failed"),
             "{text}"
