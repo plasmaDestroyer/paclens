@@ -79,6 +79,19 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
+    /// What the source of `id` can answer (design §13, 2026-09-07).
+    ///
+    /// A package whose source the scan has no row for gets
+    /// [`SourceCapabilities::UNKNOWN`] — it claims nothing rather than being
+    /// assumed to be shaped like pacman.
+    pub fn capabilities(&self, id: &super::SourceId) -> super::SourceCapabilities {
+        self.sources
+            .iter()
+            .find(|s| &s.id == id)
+            .map(|s| s.kind.capabilities())
+            .unwrap_or(super::SourceCapabilities::UNKNOWN)
+    }
+
     /// A placeholder for the moment between opening the TUI cold and the first
     /// background scan landing. Never cached.
     pub fn empty() -> Self {

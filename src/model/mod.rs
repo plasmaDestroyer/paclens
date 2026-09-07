@@ -20,6 +20,6 @@ pub use migrate::{Direction, MigrationReport, PathKind, PathMapping};
 pub use overlap::{MatchMethod, OverlapCandidate, PackageRef, PrimaryHeuristic, Tradeoff};
 pub use package::{InstallReason, Package};
 pub use scan::{CacheSizes, SCHEMA_VERSION, ScanResult};
-pub use source::{FlatpakScope, Source, SourceId, SourceKind};
+pub use source::{FlatpakScope, Source, SourceCapabilities, SourceId, SourceKind};
 pub use summary::{SourceSummary, summarize};
 pub use update::PendingUpdate;

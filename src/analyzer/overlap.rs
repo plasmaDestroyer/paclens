@@ -93,7 +93,7 @@ pub fn detect_overlaps(
     let native: HashMap<&str, &Package> = scan
         .packages
         .iter()
-        .filter(|p| crate::analyzer::graph::is_alpm(&p.source_id))
+        .filter(|p| crate::analyzer::graph::has_dep_graph(scan, &p.source_id))
         .map(|p| (p.name.as_str(), p))
         .collect();
     let map = known_map(extra_mappings);
@@ -265,7 +265,29 @@ mod tests {
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
-            sources: Vec::new(),
+            sources: vec![
+                crate::model::Source {
+                    id: SourceId::pacman(),
+                    kind: crate::model::SourceKind::Pacman,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::aur(),
+                    kind: crate::model::SourceKind::Aur,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::flatpak(),
+                    kind: crate::model::SourceKind::Flatpak,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+            ],
             packages,
             updates: Vec::new(),
             cache_sizes: CacheSizes::default(),

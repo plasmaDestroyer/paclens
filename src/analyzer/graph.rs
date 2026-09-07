@@ -17,10 +17,13 @@ use crate::model::{
     Confidence, DependencyEdge, EdgeKind, InstallReason, Package, ScanResult, SourceId,
 };
 
-/// pacman and AUR packages are both installed through libalpm: real dep
-/// data, real install reasons — the graph treats them identically (v0.3).
-pub(crate) fn is_alpm(source_id: &SourceId) -> bool {
-    *source_id == SourceId::pacman() || *source_id == SourceId::aur()
+/// Does this source report real dependency edges between installed packages?
+///
+/// This used to be `is_alpm` — a name for two unrelated facts, which a source
+/// like cargo (real versions, no dependents) could only answer by lying. The
+/// scan's capability table answers it now (design §13, 2026-09-07).
+pub(crate) fn has_dep_graph(scan: &ScanResult, source_id: &SourceId) -> bool {
+    scan.capabilities(source_id).dependency_graph
 }
 
 pub struct DepGraph {
@@ -38,7 +41,7 @@ impl DepGraph {
         // duplicate — good enough for lookup purposes.
         let mut alias: HashMap<&str, &str> = HashMap::new();
         for pkg in &scan.packages {
-            if !is_alpm(&pkg.source_id) {
+            if !has_dep_graph(scan, &pkg.source_id) {
                 continue;
             }
             for provided in &pkg.provides {
@@ -54,7 +57,7 @@ impl DepGraph {
         };
         for pkg in &scan.packages {
             let from = dep_graph.get_or_insert(&pkg.name);
-            let alpm = is_alpm(&pkg.source_id);
+            let alpm = has_dep_graph(scan, &pkg.source_id);
             for dep in &pkg.depends_on {
                 // Resolve a virtual dep to its real provider (libalpm only).
                 let target = if !alpm || installed.contains(dep.as_str()) {
@@ -220,7 +223,7 @@ impl DepGraph {
             .packages
             .iter()
             .filter(|p| {
-                is_alpm(&p.source_id)
+                scan.capabilities(&p.source_id).orphans
                     && p.install_reason == InstallReason::Dependency
                     && self.required_by(&p.name).is_empty()
             })
@@ -274,7 +277,29 @@ mod tests {
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
-            sources: Vec::new(),
+            sources: vec![
+                crate::model::Source {
+                    id: SourceId::pacman(),
+                    kind: crate::model::SourceKind::Pacman,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::aur(),
+                    kind: crate::model::SourceKind::Aur,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::flatpak(),
+                    kind: crate::model::SourceKind::Flatpak,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+            ],
             packages: vec![
                 pkg("firefox", InstallReason::Explicit, &["glibc"], &[]),
                 pkg("bash", InstallReason::Explicit, &["readline"], &["sh"]),

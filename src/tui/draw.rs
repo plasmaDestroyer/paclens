@@ -2051,7 +2051,7 @@ fn why_pane_lines(
     history: Option<String>,
 ) -> Vec<Line<'static>> {
     use crate::analyzer::{Verdict, WhyReport};
-    use crate::model::{InstallReason, SourceId};
+    use crate::model::InstallReason;
 
     let kv = |label: &str, value: String, style| {
         Line::from(vec![
@@ -2079,8 +2079,7 @@ fn why_pane_lines(
             } else {
                 Vec::new()
             };
-            let is_alpm =
-                p.source_id == SourceId::pacman() || p.source_id == crate::model::SourceId::aur();
+            let is_alpm = p.caps.install_reason;
             let reason = if !is_alpm {
                 if p.runtime {
                     "flatpak runtime".to_string()

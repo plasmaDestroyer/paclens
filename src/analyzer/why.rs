@@ -43,6 +43,9 @@ pub enum WhyReport {
 pub struct WhyDetail {
     pub package: String,
     pub source_id: SourceId,
+    /// What this package's source can answer — the renderers read this
+    /// instead of recognising source ids (design §13, 2026-09-07).
+    pub caps: crate::model::SourceCapabilities,
     /// Flatpak runtime (never true for pacman or flatpak apps).
     pub runtime: bool,
     pub reason: InstallReason,
@@ -181,9 +184,11 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         };
     };
 
-    // AUR packages are libalpm too: real install reasons, real dep data —
-    // the pacman verdict rules apply to them (v0.3).
-    let is_alpm = crate::analyzer::graph::is_alpm(&pkg.source_id);
+    // What this source can answer decides the shape of the report: an absent
+    // capability removes a section, it never prints an empty one and never
+    // fabricates it (design §13, 2026-09-07). The AUR is libalpm too, so it
+    // answers exactly what pacman does.
+    let caps = scan.capabilities(&pkg.source_id);
     let edges = graph.required_by_edges(name);
     let required_by: Vec<String> = edges.iter().map(|(n, _)| n.clone()).collect();
     let would_remove: Vec<String> = graph
@@ -208,22 +213,24 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         .map(|(_, c)| *c)
         .max()
         .unwrap_or(Confidence::Confirmed);
-    let (verdict, confidence) = if is_alpm && pkg.install_reason == InstallReason::Unknown {
-        (Verdict::Unclear, Confidence::Unknown)
-    } else if required_by.is_empty() {
-        let conf = if pkg.runtime {
-            Confidence::Inferred
+    let (verdict, confidence) =
+        if caps.install_reason && pkg.install_reason == InstallReason::Unknown {
+            (Verdict::Unclear, Confidence::Unknown)
+        } else if required_by.is_empty() {
+            let conf = if pkg.runtime {
+                Confidence::Inferred
+            } else {
+                Confidence::Confirmed
+            };
+            (Verdict::LikelySafe, conf)
         } else {
-            Confidence::Confirmed
+            (Verdict::IsADependency, worst_edge)
         };
-        (Verdict::LikelySafe, conf)
-    } else {
-        (Verdict::IsADependency, worst_edge)
-    };
 
     WhyReport::Found(WhyDetail {
         package: pkg.name.clone(),
         source_id: pkg.source_id.clone(),
+        caps,
         runtime: pkg.runtime,
         caveats: caveats_for(pkg),
         reason: pkg.install_reason,
@@ -284,7 +291,29 @@ mod tests {
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
-            sources: Vec::new(),
+            sources: vec![
+                crate::model::Source {
+                    id: SourceId::pacman(),
+                    kind: crate::model::SourceKind::Pacman,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::aur(),
+                    kind: crate::model::SourceKind::Aur,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::flatpak(),
+                    kind: crate::model::SourceKind::Flatpak,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+            ],
             packages: vec![
                 pkg(
                     "firefox",
@@ -325,6 +354,27 @@ mod tests {
         match report(name) {
             WhyReport::Found(p) => p,
             other => panic!("expected found report, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_source_the_scan_does_not_list_gets_a_report_that_claims_nothing() {
+        // The capability lookup's fallback, pinned: a package whose source
+        // has no row claims nothing rather than being read as alpm-shaped.
+        let mut scan = scan();
+        scan.sources.clear();
+        let graph = DepGraph::build(&scan);
+        match why(&scan, &graph, "firefox", 10) {
+            WhyReport::Found(p) => {
+                assert!(!p.caps.install_reason);
+                assert!(!p.caps.dependency_graph);
+                assert_eq!(p.caps.removal_hint, None);
+                assert!(
+                    p.required_by.is_empty(),
+                    "no dependency data means no dependents to claim"
+                );
+            }
+            other => panic!("expected a report, got {other:?}"),
         }
     }
 

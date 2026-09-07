@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::analyzer::{self, DepGraph, Verdict, WhyDetail, WhyReport, tree_lines};
 use crate::cli::style::Styles;
 use crate::config::Config;
-use crate::model::{InstallReason, SourceId};
+use crate::model::InstallReason;
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
@@ -83,7 +83,9 @@ fn render_detail(
     history: Option<&str>,
     s: &Styles,
 ) -> String {
-    let is_alpm = p.source_id == SourceId::pacman() || p.source_id == SourceId::aur();
+    // The report says what its source can answer; nothing here recognises an
+    // id (design §13, 2026-09-07).
+    let is_alpm = p.caps.install_reason;
     let mut out = String::new();
     out.push_str(&format!("{}\n", s.title(&p.package)));
     out.push_str(&field(s, "source", &p.source_id.to_string()));
@@ -111,12 +113,10 @@ fn render_detail(
     if let Some(history) = history {
         out.push_str(&field(s, "history", &s.dim(history)));
     }
-    if !is_alpm && !p.runtime {
-        out.push_str(&field(
-            s,
-            "removal",
-            &format!("flatpak uninstall {}", p.package),
-        ));
+    // A removal hint only where the source has a one-liner worth printing,
+    // and never for a runtime — removing one breaks whatever shares it.
+    if let (Some(hint), false) = (p.caps.removal_hint, p.runtime) {
+        out.push_str(&field(s, "removal", &format!("{hint} {}", p.package)));
     }
     for caveat in &p.caveats {
         out.push_str(&field(s, "caveat", &s.summary_updates(caveat)));
@@ -207,6 +207,7 @@ mod tests {
         WhyDetail {
             package: "firefox".to_string(),
             source_id: SourceId::pacman(),
+            caps: crate::model::SourceKind::Pacman.capabilities(),
             runtime: false,
             caveats: Vec::new(),
             reason: InstallReason::Explicit,
@@ -367,6 +368,7 @@ mod tests {
         let p = WhyDetail {
             package: "org.gnome.Calculator".to_string(),
             source_id: SourceId::flatpak(),
+            caps: crate::model::SourceKind::Flatpak.capabilities(),
             reason: InstallReason::Unknown,
             would_remove: vec!["org.gnome.Platform".to_string()],
             ..base()
@@ -387,6 +389,7 @@ mod tests {
         let p = WhyDetail {
             package: "org.gnome.Platform".to_string(),
             source_id: SourceId::flatpak(),
+            caps: crate::model::SourceKind::Flatpak.capabilities(),
             runtime: true,
             reason: InstallReason::Unknown,
             required_by: vec!["org.gnome.Calculator".to_string()],

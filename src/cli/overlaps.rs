@@ -153,7 +153,29 @@ mod tests {
         ScanResult {
             schema_version: SCHEMA_VERSION,
             scanned_at: Utc::now(),
-            sources: Vec::new(),
+            sources: vec![
+                crate::model::Source {
+                    id: SourceId::pacman(),
+                    kind: crate::model::SourceKind::Pacman,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::aur(),
+                    kind: crate::model::SourceKind::Aur,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+                crate::model::Source {
+                    id: SourceId::flatpak(),
+                    kind: crate::model::SourceKind::Flatpak,
+                    available: true,
+                    last_scanned: None,
+                    accurate_updates: true,
+                },
+            ],
             packages: vec![Package {
                 scope: None,
                 name: "firefox".to_string(),
