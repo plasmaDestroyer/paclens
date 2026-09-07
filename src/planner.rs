@@ -59,6 +59,7 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
             kind: ActionKind::Update,
             targets,
             command,
+            privileged: needs_sudo,
         });
     }
 
@@ -113,6 +114,8 @@ pub fn plan_migration(
         kind: ActionKind::Migrate,
         targets,
         command,
+        // Profile data under `~` is user-owned even for a system-scope app.
+        privileged: false,
     };
     let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
 
@@ -221,6 +224,7 @@ pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> O
             kind: ActionKind::Remove,
             targets,
             command,
+            privileged: requires_sudo,
         }],
         requires_sudo,
     })
@@ -394,6 +398,34 @@ mod tests {
             vec!["flatpak", "update", "--user", "--noninteractive"]
         );
         assert_eq!(plan.steps[0].kind, ActionKind::Update);
+    }
+
+    #[test]
+    fn every_step_declares_its_own_privilege() {
+        // The planner is where privilege is decided now (design §13,
+        // 2026-09-07). Each step says so on its own, rather than the executor
+        // recognising an id and guessing.
+        let plan = plan_updates(&scan(), enable_all);
+        for step in &plan.steps {
+            let expected = match step.source_id.as_str() {
+                "pacman" => true,
+                // The helper self-elevates after building as the user.
+                "aur" => false,
+                "flatpak-user" => false,
+                "flatpak-system" => true,
+                other => panic!("unexpected source in the plan: {other}"),
+            };
+            assert_eq!(
+                step.privileged, expected,
+                "{} declared the wrong privilege",
+                step.source_id
+            );
+        }
+        assert_eq!(
+            plan.requires_sudo,
+            plan.steps.iter().any(|s| s.privileged),
+            "the plan-level flag must agree with its steps"
+        );
     }
 
     #[test]
@@ -727,6 +759,7 @@ mod tests {
             kind: ActionKind::Migrate,
             targets: vec!["~/.config/x".to_string()],
             command: vec!["cp".to_string()],
+            privileged: false,
         };
         assert!(!crate::executor::needs_privilege(&step));
         assert_eq!(crate::executor::skip_reason(&step, None), None);

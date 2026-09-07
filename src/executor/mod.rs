@@ -88,17 +88,17 @@ impl ExecutionReport {
     }
 }
 
-/// Does this step need privilege escalation? Source-specific (P6, design §11):
-/// pacman and flatpak-system do; flatpak-user does not. Migration copy steps
-/// never do — profile data under `~` is user-owned even for system-scope
-/// apps.
+/// Does this step need privilege escalation?
+///
+/// The step says so; nothing here reads its source id (design §13,
+/// 2026-09-07). This used to be "privileged unless the id is flatpak-user or
+/// aur", which made root the default for every source that did not exist yet —
+/// cargo, npm, pipx and rustup are all unprivileged and would all have been
+/// wrapped in sudo by a rule nobody remembered to edit. Declaring it at the
+/// planner means forgetting produces a missing prompt, not a command run as
+/// root.
 pub fn needs_privilege(step: &ActionStep) -> bool {
-    if step.kind == crate::model::ActionKind::Migrate {
-        return false;
-    }
-    // flatpak --user needs nothing; paru must NOT run under sudo (it builds
-    // as the user and self-elevates for the install step itself).
-    step.source_id != SourceId::flatpak_user() && step.source_id != SourceId::aur()
+    step.privileged
 }
 
 /// Why a step cannot run, or `None` if it is executable. Since v0.1.0 the only
@@ -299,19 +299,30 @@ mod tests {
     }
 
     fn step(source: SourceId, targets: &[&str], command: &[&str]) -> ActionStep {
+        privileged_step(source, targets, command, true)
+    }
+
+    fn privileged_step(
+        source: SourceId,
+        targets: &[&str],
+        command: &[&str],
+        privileged: bool,
+    ) -> ActionStep {
         ActionStep {
             source_id: source,
             kind: ActionKind::Update,
             targets: targets.iter().map(|t| t.to_string()).collect(),
             command: command.iter().map(|c| c.to_string()).collect(),
+            privileged,
         }
     }
 
     fn flatpak_user_step() -> ActionStep {
-        step(
+        privileged_step(
             SourceId::flatpak_user(),
             &["org.gimp.GIMP", "org.inkscape.Inkscape"],
             &["flatpak", "update", "--user", "--noninteractive"],
+            false,
         )
     }
 
@@ -391,19 +402,31 @@ mod tests {
     }
 
     #[test]
-    fn aur_steps_run_unprivileged() {
-        let step = ActionStep {
-            source_id: SourceId::aur(),
-            kind: ActionKind::Update,
-            targets: vec!["timr-bin".to_string()],
-            command: vec!["paru".to_string(), "-Sua".to_string()],
-        };
-        assert!(!needs_privilege(&step), "paru must never run under sudo");
-        assert_eq!(skip_reason(&step, None), None, "runs without a tool");
+    fn privilege_comes_from_the_step_not_from_its_source_id() {
+        // The old rule read the id: "privileged unless flatpak-user or aur",
+        // which made root the default for every source not yet written. Both
+        // directions are pinned here, ids deliberately at odds with the flag.
+        let unprivileged =
+            privileged_step(SourceId::pacman(), &["timr-bin"], &["paru", "-Sua"], false);
+        assert!(!needs_privilege(&unprivileged));
+        assert_eq!(skip_reason(&unprivileged, None), None, "no tool needed");
         assert_eq!(
-            effective_command(&step, Some("sudo")),
+            effective_command(&unprivileged, Some("sudo")),
             vec!["paru", "-Sua"],
             "no sudo prefix even when a tool exists"
+        );
+
+        let privileged = privileged_step(
+            SourceId::flatpak(),
+            &["org.x.App"],
+            &["flatpak", "update", "--system"],
+            true,
+        );
+        assert!(needs_privilege(&privileged));
+        assert_eq!(
+            effective_command(&privileged, Some("sudo"))[0],
+            "sudo",
+            "a step that says it needs root gets the tool"
         );
     }
 

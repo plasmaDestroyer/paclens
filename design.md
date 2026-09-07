@@ -64,10 +64,14 @@ destructive action passes through all five. There is no shortcut and there is no
 **5. One source of truth.** Every view reads the same scan. Two screens can be
 stale together, but they can never disagree with each other.
 
-**6. Source-specific logic.** pacman, the AUR and Flatpak differ in every
-respect that matters, and paclens does not paper over that with a generic
-abstraction. *Under active review as more sources arrive — see the open issues
-labelled `sources`.*
+**6. Source-specific logic, asked as questions.** pacman, the AUR and Flatpak
+differ in every respect that matters, and paclens does not paper over that with
+a generic abstraction. What is shared is the *question* a screen asks — does
+this source have a dependency graph, an install reason, a notion of an orphan —
+never a generic answer. A source is **the tool responsible for keeping its
+packages up to date**, and nothing about how it behaves is ever read out of its
+name. Settled 2026-09-07 (§13); it replaces the earlier note that this
+principle was under review.
 
 ---
 
@@ -1610,6 +1614,86 @@ YYYY-MM-DD | no --noconfirm for pacman
            | needs the helper's output, which paclens already captures
            | for runs started inside it; cross-referencing that with the
            | log is its own feature, not a patch to this one.
+
+2026-09-07 | what a source is, and what a screen may ask it (#10)
+           | The prerequisite for every non-alpm source. The question
+           | was posed as "how do we generalize the provider contract",
+           | but reading the code first found something smaller and
+           | worse: paclens had two vocabularies for one fact.
+           | `SourceKind` is an enum, matched exhaustively in exactly one
+           | place (the planner). `SourceId` is a string, and seven
+           | production sites across five modules asked it questions by
+           | prefix — `starts_with("flatpak")` in the analyzer, the CLI,
+           | the TUI and the executor. Adding a source meant remembering
+           | all seven. Nothing asked.
+           | The one that mattered was `executor::needs_privilege`:
+           | "privileged unless the id is flatpak-user or aur". Read the
+           | default. Every source added without editing that line runs
+           | under sudo — cargo, npm, pipx and rustup are all
+           | unprivileged, and all four would have been root by default.
+           | That is #77's bug class again: identity read out of a
+           | string property, correct until the property moved.
+           |
+           | **A source is the tool responsible for keeping its packages
+           | up to date.** flatpak installs it, flatpak updates it, so
+           | flatpak is one source; pacman and paru are two tools and
+           | stay two sources; cargo, npm, pipx, rustup and fwupd are one
+           | each. That is also the user's own model of the machine,
+           | which is the point — it is the answer to "who do I go to
+           | when this needs updating".
+           | It follows that `flatpak-user` and `flatpak-system` are not
+           | two sources. Scope is a property of the *package* and
+           | therefore of the *step*, not an identity. Source ids go
+           | flat, and every prefix predicate becomes an equality.
+           |
+           | **Privilege is declared by the step, never inferred from a
+           | name, and the default is unprivileged.** The planner already
+           | computes it while building each step and used to throw it
+           | away into one plan-level bool; it is kept on the step now. A
+           | source that needs root has to say so, so the failure mode
+           | of forgetting is a prompt that does not appear rather than a
+           | command that runs as root.
+           |
+           | **What a screen may ask a source** is a fixed, small set,
+           | one table keyed by the kind: does it have a dependency
+           | graph, does it record an install reason, can it have
+           | orphans, how is a package removed. Four, because four is
+           | what the screens branch on today — `is_alpm` was standing in
+           | for the first two and would have had to lie about cargo,
+           | which has real versions and sizes but no reasons and no
+           | dependents. A capability is added when a screen already asks
+           | it, never in advance.
+           |
+           | **`why` degrades, it does not refuse.** An absent capability
+           | removes a section; it never prints an empty one and never
+           | fabricates the answer. This is what a Flatpak app already
+           | gets — "self-contained", a removal hint, no chain — so a
+           | cargo binary inherits a shape that exists and is tested.
+           | Refusing was considered and rejected: the package is
+           | installed, and the half paclens does know is still worth
+           | printing.
+           |
+           | **`Package` stays one flat struct.** Source-specific fields
+           | stay rare and optional, and the rule that keeps it honest is
+           | that a field must be consumed by a screen that exists.
+           | cargo, npm and pipx need no new field at all. A per-source
+           | data enum was considered — it buys typed absence for four
+           | fields and costs every consumer and fixture; a schemaless
+           | extras map was rejected outright, since it trades the type
+           | system for the ability to read a key nobody writes.
+           | Schema bumps are the cheap part: the cache is discarded and
+           | re-scanned.
+           |
+           | What this deliberately does not settle: parsing, update
+           | detection, version comparability across sources, and
+           | cross-source overlap (#18). Those stay per-source work, and
+           | principle 6 still governs them.
+           | Cost of being wrong: a capability that lies is worse than a
+           | predicate that is narrow — `install_reason: true` on cargo
+           | would print "installed as a dependency" about a thing with
+           | no such concept, which is the confident wrong answer §3
+           | forbids. Each capability carries a test asserting what the
+           | report looks like when it is false.
 
 ```
 

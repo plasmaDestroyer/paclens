@@ -324,6 +324,7 @@ mod tests {
                 kind: ActionKind::Update,
                 targets: vec!["x".to_string()],
                 command: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
+                privileged: false,
             }],
             requires_sudo: false,
         }

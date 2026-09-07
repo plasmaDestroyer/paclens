@@ -28,6 +28,15 @@ pub struct ActionStep {
     pub targets: Vec<String>,
     /// The exact argv to run (without any privilege prefix).
     pub command: Vec<String>,
+    /// Does this step need a privilege tool in front of its command?
+    ///
+    /// **Declared by whoever builds the step, never inferred from the source
+    /// id** (design §13, 2026-09-07). It used to be read back out of the id —
+    /// "privileged unless you are flatpak-user or aur" — which made root the
+    /// default for every source nobody had thought about yet. Building it here
+    /// costs the planner nothing: it already knows, because it just chose the
+    /// command.
+    pub privileged: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
