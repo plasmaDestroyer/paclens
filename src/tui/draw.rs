@@ -10,7 +10,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
@@ -482,7 +482,11 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     // What `u` will run right now — the plan-level summary (P1: what will
     // happen is always visible before the key is pressed).
     let plan = app.update_plan();
-    let plan_span = if plan.is_empty() {
+    let plan_span = if !app.scan_settled() {
+        // Mid-scan the plan is not "empty", it is unknown — and the two must
+        // not read alike (design §3).
+        Span::styled("still checking".to_string(), theme.dim)
+    } else if plan.is_empty() {
         Span::styled("nothing to run".to_string(), theme.dim)
     } else {
         Span::styled(
@@ -577,11 +581,16 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     if ups.is_empty() {
-        // Other sources have updates; this one is clean.
         let name = source.map(|s| s.id.to_string()).unwrap_or_default();
+        // A source whose update check has not come back is not up to date;
+        // it is unchecked, and the pane says which.
+        let msg = if source.is_none_or(|s| app.source_counted(&s.id)) {
+            format!("{name} is up to date")
+        } else {
+            format!("checking {name} for updates…")
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(format!("{name} is up to date"), theme.dim))
-                .alignment(Alignment::Center),
+            Paragraph::new(Span::styled(msg, theme.dim)).alignment(Alignment::Center),
             centered(inner, inner.width, 1),
         );
         return;
@@ -641,7 +650,12 @@ fn scanned_span(app: &App) -> Span<'static> {
 fn summary_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let updates = app.total_updates();
-    if updates == 0 {
+    if !app.scan_settled() {
+        Line::from(Span::styled(
+            "checking for updates…".to_string(),
+            theme.accent,
+        ))
+    } else if updates == 0 {
         Line::from(Span::styled("up to date", theme.success))
     } else {
         let plural = if updates == 1 { "" } else { "s" };
@@ -688,7 +702,9 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
 
     let body: Vec<Row> = rows
         .iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(i, r)| {
+            let selected = app.selected() == Some(i);
             // "ok / not found", not "available": next to the UPDATES column
             // that read like "updates available" (wording chosen with the user).
             // A source carrying a note is flagged on its own row, whether or
@@ -719,10 +735,74 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled(format!("{glyph} {reason}"), style)
                 }
             };
-            let updates = if r.updates > 0 {
-                Span::styled(r.updates.to_string(), theme.accent)
-            } else {
-                Span::styled(r.updates.to_string(), theme.dim)
+            // A count the scan has not produced yet is a dash, not a zero:
+            // "nothing to update" and "not checked yet" are different answers
+            // (design §3), and while scanning the row says which it is.
+            // What an uncounted cell shows. A dash is out: in a numeric
+            // column it reads as a value. The rest are being compared in the
+            // TUI (temporary — `--demo-coldstart`).
+            let waiting = |theme: &Theme| match app.placeholder() {
+                crate::tui::app::Placeholder::Spinner => {
+                    Span::styled(app.spinner().to_string(), theme.dim)
+                }
+                crate::tui::app::Placeholder::Dots => Span::styled("···".to_string(), theme.dim),
+                // `count` shows a climbing number, which arrives through the
+                // `stale` path below; with nothing to climb toward there is
+                // nothing to draw.
+                crate::tui::app::Placeholder::Count => Span::styled(String::new(), theme.dim),
+                _ => Span::styled(String::new(), theme.dim),
+            };
+            // A carried number wears a `~`: it sits still, so nothing else
+            // says it is not this run's answer. A climbing one does not — the
+            // movement is the signal, and the row's yellow "scanning" status
+            // is what stops either from reading as settled (design §3).
+            // No per-cell mark. The status column exists to say what state a
+            // row is in, no width ever drops it, and one word there beats a
+            // punctuation mark on every number — design §3 asks that the
+            // number be labelled, not where the label goes.
+            let approx = |n: usize, theme: &Theme| Span::styled(n.to_string(), theme.dim);
+            let updates = match (r.updates, r.stale) {
+                (Some(n), true) => approx(n, theme),
+                (Some(n), false) if n > 0 => Span::styled(n.to_string(), theme.accent),
+                (Some(n), false) => Span::styled(n.to_string(), theme.dim),
+                (None, _) => waiting(theme),
+            };
+            let installed = match (r.installed, r.stale) {
+                (Some(n), true) => approx(n, theme),
+                (Some(n), false) => Span::styled(n.to_string(), theme.primary),
+                (None, _) => waiting(theme),
+            };
+            // A row still being counted keeps its own dot and turns yellow —
+            // the colour carries "pending", the same as it does for a pending
+            // update. One animated spinner on a screen is a progress
+            // indicator; one per row is a light show.
+            // A row whose lane is still out says one thing: scanning. What
+            // the number is doing — climbing, or holding at the last scan's
+            // value — is visible in the number itself.
+            //
+            // Unless the scan gave up: then the row is not scanning and its
+            // numbers are the previous run's, which it has to say, or a dead
+            // scan would leave stale counts wearing a green ok.
+            let unfinished = r.updates.is_none() || r.stale;
+            let status: Line<'static> = match (r.available, app.is_scanning(), unfinished) {
+                (true, true, true) => {
+                    // Dot and word breathe together — one glowing cell, not a
+                    // glowing dot beside a static label. Nothing moves across
+                    // the screen, which is what the spinners did wrong.
+                    let glow = pulse_style(theme, app.pulse());
+                    Line::from(Span::styled(
+                        format!("{} scanning", theme.glyphs.available),
+                        glow,
+                    ))
+                }
+                // The scan gave up before this source answered. `unchecked`
+                // rather than `last scan`: what is wrong is that this run
+                // never looked, not that the old numbers are bad.
+                (true, false, true) => Line::from(Span::styled(
+                    format!("{} unchecked", theme.glyphs.warning),
+                    theme.accent,
+                )),
+                _ => Line::from(status),
             };
             // Space toggles the source in/out of the plan; a clean source
             // has nothing to toggle and shows a dim dash.
@@ -731,11 +811,24 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                 Some(false) => Span::styled("[ ]".to_string(), theme.dim),
                 None => Span::styled(" - ".to_string(), theme.dim),
             };
+            // The selected row is coloured here rather than by ratatui's
+            // `row_highlight_style`, which patches the whole row's area and
+            // would overwrite the breathing status with the selection hue —
+            // the cursor would stop the animation wherever it landed.
+            let mark = |span: Span<'static>| {
+                if selected {
+                    let style = span.style.patch(theme.selected);
+                    Span::styled(span.content, style)
+                } else {
+                    span
+                }
+            };
+            let name = mark(Span::styled(r.id.clone(), theme.primary));
             Row::new(vec![
-                Cell::from(toggle),
-                Cell::from(r.id.clone()),
-                Cell::from(Line::from(r.installed.to_string()).alignment(Alignment::Right)),
-                Cell::from(Line::from(updates).alignment(Alignment::Right)),
+                Cell::from(mark(toggle)),
+                Cell::from(name),
+                Cell::from(Line::from(mark(installed)).alignment(Alignment::Right)),
+                Cell::from(Line::from(mark(updates)).alignment(Alignment::Right)),
                 Cell::from(status),
             ])
         })
@@ -752,12 +845,28 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     let table = Table::new(body, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(theme.selected)
+        // No `row_highlight_style`: the rows colour themselves (see above).
+        // The pointer still comes from the selection.
         .highlight_symbol(theme.glyphs.pointer);
 
     let mut state = TableState::default();
     state.select(app.selected());
     frame.render_stateful_widget(table, area, &mut state);
+}
+/// The colour of the breathing status at `phase` (0 dimmest, 1 brightest).
+///
+/// Interpolated, not stepped: the redraw runs at 30ms while scanning, so a
+/// breath gets around fifty distinct shades instead of the seven a 256-colour
+/// ramp could hold inside one hue. A theme with no fade (no-color) gets the
+/// settled style and holds still.
+fn pulse_style(theme: &Theme, phase: f32) -> Style {
+    let Some([low, high]) = theme.pulse else {
+        return theme.accent;
+    };
+    let t = phase.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    let color = Color::Rgb(mix(low.0, high.0), mix(low.1, high.1), mix(low.2, high.2));
+    Style::new().fg(color).add_modifier(Modifier::BOLD)
 }
 
 /// The last row of `area` (for a footer outside a Layout split).
@@ -2329,6 +2438,74 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
         }
+    }
+
+    /// Render with a real theme and keep the buffer, so a test can look at
+    /// colours — `flatten` throws every style away.
+    fn render_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// Is this colour somewhere on the breathing fade — full red, no blue,
+    /// green somewhere between the warm end and yellow?
+    fn is_pulse_shade(color: &ratatui::style::Color) -> bool {
+        use crate::tui::theme::Theme;
+        let Some([warm, high]) = Theme::dark().pulse else {
+            return false;
+        };
+        match color {
+            ratatui::style::Color::Rgb(r, g, b) => {
+                *r == high.0 && *b == 0 && (warm.1..=high.1).contains(g)
+            }
+            _ => false,
+        }
+    }
+
+    /// The foreground colours of exactly the cells spelling `needle`.
+    ///
+    /// Column by column, not by byte offset: a rendered line is full of
+    /// multi-byte glyphs (`│`, `▶`, `●`), so `str::find` returns a position
+    /// that is not a column and samples the wrong cells.
+    fn colors_of(buf: &Buffer, needle: &str) -> Vec<ratatui::style::Color> {
+        let area = buf.area;
+        let want: Vec<String> = needle.chars().map(|c| c.to_string()).collect();
+        for y in 0..area.height {
+            let cols: Vec<String> = (0..area.width)
+                .map(|x| {
+                    buf.cell((x, y))
+                        .map(|c| c.symbol().to_string())
+                        .unwrap_or_default()
+                })
+                .collect();
+            let Some(start) = cols.windows(want.len()).position(|w| w == want) else {
+                continue;
+            };
+            return (start..start + want.len())
+                .filter_map(|x| buf.cell((x as u16, y)))
+                .map(|c| c.fg)
+                .collect();
+        }
+        panic!("no cells spelling {needle:?}");
+    }
+
+    /// The foreground colours of the row containing `needle`, in order.
+    fn row_colors(buf: &Buffer, needle: &str) -> Vec<ratatui::style::Color> {
+        let area = buf.area;
+        for y in 0..area.height {
+            let line: String = (0..area.width)
+                .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                .collect();
+            if line.contains(needle) {
+                return (0..area.width)
+                    .filter_map(|x| buf.cell((x, y)))
+                    .map(|c| c.fg)
+                    .collect();
+            }
+        }
+        panic!("no row containing {needle:?}");
     }
 
     fn flatten(buf: &Buffer) -> String {
@@ -3904,6 +4081,534 @@ mod tests {
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         let text = render(&app, 96, 24);
         assert!(text.contains("c cleanup"), "hint missing:\n{text}");
+    }
+
+    /// A scan in flight: `landed` names the sources whose lanes have come
+    /// back, and only those carry numbers.
+    /// Like `mid_scan`, but the app has a previous scan behind it, so the
+    /// `last` placeholder has something real to carry.
+    fn mid_scan_with(style: crate::tui::app::Placeholder, landed: &[SourceId]) -> App {
+        let full = settled_scan();
+        let mut app = App::new(full.clone(), Theme::none(), AppOptions::test());
+        app.set_placeholder(style);
+        let mut partial = full;
+        for source in partial.sources.iter_mut() {
+            source.last_scanned = landed.contains(&source.id).then(Utc::now);
+        }
+        partial.packages.retain(|p| landed.contains(&p.source_id));
+        partial.updates.retain(|u| landed.contains(&u.source_id));
+        app.replace_scan_partial(partial);
+        app
+    }
+
+    fn settled_scan() -> crate::model::ScanResult {
+        let mut s = scan_with(vec![
+            upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
+            upd("timr-bin", "1", "2", SourceId::aur()),
+        ]);
+        s.packages = vec![
+            pkg("linux", SourceId::pacman()),
+            pkg("bash", SourceId::pacman()),
+            pkg("org.gnome.Calculator", SourceId::flatpak()),
+            pkg("timr-bin", SourceId::aur()),
+        ];
+        s
+    }
+
+    fn mid_scan(landed: &[SourceId]) -> App {
+        let mut s = scan_with(vec![upd("linux", "6.9.1", "6.9.2", SourceId::pacman())]);
+        s.packages = vec![
+            pkg("linux", SourceId::pacman()),
+            pkg("bash", SourceId::pacman()),
+            pkg("org.gnome.Calculator", SourceId::flatpak()),
+        ];
+        for source in s.sources.iter_mut() {
+            source.last_scanned = landed.contains(&source.id).then(Utc::now);
+        }
+        s.packages.retain(|p| landed.contains(&p.source_id));
+        s.updates.retain(|u| landed.contains(&u.source_id));
+        let mut app = App::new(s.clone(), Theme::none(), AppOptions::test());
+        app.replace_scan_partial(s);
+        app
+    }
+
+    #[test]
+    fn a_scanning_row_breathes_but_never_spins() {
+        let text = render(&mid_scan(&[]), 104, 20);
+        // Braille frames, so the count cannot be confused with the ASCII box
+        // drawing the way `|` and `-` would be. The rows must run none: the
+        // one animated spinner belongs to the system pane.
+        let spinner_frames = Theme::dark().glyphs.spinner;
+        let animated: usize = text
+            .lines()
+            .filter(|l| spinner_frames.iter().any(|f| l.contains(f)))
+            .count();
+        assert_eq!(
+            animated, 0,
+            "the ascii theme has no braille; a row is spinning:\n{text}"
+        );
+        // What a scanning row wears instead is a rung of the pulse ramp.
+        // What a scanning row wears instead is the settled dot, coloured.
+        let row = lines_of(&text, "scanning");
+        assert!(
+            row.contains(Theme::none().glyphs.available),
+            "no status dot on the row:\n{row}"
+        );
+    }
+
+    #[test]
+    fn a_scanning_dashboard_never_claims_a_number_it_does_not_have() {
+        let text = render(&mid_scan(&[]), 104, 20);
+        assert!(
+            !text.contains("up to date"),
+            "claimed clean mid-scan:\n{text}"
+        );
+        assert!(
+            !text.contains("nothing to run"),
+            "claimed an empty plan mid-scan:\n{text}"
+        );
+        assert!(
+            text.contains("still checking"),
+            "the plan line must say it does not know yet:\n{text}"
+        );
+        // No placeholder in the count columns either — an empty cell, not a
+        // dash that could be read as a value. (The cache size's own "—" is a
+        // different question: that one is genuinely unknown and settled.)
+        for row in text.lines().filter(|l| l.contains("* scanning")) {
+            assert!(!row.contains('—'), "a dash sits in a count column:\n{row}");
+        }
+    }
+
+    #[test]
+    fn the_climbing_count_rises_toward_the_last_known_number_and_stops_short() {
+        use crate::tui::app::Placeholder;
+        use std::time::{Duration, Instant};
+
+        let at = |ago_ms: u64| {
+            let mut app = mid_scan_with(Placeholder::Count, &[]);
+            app.set_scan_started(Instant::now() - Duration::from_millis(ago_ms));
+            app.rows()
+                .iter()
+                .find(|r| r.id == "pacman")
+                .and_then(|r| r.installed)
+                .expect("pacman row")
+        };
+        // pacman has 2 packages in the fixture, so the climb is short; what
+        // matters is that it rises and never reaches the target.
+        let early = at(0);
+        let late = at(1400);
+        assert!(early <= late, "the count must not go backwards");
+        assert!(
+            late < 2,
+            "it must stop short of the real number: {late} of 2"
+        );
+
+        // And once the lane reports, it is the real number, plainly.
+        let landed = mid_scan_with(Placeholder::Count, &[SourceId::pacman()]);
+        let row = landed
+            .rows()
+            .into_iter()
+            .find(|r| r.id == "pacman")
+            .expect("row");
+        assert_eq!(row.installed, Some(2));
+        assert!(!row.stale, "no longer an estimate");
+    }
+
+    #[test]
+    fn every_curve_keeps_the_count_moving_and_moving_forward() {
+        use crate::tui::app::{Curve, Placeholder};
+        use std::time::{Duration, Instant};
+        // 30ms redraws over a 1500ms ramp. A curve costs distinct values
+        // wherever it flattens, so the guarantee is per-curve: never
+        // backwards, and never parked long enough to look finished.
+        for curve in [Curve::Linear, Curve::Out, Curve::Smooth] {
+            let seen: Vec<usize> = (0..49)
+                .map(|frame| {
+                    let mut app = mid_scan_big(Placeholder::Count);
+                    app.set_curve(curve);
+                    app.set_scan_started(Instant::now() - Duration::from_millis(frame * 30));
+                    app.rows()
+                        .into_iter()
+                        .find(|r| r.id == "pacman")
+                        .and_then(|r| r.installed)
+                        .unwrap_or(0)
+                })
+                .collect();
+            assert!(
+                seen.windows(2).all(|w| w[0] <= w[1]),
+                "{curve:?} went backwards: {seen:?}"
+            );
+            let parked = seen
+                .windows(4)
+                .filter(|w| w.iter().all(|n| *n == w[0]))
+                .count();
+            assert_eq!(parked, 0, "{curve:?} parked for four frames: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_climb_keeps_counting_for_as_long_as_the_lane_takes() {
+        use crate::tui::app::Placeholder;
+        use std::time::{Duration, Instant};
+        // A stalled network runs to the provider timeout, many times the 1.5s
+        // ramp. The number must still be moving out there: one that stops
+        // looks like an answer.
+        let at = |ms: u64| {
+            let mut app = mid_scan_big(Placeholder::Count);
+            app.set_scan_started(Instant::now() - Duration::from_millis(ms));
+            app.rows()
+                .into_iter()
+                .find(|r| r.id == "pacman")
+                .and_then(|r| r.installed)
+                .expect("a number")
+        };
+        assert!(at(6000) > at(3000), "still climbing at six seconds");
+        assert!(at(9000) > at(6000), "and at nine");
+        assert!(at(9000) < 1840, "and never reaching the real number");
+    }
+
+    #[test]
+    fn a_small_machine_has_almost_nothing_to_climb() {
+        use crate::tui::app::Placeholder;
+        use std::time::{Duration, Instant};
+        // Four packages: the estimate can only ever be 0..=3, so the counter
+        // is nearly pointless here — worth seeing rather than assuming.
+        let mut app = mid_scan_with(Placeholder::Count, &[]);
+        app.set_scan_started(Instant::now() - Duration::from_millis(750));
+        let row = app
+            .rows()
+            .into_iter()
+            .find(|r| r.id == "pacman")
+            .expect("row");
+        let installed = row.installed.expect("a number");
+        assert!(installed < 2, "cannot reach the real 2: {installed}");
+        assert!(row.stale, "still an estimate");
+    }
+
+    #[test]
+    fn an_unfinished_row_says_scanning_and_marks_nothing() {
+        use crate::tui::app::Placeholder;
+        // One word, in the column that exists for row state and that no width
+        // ever drops. No punctuation on any number.
+        for style in [Placeholder::Count, Placeholder::Last] {
+            let text = render(&mid_scan_with(style, &[]), 88, 10);
+            let row = text
+                .lines()
+                .find(|l| l.contains(" pacman"))
+                .expect("pacman row");
+            assert!(!row.contains('~'), "{style:?} marked a number:\n{row}");
+            assert!(row.contains("scanning"), "{style:?} row state:\n{row}");
+        }
+    }
+
+    #[test]
+    fn a_carried_number_is_shown_while_its_lane_is_out() {
+        use crate::tui::app::Placeholder;
+        let app = mid_scan_with(Placeholder::Last, &[SourceId::pacman()]);
+        let rows = app.rows();
+        let flatpak = rows.iter().find(|r| r.id == "flatpak").expect("row");
+        assert!(flatpak.stale, "its lane is still out");
+        assert_eq!(flatpak.installed, Some(1), "last scan's number is kept");
+
+        let text = render(&app, 88, 10);
+        let row = text
+            .lines()
+            .find(|l| l.contains(" flatpak"))
+            .expect("flatpak row");
+        assert!(row.contains('1'), "the carried number is shown:\n{row}");
+        assert!(row.contains("scanning"), "its lane is still out:\n{row}");
+        // The source that did report reads as settled.
+        let pacman = text
+            .lines()
+            .find(|l| l.contains(" pacman"))
+            .expect("pacman row");
+        assert!(
+            pacman.contains("ok"),
+            "a reported source is done:\n{pacman}"
+        );
+        assert!(
+            !pacman.contains("scanning"),
+            "and is no longer waiting:\n{pacman}"
+        );
+    }
+
+    #[test]
+    fn a_scan_that_dies_leaves_its_rows_saying_so() {
+        use crate::tui::app::Placeholder;
+        // The bug: `fail` stopped the scan, every row went green, and last
+        // scan's numbers sat there looking like this run's answer.
+        let mut app = mid_scan_with(Placeholder::Count, &[SourceId::pacman()]);
+        app.fail_scan();
+        assert!(!app.is_scanning(), "the scan is over");
+
+        let rows = app.rows();
+        let reported = rows.iter().find(|r| r.id == "pacman").expect("row");
+        assert!(!reported.stale, "this one did report before the failure");
+
+        let never = rows.iter().find(|r| r.id == "flatpak").expect("row");
+        assert!(never.stale, "this one never did, and still has not");
+
+        let text = render(&app, 88, 10);
+        let row = text
+            .lines()
+            .find(|l| l.contains(" flatpak"))
+            .expect("flatpak row");
+        assert!(
+            row.contains("unchecked"),
+            "a dead scan must not leave a green ok on old numbers:\n{row}"
+        );
+        assert!(!row.contains("ok"), "{row}");
+    }
+
+    #[test]
+    fn a_cold_start_has_nothing_to_carry() {
+        use crate::tui::app::Placeholder;
+        // No previous scan behind this one: `last` cannot invent a number.
+        let mut app = App::new(
+            crate::model::ScanResult::empty(),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        app.set_placeholder(Placeholder::Last);
+        let mut partial = scan_with(Vec::new());
+        for source in partial.sources.iter_mut() {
+            source.last_scanned = None;
+        }
+        partial.packages.clear();
+        app.replace_scan_partial(partial);
+        assert!(
+            app.rows().iter().all(|r| r.installed.is_none() && !r.stale),
+            "nothing was measured before, so nothing is shown"
+        );
+    }
+
+    #[test]
+    fn a_source_that_has_reported_shows_its_numbers_while_others_are_out() {
+        let app = mid_scan(&[SourceId::pacman()]);
+        let rows = app.rows();
+        let pacman = rows.iter().find(|r| r.id == "pacman").expect("pacman row");
+        assert_eq!(pacman.installed, Some(2), "its own lane is complete");
+        assert_eq!(pacman.updates, Some(1));
+        let flatpak = rows
+            .iter()
+            .find(|r| r.id == "flatpak")
+            .expect("flatpak row");
+        assert_eq!(flatpak.installed, None, "still out");
+        assert_eq!(flatpak.updates, None);
+        assert!(app.source_counted(&SourceId::pacman()));
+        assert!(!app.source_counted(&SourceId::flatpak()));
+        assert!(!app.scan_settled(), "the scan is still running");
+    }
+
+    #[test]
+    fn a_settled_scan_shows_every_number_including_the_zeroes() {
+        let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        assert!(app.scan_settled());
+        assert!(
+            app.rows().iter().all(|r| r.installed.is_some()),
+            "nothing is pending once the scan is done"
+        );
+    }
+
+    /// The first rendered line containing `needle`.
+    fn lines_of(text: &str, needle: &str) -> String {
+        text.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no line with {needle:?} in:\n{text}"))
+            .to_string()
+    }
+
+    /// Prints one full breath, shade by shade — `cargo test demo_pulse -- --nocapture`.
+    #[test]
+    fn the_selected_row_keeps_breathing_under_the_cursor() {
+        use crate::tui::theme::Theme;
+        use ratatui::style::Color;
+        // ratatui's `row_highlight_style` patches the whole row's area, so
+        // the selection hue used to overwrite the breathing status: moving
+        // the cursor onto a scanning row froze it cyan.
+        let mut app = mid_scan(&[]);
+        app.set_theme(Theme::dark());
+        assert_eq!(app.selected(), Some(0), "the fixture selects the first row");
+
+        let buf = render_buffer(&app, 104, 20);
+        let colors = row_colors(&buf, "scanning");
+        assert!(
+            colors.iter().any(is_pulse_shade),
+            "the selected row's status is not a shade of the breath: {colors:?}"
+        );
+        // And the rest of the row still wears the selection colour.
+        assert!(
+            colors.contains(&Color::Cyan),
+            "the selection hue is gone from the selected row: {colors:?}"
+        );
+
+        // The status cell specifically must not be cyan: that was the bug.
+        let word = colors_of(&buf, "scanning");
+        assert!(
+            !word.contains(&Color::Cyan),
+            "the cursor froze the breath cyan: {word:?}"
+        );
+        assert!(
+            word.iter().all(is_pulse_shade),
+            "the whole status glows, dot and word: {word:?}"
+        );
+    }
+
+    #[test]
+    fn the_fade_gives_a_shade_per_frame_and_ends_on_the_accent() {
+        use crate::tui::theme::Theme;
+        // 30ms redraws across a 1.6s breath: the fade must produce a distinct
+        // colour for most of those frames, or it is a stepped ramp wearing an
+        // interpolation's clothes.
+        let theme = Theme::dark();
+        let frames = 27; // half a breath at the scanning tick
+        let shades: Vec<Option<ratatui::style::Color>> = (0..frames)
+            .map(|i| pulse_style(&theme, i as f32 / (frames - 1) as f32).fg)
+            .collect();
+        let mut unique = shades.clone();
+        unique.dedup();
+        assert!(
+            unique.len() > 20,
+            "only {} distinct shades across half a breath",
+            unique.len()
+        );
+        assert_eq!(
+            shades.last().and_then(|c| *c),
+            Some(ratatui::style::Color::Rgb(255, 255, 0)),
+            "the breath tops out where accent lives"
+        );
+        // A theme with no fade holds still rather than panicking.
+        let plain = Theme::none();
+        assert_eq!(pulse_style(&plain, 0.0), plain.accent);
+        assert_eq!(pulse_style(&plain, 1.0), plain.accent);
+    }
+
+    #[test]
+    fn demo_pulse() {
+        use crate::tui::theme::Theme;
+        use std::time::{Duration, Instant};
+        let theme = Theme::dark();
+        let mut app = App::new(scan_with(Vec::new()), theme, AppOptions::test());
+        println!("\n########## one breath at the scanning redraw rate ##########");
+        println!("  30ms a frame, same dot, yellow warming toward orange\n");
+        let mut seen = Vec::new();
+        for i in 0..54u64 {
+            app.set_started(Instant::now() - Duration::from_millis(i * 30));
+            let style = pulse_style(&app.theme, app.pulse());
+            seen.push(style.fg);
+            if i % 6 == 0 {
+                let shade = match style.fg {
+                    Some(ratatui::style::Color::Rgb(r, g, b)) => {
+                        format!("#{r:02x}{g:02x}{b:02x}")
+                    }
+                    other => format!("{other:?}"),
+                };
+                println!(
+                    "  {:>5}ms   {}   {shade}",
+                    i * 30,
+                    app.theme.glyphs.available
+                );
+            }
+        }
+        let mut unique = seen.clone();
+        unique.dedup();
+        println!(
+            "\n  {} frames, {} distinct shades",
+            seen.len(),
+            unique.len()
+        );
+    }
+
+    /// Demo harness for the placeholder candidates (temporary — printed
+    /// with `cargo test demo_placeholders -- --nocapture`).
+    /// Prints the climb frame by frame — `cargo test demo_climb -- --nocapture`.
+    #[test]
+    fn demo_climb() {
+        use crate::tui::app::Placeholder;
+        use std::time::{Duration, Instant};
+
+        use crate::tui::app::Curve;
+        println!("\n########## the climbing count, real value 1840 ##########");
+        println!("  (redraws every 30ms while scanning — every 5th shown)\n");
+        println!("     time    linear      out     smooth      creep");
+        for ms in (0u64..=1500).step_by(250) {
+            let at = |curve: Curve| {
+                let mut app = mid_scan_big(Placeholder::Count);
+                app.set_curve(curve);
+                app.set_scan_started(Instant::now() - Duration::from_millis(ms));
+                app.rows()
+                    .into_iter()
+                    .find(|r| r.id == "pacman")
+                    .and_then(|r| r.installed)
+                    .unwrap_or(0)
+            };
+            println!(
+                "  {ms:>5}ms   {:>6}   {:>6}   {:>6}   {:>6}",
+                at(Curve::Linear),
+                at(Curve::Out),
+                at(Curve::Smooth),
+                at(Curve::Creep)
+            );
+        }
+        println!("\n  past the ramp, only creep is still moving:");
+        for ms in [2000u64, 3000, 5000, 8000, 12000] {
+            let mut app = mid_scan_big(Placeholder::Count);
+            app.set_curve(Curve::Creep);
+            app.set_scan_started(Instant::now() - Duration::from_millis(ms));
+            let n = app
+                .rows()
+                .into_iter()
+                .find(|r| r.id == "pacman")
+                .and_then(|r| r.installed)
+                .unwrap_or(0);
+            println!("  {ms:>5}ms   {n:>6}");
+        }
+        println!("\n  lane returns → 1840, status turns green");
+    }
+
+    /// A source with a realistic package count, for the climb demo.
+    fn mid_scan_big(style: crate::tui::app::Placeholder) -> App {
+        let mut full = settled_scan();
+        full.packages = (0..1840)
+            .map(|i| pkg(&format!("pkg{i}"), SourceId::pacman()))
+            .collect();
+        let mut app = App::new(full.clone(), Theme::none(), AppOptions::test());
+        app.set_placeholder(style);
+        let mut partial = full;
+        for source in partial.sources.iter_mut() {
+            source.last_scanned = None;
+        }
+        partial.packages.clear();
+        partial.updates.clear();
+        app.replace_scan_partial(partial);
+        app
+    }
+
+    #[test]
+    fn demo_placeholders() {
+        use crate::tui::app::Placeholder;
+
+        for style in [
+            Placeholder::Blank,
+            Placeholder::Spinner,
+            Placeholder::Dots,
+            Placeholder::Last,
+            Placeholder::Count,
+        ] {
+            println!("\n########## {style:?} ##########");
+            for (label, landed) in [
+                ("0ms — nothing back yet", &[][..]),
+                ("1.1s — pacman back", &[SourceId::pacman()][..]),
+                (
+                    "1.3s — flatpak back",
+                    &[SourceId::pacman(), SourceId::flatpak()][..],
+                ),
+            ] {
+                let mut app = mid_scan_with(style, landed);
+                app.set_placeholder(style);
+                println!("\n=== {style:?} · {label} ===\n{}", render(&app, 88, 10));
+            }
+        }
     }
 
     // --- history screen (#8) ---

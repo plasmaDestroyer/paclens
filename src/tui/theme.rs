@@ -51,6 +51,21 @@ pub struct Theme {
     pub selected: Style,
     /// The table header row.
     pub header: Style,
+    /// The two ends of the breathing status dot's fade, dimmest first.
+    /// `None` in the no-color theme, where the dot simply holds still.
+    ///
+    /// RGB, and interpolated per frame rather than stepped through a list.
+    /// The 256-colour palette holds about seven usable shades inside a band
+    /// narrow enough not to read as a hue change, and seven steps at 1.6s is
+    /// visibly a sequence; interpolation gives one per redraw — around fifty
+    /// across a breath at the scanning tick.
+    ///
+    /// Both ends hold red at full, so the *hue* moves and the brightness does
+    /// not: yellow warming toward orange and back. Dropping luminance instead
+    /// reads as the dot going dim rather than as a glow. The yellow end is
+    /// `accent`'s, so the breath resolves into the colour a settled row
+    /// wears.
+    pub pulse: Option<[(u8, u8, u8); 2]>,
 }
 
 impl Theme {
@@ -97,6 +112,11 @@ impl Theme {
             header: Style::new()
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::DIM),
+            // #ffb900 → #ffff00: amber-orange warming to yellow. Red stays at
+            // full and only green moves, so the dot changes colour without
+            // appearing to dim — brightness and hue are different signals and
+            // this one is not about brightness.
+            pulse: Some([(255, 185, 0), (255, 255, 0)]),
         }
     }
 
@@ -114,12 +134,35 @@ impl Theme {
             border: Style::new(),
             selected: Style::new().add_modifier(Modifier::REVERSED),
             header: Style::new().add_modifier(Modifier::BOLD),
+            // No colour to fade through; the dot holds still and the word
+            // beside it carries the state.
+            pulse: None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pulse_fade_warms_toward_orange_without_dimming() {
+        let [warm, high] = Theme::dark().pulse.expect("a colored theme breathes");
+        // The yellow end is the one a settled row wears, or the breath
+        // resolves into a colour nothing else on screen uses.
+        assert_eq!(high, (255, 255, 0));
+        // Red at full on both ends: the hue moves, the brightness does not.
+        // A ramp that drops luminance instead reads as the dot going dim,
+        // which is what the first two attempts did.
+        assert_eq!(warm.0, high.0, "the warm end is darker, not warmer");
+        assert_eq!(warm.2, 0, "and has picked up blue");
+        assert!(warm.1 < high.1, "the warm end must be more orange");
+        assert!(
+            warm.1 > high.1 / 2,
+            "and only slightly: below this it is orange, not warm yellow"
+        );
+        // The no-color theme has nothing to fade through.
+        assert!(Theme::none().pulse.is_none());
+    }
+
     use super::*;
 
     // `resolve` is asserted via the one observable difference between the no-color

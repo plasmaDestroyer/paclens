@@ -74,6 +74,90 @@ impl AppOptions {
     }
 }
 
+/// **Temporary** — what an uncounted cell shows while its source's lane is
+/// still out. Switched with `--demo-coldstart` so the candidates can be
+/// compared in the real TUI; one of them stays and this enum goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Placeholder {
+    /// Nothing at all.
+    #[default]
+    Blank,
+    /// The spinner, in the count column itself.
+    Spinner,
+    /// The previous scan's number, dimmed and marked approximate.
+    Last,
+    /// A dim ellipsis — something is coming.
+    Dots,
+    /// A number climbing toward the previous scan's count, replaced by the
+    /// real one the moment its lane reports.
+    Count,
+}
+
+/// **Temporary** — the shape of the climbing count's ramp, switched with
+/// `--demo-curve` so the candidates can be felt rather than argued about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Curve {
+    /// Constant speed. Every redraw shows a different number; nothing about
+    /// it suggests a beginning or an end.
+    Linear,
+    /// Fast off the mark, slowing as it approaches — the shape of something
+    /// converging on an answer.
+    Out,
+    /// Slow, then quick through the middle, then easing in. Reads as a
+    /// deliberate movement with a start and a finish.
+    Smooth,
+    /// Slow, then quick, then a tail that never finishes — it keeps counting,
+    /// more and more slowly, for as long as the lane takes.
+    #[default]
+    Creep,
+}
+
+impl Curve {
+    /// Map elapsed ramps (`t = elapsed / EXPECTED_LANE`, unbounded) onto a
+    /// fraction of the target.
+    ///
+    /// The first three finish: past `t = 1` they sit on their last value,
+    /// which is why they are only worth comparing against [`Curve::Creep`].
+    fn apply(self, t: f32) -> f32 {
+        let bounded = t.clamp(0.0, 1.0);
+        match self {
+            Curve::Linear => bounded,
+            Curve::Out => 1.0 - (1.0 - bounded).powi(2),
+            // Smoothstep: zero slope at both ends, steepest in the middle.
+            Curve::Smooth => bounded * bounded * (3.0 - 2.0 * bounded),
+            // Hyperbolic, tuned to reach ~90% by the time a lane usually
+            // returns and then to crawl: 90% at one ramp, 97% at two, 99% at
+            // four, and still rising at eight. It never arrives, which is the
+            // point — a number that stops looks like an answer, and a
+            // provider hanging on a dead network should look like what it is.
+            Curve::Creep => {
+                let k = 3.0 * t;
+                1.0 - 1.0 / (1.0 + k * k)
+            }
+        }
+    }
+}
+
+/// **Temporary** — which cold start the demo replays, so the edge cases can
+/// be watched instead of waited for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Scenario {
+    /// This machine's measured timings: 1.1s, 1.3s, 1.6s.
+    #[default]
+    Normal,
+    /// A network that is not answering: lanes land at the provider timeout,
+    /// long after the climb's ramp has run out.
+    Slow,
+    /// A lane that never lands at all — the scan reports a failure.
+    Fail,
+    /// A machine with a handful of packages, where a climbing count has
+    /// almost no room to climb.
+    Small,
+    /// Numbers that fell since the last scan, so the estimate overshoots and
+    /// the real value arrives *below* it.
+    Shrunk,
+}
+
 /// Which dashboard pane owns ↑/↓: the sources table or the updates preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashPane {
@@ -176,8 +260,17 @@ pub struct ExecView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRow {
     pub id: String,
-    pub installed: usize,
-    pub updates: usize,
+    /// `None` while nothing is known — not the same as zero, and the table
+    /// must not render it as one (design §3).
+    pub installed: Option<usize>,
+    pub updates: Option<usize>,
+    /// These counts are the *previous* scan's, carried while this source's
+    /// lane is still out. Real numbers, possibly stale — rendered as
+    /// approximate so they cannot be read as this run's answer.
+    pub stale: bool,
+    /// The shown number is a climb in progress, so it is moving and needs no
+    /// other mark. False once the ramp expires, when it stops moving and does.
+    pub climbing: bool,
     pub available: bool,
     /// Included in the update plan (Space toggles; None = nothing to update).
     pub enabled: Option<bool>,
@@ -204,6 +297,16 @@ pub struct App {
     /// A blocking re-scan is about to run; the dashboard shows it instead of
     /// the scan age. (True async scanning is the v0.0.9 usability pass.)
     scanning: bool,
+    /// Sources whose visible numbers came from the previous scan because
+    /// their lane has not reported yet.
+    carried: std::collections::HashSet<SourceId>,
+    /// Temporary: which placeholder the demo is showing.
+    placeholder: Placeholder,
+    /// When the running scan started — the clock the `count` placeholder
+    /// animates against.
+    scan_started: Option<std::time::Instant>,
+    /// Temporary: the ramp shape the demo is showing.
+    curve: Curve,
     /// Package list: which source's packages are shown.
     pkg_source: Option<SourceId>,
     /// Package list: cursor over `visible_packages()`.
@@ -219,6 +322,8 @@ pub struct App {
     pkg_sort: PkgSort,
     /// Spinner animation frame, advanced by the loop's poll tick.
     spinner_frame: usize,
+    /// When this session started — the spinner's clock.
+    started: std::time::Instant,
     /// Inline log viewer overlay (any screen).
     log_view: Option<LogView>,
     /// Inline execution console overlay (any screen).
@@ -376,6 +481,10 @@ impl App {
             enabled,
             flash: None,
             scanning: false,
+            carried: std::collections::HashSet::new(),
+            placeholder: Placeholder::default(),
+            scan_started: None,
+            curve: Curve::default(),
             pkg_source: None,
             pkg_cursor: 0,
             pkg_filter: String::new(),
@@ -383,6 +492,7 @@ impl App {
             pane_bias: 0,
             pkg_sort: PkgSort::Size,
             spinner_frame: 0,
+            started: std::time::Instant::now(),
             log_view: None,
             exec: None,
             dash_focus: DashPane::Sources,
@@ -406,6 +516,144 @@ impl App {
     }
 
     /// Swap in a fresh scan (after a refresh), keeping cursors valid.
+    /// Land a partial scan — the same swap, with the scan still running.
+    ///
+    /// Which rows are real is not a property of the scan as a whole: each
+    /// source's lane finishes when its own commands do (`checkupdates` at
+    /// ~1.1s here, `flatpak remote-ls` at ~1.3s, `paru -Qua` at ~1.6s), and a
+    /// source carries `last_scanned` once its numbers are in.
+    pub fn replace_scan_partial(&mut self, mut scan: ScanResult) {
+        // A lane that has not reported has not deleted anything either. With
+        // the `last` placeholder, carry the previous scan's packages for it so
+        // the row keeps showing what was true last time — a real measurement,
+        // marked as an old one.
+        let mut carried = std::collections::HashSet::new();
+        if matches!(self.placeholder, Placeholder::Last | Placeholder::Count) {
+            let pending: Vec<SourceId> = scan
+                .sources
+                .iter()
+                .filter(|s| s.last_scanned.is_none())
+                .map(|s| s.id.clone())
+                .collect();
+            for id in pending {
+                let previous: Vec<Package> = self
+                    .scan
+                    .packages
+                    .iter()
+                    .filter(|p| p.source_id == id)
+                    .cloned()
+                    .collect();
+                let previous_updates: Vec<PendingUpdate> = self
+                    .scan
+                    .updates
+                    .iter()
+                    .filter(|u| u.source_id == id)
+                    .cloned()
+                    .collect();
+                // A cold start has nothing to carry, and an empty cell is the
+                // honest answer there.
+                if previous.is_empty() && previous_updates.is_empty() {
+                    continue;
+                }
+                scan.packages.extend(previous);
+                scan.updates.extend(previous_updates);
+                carried.insert(id);
+            }
+        }
+        let started = self.scan_started;
+        self.replace_scan(scan);
+        self.carried = carried;
+        self.scanning = true;
+        // The clock belongs to the scan, not to each partial result that
+        // lands during it.
+        self.scan_started = started.or_else(|| Some(std::time::Instant::now()));
+    }
+
+    /// How long a lane is assumed to take, for the climbing count. Measured
+    /// on the author's machine: `checkupdates` 1.08s, `flatpak remote-ls`
+    /// 1.30s, `paru -Qua` 1.64s.
+    const EXPECTED_LANE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+    /// The number to show for a source whose lane is still out, when the
+    /// `count` placeholder is on.
+    ///
+    /// **This is not a measurement.** It is the previous scan's count, eased
+    /// in over the time a lane usually takes, so the cell has something
+    /// moving in it. It never reaches the target, so the real count always
+    /// visibly replaces it; it carries a `~` wherever it is drawn, and the row
+    /// keeps its
+    /// "scanning" status until the real count lands. A source with no
+    /// previous count has nothing to climb toward and shows nothing.
+    pub fn climbing_count(&self, id: &SourceId, target: usize) -> Option<usize> {
+        if self.placeholder != Placeholder::Count || !self.carried.contains(id) {
+            return None;
+        }
+        let elapsed = self.scan_started?.elapsed();
+        // Ramps elapsed, not a fraction of one: the curve decides what to do
+        // past the first, and the default one keeps going.
+        let progress = elapsed.as_secs_f32() / Self::EXPECTED_LANE.as_secs_f32();
+        // A curve costs distinct values wherever it flattens: a slow tail
+        // changing by less than one per frame parks the number exactly when
+        // it is being watched. With a large target there is room for both,
+        // which is why the shape is worth trying rather than reasoning about.
+        let shaped = self.curve.apply(progress);
+        // Never the target itself, however small the target is: the estimate
+        // must always be visibly replaced when the real count lands, so it
+        // can never be the number the user walks away with.
+        Some((((target as f32) * shaped).floor() as usize).min(target.saturating_sub(1)))
+    }
+
+    pub fn placeholder(&self) -> Placeholder {
+        self.placeholder
+    }
+    /// Temporary: set by `--demo-coldstart`.
+    pub fn set_placeholder(&mut self, placeholder: Placeholder) {
+        self.placeholder = placeholder;
+    }
+    /// Temporary: set by `--demo-curve`.
+    pub fn set_curve(&mut self, curve: Curve) {
+        self.curve = curve;
+    }
+    /// Swap the theme, so a test can render with real colours.
+    #[cfg(test)]
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+    /// Move the session clock, so a spinner test need not sleep.
+    #[cfg(test)]
+    pub fn set_started(&mut self, at: std::time::Instant) {
+        self.started = at;
+    }
+    /// Move the scan clock, so a test can look at the climb at a chosen
+    /// moment instead of sleeping for one.
+    #[cfg(test)]
+    pub fn set_scan_started(&mut self, at: std::time::Instant) {
+        self.scan_started = Some(at);
+    }
+
+    /// Are this source's numbers real yet? Everything is, once no scan is
+    /// running — that is the settled case every other screen assumes.
+    pub fn source_counted(&self, id: &SourceId) -> bool {
+        // A source still carrying the previous scan's numbers has not
+        // reported, whether the scan is still running or gave up.
+        if self.carried.contains(id) {
+            return false;
+        }
+        !self.scanning
+            || self
+                .scan
+                .sources
+                .iter()
+                .any(|s| &s.id == id && s.last_scanned.is_some())
+    }
+
+    /// Every source has reported. Toggling, planning, overlaps and cleanup
+    /// all need this: they read across sources, so half an answer is a wrong
+    /// one rather than a partial one.
+    pub fn scan_settled(&self) -> bool {
+        !self.scanning
+    }
+
     pub fn replace_scan(&mut self, scan: ScanResult) {
         self.graph = DepGraph::build(&scan);
         self.orphans = derive_orphans(&self.graph, &scan, &self.opts);
@@ -425,6 +673,8 @@ impl App {
         };
         self.enabled = default_toggles(&self.scan);
         self.scanning = false;
+        self.carried.clear();
+        self.scan_started = None;
         self.updates_scroll = 0;
         self.clamp_pkg_cursor();
     }
@@ -471,14 +721,44 @@ impl App {
     pub fn is_scanning(&self) -> bool {
         self.scanning
     }
+    /// The scan died. Sources that never reported keep the previous scan's
+    /// numbers and stay marked as such — a failed scan must not leave old
+    /// counts wearing a green "ok" (design §3).
+    pub fn fail_scan(&mut self) {
+        self.scanning = false;
+        self.scan_started = None;
+    }
     pub fn set_scanning(&mut self, scanning: bool) {
         self.scanning = scanning;
     }
 
-    /// Advance the spinner one frame (called on every loop tick).
+    /// Advance the spinner (called on every loop tick).
+    ///
+    /// The frame is a function of elapsed time rather than a count of ticks,
+    /// so the loop can redraw as fast as it likes — the climbing counts want
+    /// 30ms — without the spinner turning into a blur.
     pub fn tick(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+        self.spinner_frame = self.started.elapsed().as_millis() as usize / 120;
     }
+    /// How far through a breath the status dot is: 0 at its dimmest, 1 at its
+    /// brightest, and back down — a triangle over 1.6s.
+    ///
+    /// Drives the breathing status dot on a row that is still being scanned.
+    /// A pulse rather than a spinner because nothing moves across the screen:
+    /// three spinners read as a light show, three dots breathing on one clock
+    /// read as a machine working (2026-09-08). The theme decides how many
+    /// shades that phase lands on.
+    pub fn pulse(&self) -> f32 {
+        const PERIOD_MS: f32 = 1600.0;
+        let phase = (self.started.elapsed().as_millis() as f32 % PERIOD_MS) / PERIOD_MS;
+        // 0 → 1 over the first half, 1 → 0 over the second.
+        if phase < 0.5 {
+            phase * 2.0
+        } else {
+            (1.0 - phase) * 2.0
+        }
+    }
+
     /// The current spinner glyph from the active theme's frame set.
     pub fn spinner(&self) -> &'static str {
         let frames = self.theme.glyphs.spinner;
@@ -601,11 +881,27 @@ impl App {
             .iter()
             .map(|s| {
                 let summary = summarize(&self.scan, |id| id == &s.id);
-                let enabled = (s.available && summary.updates > 0).then(|| self.is_enabled(&s.id));
+                // A count appears when its own source reports, not when the
+                // scan as a whole finishes. Until then the cells are empty:
+                // "not counted yet" and "zero" are different answers and must
+                // not look alike (design §3).
+                let counted = self.source_counted(&s.id);
+                // A source still out can keep the last scan's numbers: a
+                // measurement from this morning beats an empty cell, as long
+                // as the screen says which it is.
+                let stale = !counted && self.carried.contains(&s.id);
+                let known = counted || stale;
+                let climb = self.climbing_count(&s.id, summary.installed);
+                let installed = known.then(|| climb.unwrap_or(summary.installed));
+                let updates = known.then_some(summary.updates);
+                let enabled =
+                    (s.available && summary.updates > 0 && counted).then(|| self.is_enabled(&s.id));
                 SourceRow {
                     id: s.id.to_string(),
-                    installed: summary.installed,
-                    updates: summary.updates,
+                    installed,
+                    updates,
+                    stale,
+                    climbing: climb.is_some(),
                     available: s.available,
                     enabled,
                 }
@@ -1603,8 +1899,8 @@ mod tests {
         let rows = app().rows();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].id, "pacman");
-        assert_eq!(rows[0].installed, 2);
-        assert_eq!(rows[0].updates, 1);
+        assert_eq!(rows[0].installed, Some(2));
+        assert_eq!(rows[0].updates, Some(1));
         assert!(rows[2].id == "aur" && !rows[2].available);
     }
 
@@ -1670,15 +1966,58 @@ mod tests {
     }
 
     #[test]
-    fn tick_advances_and_wraps_the_spinner() {
+    fn the_pulse_breathes_in_and_out_on_a_clock() {
+        use std::time::{Duration, Instant};
         let mut app = app();
+        // A full period, sampled: it must rise, fall, and come back — not
+        // ramp and reset, which reads as a flicker rather than breathing.
+        let seen: Vec<f32> = (0..17)
+            .map(|i| {
+                app.set_started(Instant::now() - Duration::from_millis(i * 100));
+                app.pulse()
+            })
+            .collect();
+        let peak = seen.iter().cloned().fold(f32::MIN, f32::max);
+        let trough = seen.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(peak > 0.9, "never reaches full brightness: {seen:?}");
+        assert!(trough < 0.1, "never dims all the way: {seen:?}");
+        assert!(
+            (seen[0] - seen[16]).abs() < 0.05,
+            "a period does not bring it back: {seen:?}"
+        );
+        // And it moves smoothly: no jump bigger than one sample's worth.
+        assert!(
+            seen.windows(2).all(|w| (w[0] - w[1]).abs() < 0.2),
+            "the pulse jumped: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn the_spinner_follows_the_clock_not_the_redraw_rate() {
+        // Redraws run at 30ms while scanning; the spinner must not turn into
+        // a blur because of it, so its frame comes from elapsed time.
+        let mut app = app();
+        app.tick();
         let first = app.spinner();
         app.tick();
-        assert_ne!(app.spinner(), first, "frame did not advance");
+        assert_eq!(
+            app.spinner(),
+            first,
+            "two redraws, same instant, same frame"
+        );
+
         let frames = app.theme.glyphs.spinner.len();
-        for _ in 1..frames {
-            app.tick();
-        }
+        app.set_started(std::time::Instant::now() - std::time::Duration::from_millis(120));
+        app.tick();
+        assert_ne!(
+            app.spinner(),
+            first,
+            "a frame's worth of time did advance it"
+        );
+        app.set_started(
+            std::time::Instant::now() - std::time::Duration::from_millis(120 * frames as u64),
+        );
+        app.tick();
         assert_eq!(app.spinner(), first, "did not wrap around");
     }
 

@@ -28,6 +28,7 @@ use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
 use app::{App, InputMode};
+pub use app::{Curve, Placeholder, Scenario};
 use input::{
     Action, map_cleanup_key, map_dashboard_key, map_exec_key, map_filter_key, map_history_key,
     map_log_key, map_overlaps_key, map_packages_key,
@@ -38,14 +39,166 @@ use theme::Theme;
 /// the scan channel. Also the spinner's frame rate.
 const TICK: Duration = Duration::from_millis(120);
 
-/// A scan running on a worker thread; the result arrives on the channel.
-struct ScanJob(mpsc::Receiver<anyhow::Result<ScanResult>>);
+/// The redraw interval while a scan is running. The climbing counts are the
+/// only thing on screen that changes between frames, and at 120ms they moved
+/// in ~12 visible steps; at 30ms they read as a counter rather than a
+/// slideshow. It only applies while scanning, so an idle dashboard still
+/// wakes eight times a second rather than thirty.
+const SCAN_TICK: Duration = Duration::from_millis(30);
+
+/// What a scan reports back as it runs.
+enum ScanEvent {
+    /// A partial result: everything up to `phase` is real, the rest is not
+    /// on screen yet.
+    Progress(Box<ScanResult>),
+    Done(Box<anyhow::Result<ScanResult>>),
+}
+
+/// A scan running on a worker thread; results arrive on the channel.
+struct ScanJob(mpsc::Receiver<ScanEvent>);
 
 fn spawn_scan(config: Config) -> ScanJob {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
-        let _ = tx.send(scanner::scan_and_store(&runner, &config));
+        let _ = tx.send(ScanEvent::Done(Box::new(scanner::scan_and_store(
+            &runner, &config,
+        ))));
+    });
+    ScanJob(rx)
+}
+
+/// **Temporary — delete once the cold-start option is chosen (#TBD).**
+///
+/// Replays a cold start against the cached scan so the candidate options can
+/// be felt in the real TUI instead of compared as screenshots. The producer
+/// is fake; everything downstream — the render, the key gating, the event
+/// loop — is the real thing, which is the point.
+///
+/// Delays are what this machine actually measures: `pacman -Qi` 0.33s,
+/// `checkupdates` 1.08s, `paru -Qua` 1.64s, `flatpak remote-ls` 1.30s.
+/// Which placeholder the demo should replay, or `None` for no demo.
+///
+/// Any of the three flags starts it: asking for a curve or a scenario without
+/// naming a placeholder used to leave the demo unstarted, which opened the
+/// ordinary cached dashboard and looked exactly like the flag doing nothing.
+fn demo_requested(
+    placeholder: Option<app::Placeholder>,
+    curve: Option<app::Curve>,
+    scenario: Option<app::Scenario>,
+) -> Option<app::Placeholder> {
+    if placeholder.is_none() && curve.is_none() && scenario.is_none() {
+        return None;
+    }
+    // The climbing count is the one being tuned, so it is what a bare
+    // `--demo-curve` or `--demo-scenario` means.
+    Some(placeholder.unwrap_or(app::Placeholder::Count))
+}
+
+/// What the demo opens on, before any lane reports.
+///
+/// `last` and `count` need the previous scan behind them — one shows those
+/// numbers, the other climbs toward them, and neither has anything to work
+/// with if they are cleared first. The rest open with the sources detected
+/// and nothing counted.
+fn demo_opening(placeholder: app::Placeholder, cache: &ScanResult) -> ScanResult {
+    if matches!(
+        placeholder,
+        app::Placeholder::Last | app::Placeholder::Count
+    ) {
+        return cache.clone();
+    }
+    let mut sources_only = cache.clone();
+    sources_only.packages.clear();
+    sources_only.updates.clear();
+    sources_only
+}
+
+/// The cache a scenario starts from — the numbers the climb aims at.
+fn demo_cache(scenario: app::Scenario, cache: ScanResult) -> ScanResult {
+    use crate::model::SourceId;
+    let mut cache = cache;
+    match scenario {
+        // A handful of packages: the climb has almost nowhere to go, which is
+        // the case where a counter is worth less than a plain number.
+        app::Scenario::Small => {
+            cache.packages.truncate(4);
+            cache.updates.truncate(1);
+        }
+        // The machine lost packages since the last scan, so the estimate
+        // overshoots and the truth lands below it.
+        app::Scenario::Shrunk => {
+            let keep = cache.packages.len() / 4;
+            cache
+                .packages
+                .retain(|p| p.source_id != SourceId::pacman() || keep > 0);
+            cache.packages.truncate(keep.max(1));
+        }
+        _ => {}
+    }
+    cache
+}
+
+fn spawn_demo(scenario: app::Scenario, cached: ScanResult) -> ScanJob {
+    use crate::model::SourceId;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        // Nothing is counted until a source's own commands come back, so a
+        // partial scan is the sources with their numbers withheld.
+        let staged = |landed: &[SourceId]| {
+            let mut s = cached.clone();
+            for source in s.sources.iter_mut() {
+                if !landed.contains(&source.id) {
+                    source.last_scanned = None;
+                }
+            }
+            s.packages.retain(|p| landed.contains(&p.source_id));
+            s.updates.retain(|u| landed.contains(&u.source_id));
+            Box::new(s)
+        };
+        let send = |event| tx.send(event).is_ok();
+        // Measured on this machine: checkupdates 1.08s, flatpak remote-ls
+        // 1.30s, paru -Qua 1.64s. The lanes run concurrently, so those are
+        // arrival times, not a sum. A stalled network runs to the provider
+        // timeout instead, which is many times the climb's ramp.
+        let lanes: Vec<(u64, SourceId)> = match scenario {
+            app::Scenario::Slow => vec![
+                (6000, SourceId::pacman()),
+                (8000, SourceId::flatpak()),
+                (10000, SourceId::aur()),
+            ],
+            _ => vec![
+                (1080, SourceId::pacman()),
+                (1300, SourceId::flatpak()),
+                (1640, SourceId::aur()),
+            ],
+        };
+
+        if !send(ScanEvent::Progress(staged(&[]))) {
+            return;
+        }
+        // A scan that dies: the rows keep whatever they had, and the
+        // dashboard says the scan failed rather than pretending it finished.
+        if scenario == app::Scenario::Fail {
+            std::thread::sleep(Duration::from_millis(2500));
+            let _ = send(ScanEvent::Done(Box::new(Err(anyhow::anyhow!(
+                "checkupdates: could not reach any mirror"
+            )))));
+            return;
+        }
+        let mut landed: Vec<SourceId> = Vec::new();
+        let mut elapsed = 0u64;
+        for (at, id) in lanes {
+            std::thread::sleep(Duration::from_millis(at - elapsed));
+            elapsed = at;
+            landed.push(id);
+            if !send(ScanEvent::Progress(staged(&landed))) {
+                return;
+            }
+        }
+        let _ = send(ScanEvent::Done(Box::new(Ok(cached))));
     });
     ScanJob(rx)
 }
@@ -59,6 +212,9 @@ pub fn run(
     refresh: bool,
     config_path: Option<&Path>,
     no_color: bool,
+    demo_coldstart: Option<app::Placeholder>,
+    demo_curve: Option<app::Curve>,
+    demo_scenario: Option<app::Scenario>,
 ) -> anyhow::Result<()> {
     let theme = Theme::resolve(config.general.color_theme(), no_color);
 
@@ -71,6 +227,34 @@ pub fn run(
         } else {
             scanner::load_cached(config, config_path)?
         };
+        // Temporary: replay a cold start against the cached scan, switching
+        // what an uncounted cell shows. Deleted with `spawn_demo` once one
+        // placeholder is chosen.
+        if let Some(placeholder) = demo_requested(demo_coldstart, demo_curve, demo_scenario) {
+            let scenario = demo_scenario.unwrap_or_default();
+            let Some(cache) = cached else {
+                anyhow::bail!("--demo-coldstart needs a cached scan: run `paclens status` first");
+            };
+            let cache = demo_cache(scenario, cache);
+            let opts = app::AppOptions::from_config(config, executor::sudo::detect());
+            // `last` and `count` open holding the previous scan's numbers —
+            // one shows them, the other climbs toward them, and neither has
+            // anything to work with if they are cleared first. The rest open
+            // with the sources detected and nothing counted. Never on the
+            // splash, which is the point of the exercise.
+            let opening = demo_opening(placeholder, &cache);
+            let mut app = App::new(opening, theme, opts);
+            app.set_placeholder(placeholder);
+            app.set_curve(demo_curve.unwrap_or_default());
+            app.set_scanning(true);
+            return run_loop(
+                &mut terminal,
+                &mut app,
+                Some(spawn_demo(scenario, cache)),
+                config,
+            );
+        }
+
         let start_scanning = cached.is_none();
         let mut app = App::new(
             cached.unwrap_or_else(ScanResult::empty),
@@ -108,13 +292,18 @@ fn run_loop(
         // Land a finished background scan, if any.
         if let Some(active) = &job {
             match active.0.try_recv() {
-                Ok(Ok(scan)) => {
-                    app.replace_scan(scan); // also clears the scanning flag
-                    job = None;
-                }
-                Ok(Err(err)) => {
-                    app.set_scanning(false);
-                    app.set_flash(format!("scan failed: {err:#}"));
+                Ok(ScanEvent::Progress(scan)) => app.replace_scan_partial(*scan),
+                Ok(ScanEvent::Done(result)) => {
+                    match *result {
+                        Ok(scan) => app.replace_scan(scan), // clears the scanning flag
+                        Err(err) => {
+                            // The lanes that never reported still have not:
+                            // their rows keep last scan's numbers and say so,
+                            // rather than turning green on a scan that died.
+                            app.fail_scan();
+                            app.set_flash(format!("scan failed: {err:#}"));
+                        }
+                    }
                     job = None;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -153,7 +342,8 @@ fn run_loop(
         }
 
         // Wait for a key with a timeout so the spinner keeps animating.
-        if !event::poll(TICK).context("failed to poll for terminal events")? {
+        let tick = if app.is_scanning() { SCAN_TICK } else { TICK };
+        if !event::poll(tick).context("failed to poll for terminal events")? {
             app.tick();
             continue;
         }
@@ -185,9 +375,31 @@ fn run_loop(
                     job = Some(spawn_scan(config.clone()));
                 }
             }
-            Action::OpenPackages => app.open_packages(),
-            Action::OpenOverlaps => app.open_overlaps(),
-            Action::OpenCleanup => app.open_cleanup(),
+            // The package list needs only what is installed, which lands
+            // long before any update check comes back.
+            Action::OpenPackages => match app.dash_source().map(|s| s.id.clone()) {
+                // A source that has reported can be opened while the others
+                // are still out — its own list is complete.
+                Some(id) if app.source_counted(&id) => app.open_packages(),
+                Some(id) => app.set_flash(format!("still counting {id}…")),
+                None => {}
+            },
+            // Both read analyzer output over the full package set; opening
+            // them mid-scan would show an answer derived from half a machine.
+            Action::OpenOverlaps => {
+                if app.scan_settled() {
+                    app.open_overlaps()
+                } else {
+                    app.set_flash("still scanning — overlaps need the whole package list");
+                }
+            }
+            Action::OpenCleanup => {
+                if app.scan_settled() {
+                    app.open_cleanup()
+                } else {
+                    app.set_flash("still scanning — cleanup needs the whole package list");
+                }
+            }
             Action::OpenHistory => app.open_history(),
             Action::Back => match app.screen() {
                 app::Screen::Overlaps => app.close_overlaps(),
@@ -217,14 +429,25 @@ fn run_loop(
             Action::FilterBackspace => app.filter_pop(),
             Action::FilterAccept => app.filter_accept(),
             Action::FilterCancel => app.filter_cancel(),
-            Action::Toggle => app.toggle_selected(),
+            // A source that has reported can be toggled: its own count is
+            // final, whatever the other lanes are still doing.
+            Action::Toggle => match app.dash_source().map(|s| s.id.clone()) {
+                Some(id) if app.source_counted(&id) => app.toggle_selected(),
+                Some(id) => app.set_flash(format!("still counting {id}…")),
+                None => {}
+            },
             Action::Execute => {
                 // Enter runs directly — the plan view is the confirmation
                 // (user decision 2026-07-08); pacman/sudo prompt for
                 // themselves inside the pty console.
                 let plan = app.update_plan();
                 let tool = app.privilege_tool();
-                if plan.is_empty() {
+                if !app.scan_settled() {
+                    // A plan built from half a scan is a plan for a machine
+                    // that does not exist. "You're up to date" here would be
+                    // a confident wrong answer (design §3).
+                    app.set_flash("still checking for updates — the plan is not complete yet");
+                } else if plan.is_empty() {
                     app.set_flash(if app.total_updates() == 0 {
                         "you're up to date"
                     } else {
@@ -356,5 +579,84 @@ fn read_action(mode: InputMode, exec_done: bool) -> anyhow::Result<Action> {
             InputMode::Exec => map_exec_key(key, exec_done),
         }),
         _ => Ok(Action::Ignore),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Package, SourceId};
+
+    fn cache_with(packages: usize) -> ScanResult {
+        let mut scan = ScanResult::empty();
+        scan.packages = (0..packages)
+            .map(|i| Package {
+                name: format!("pkg{i}"),
+                version: "1".to_string(),
+                source_id: SourceId::pacman(),
+                install_reason: crate::model::InstallReason::Explicit,
+                size_bytes: None,
+                description: None,
+                depends_on: Vec::new(),
+                required_by: Vec::new(),
+                optional_deps: Vec::new(),
+                provides: Vec::new(),
+                runtime: false,
+                scope: None,
+                foreign: false,
+                signed: true,
+                packager: None,
+            })
+            .collect();
+        scan
+    }
+
+    #[test]
+    fn any_demo_flag_starts_the_replay() {
+        // The bug: `--demo-curve smooth` alone left the placeholder unset, so
+        // the demo never ran and the ordinary cached dashboard opened —
+        // which looks exactly like the flag doing nothing.
+        assert_eq!(
+            demo_requested(None, Some(app::Curve::Smooth), None),
+            Some(app::Placeholder::Count),
+            "a curve on its own means the climbing count"
+        );
+        assert_eq!(
+            demo_requested(None, None, Some(app::Scenario::Slow)),
+            Some(app::Placeholder::Count),
+            "so does a scenario"
+        );
+        assert_eq!(
+            demo_requested(Some(app::Placeholder::Blank), None, None),
+            Some(app::Placeholder::Blank),
+            "an explicit placeholder wins"
+        );
+        assert_eq!(demo_requested(None, None, None), None, "no flags, no demo");
+    }
+
+    #[test]
+    fn the_number_placeholders_open_holding_the_previous_scan() {
+        // The bug this pins: opening with the packages cleared left `count`
+        // with nothing to climb toward, so the cells stayed blank.
+        let cache = cache_with(3);
+        for placeholder in [app::Placeholder::Last, app::Placeholder::Count] {
+            let opening = demo_opening(placeholder, &cache);
+            assert_eq!(
+                opening.packages.len(),
+                3,
+                "{placeholder:?} needs the previous numbers"
+            );
+        }
+        for placeholder in [
+            app::Placeholder::Blank,
+            app::Placeholder::Spinner,
+            app::Placeholder::Dots,
+        ] {
+            let opening = demo_opening(placeholder, &cache);
+            assert!(
+                opening.packages.is_empty(),
+                "{placeholder:?} shows no numbers before a lane reports"
+            );
+        }
     }
 }
