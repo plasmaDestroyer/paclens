@@ -33,12 +33,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         render_too_small(frame, area, &app.theme);
         return;
     }
-    // Cold start: nothing to show yet — the splash carries the spinner until
-    // the first background scan lands.
-    if app.is_scanning() && app.scan().sources.is_empty() {
-        draw_splash(frame, &app.theme, Some(app.spinner()));
-        return;
-    }
+    // No cold-start splash: the scan reports its detected sources before it
+    // counts anything, so the first frame is a dashboard with rows in it
+    // (design §13, 2026-09-09).
     // Overlays cover whatever screen is active (the dashboard owns the
     // update flow — the console and log viewer draw on top of it).
     if let Some(view) = app.exec() {
@@ -738,28 +735,13 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             // A count the scan has not produced yet is a dash, not a zero:
             // "nothing to update" and "not checked yet" are different answers
             // (design §3), and while scanning the row says which it is.
-            // What an uncounted cell shows. A dash is out: in a numeric
-            // column it reads as a value. The rest are being compared in the
-            // TUI (temporary — `--demo-coldstart`).
-            let waiting = |theme: &Theme| match app.placeholder() {
-                crate::tui::app::Placeholder::Spinner => {
-                    Span::styled(app.spinner().to_string(), theme.dim)
-                }
-                crate::tui::app::Placeholder::Dots => Span::styled("···".to_string(), theme.dim),
-                // `count` shows a climbing number, which arrives through the
-                // `stale` path below; with nothing to climb toward there is
-                // nothing to draw.
-                crate::tui::app::Placeholder::Count => Span::styled(String::new(), theme.dim),
-                _ => Span::styled(String::new(), theme.dim),
-            };
-            // A carried number wears a `~`: it sits still, so nothing else
-            // says it is not this run's answer. A climbing one does not — the
-            // movement is the signal, and the row's yellow "scanning" status
-            // is what stops either from reading as settled (design §3).
-            // No per-cell mark. The status column exists to say what state a
-            // row is in, no width ever drops it, and one word there beats a
-            // punctuation mark on every number — design §3 asks that the
-            // number be labelled, not where the label goes.
+            // A cell whose lane is still out shows the climbing estimate,
+            // which arrives through the `stale` path below. With nothing to
+            // climb toward — a first run, with no previous scan — it is left
+            // empty: a placeholder in a numeric column reads as a value.
+            let waiting = |theme: &Theme| Span::styled(String::new(), theme.dim);
+            // An estimate is drawn plainly: it is moving, and the row's
+            // breathing "scanning" status is what says it is not settled.
             let approx = |n: usize, theme: &Theme| Span::styled(n.to_string(), theme.dim);
             let updates = match (r.updates, r.stale) {
                 (Some(n), true) => approx(n, theme),
@@ -2303,34 +2285,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 // ---------------------------------------------------------------------------
 // Startup splash
 // ---------------------------------------------------------------------------
-
-/// The cold-start frame: painted immediately on open and animated while the
-/// first background scan runs, so the terminal never looks hung.
-pub fn draw_splash(frame: &mut Frame, theme: &Theme, spinner: Option<&str>) {
-    let area = frame.area();
-    let block = panel(theme, " paclens ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let headline = match spinner {
-        Some(glyph) => format!("{glyph} scanning sources…"),
-        None => "scanning sources…".to_string(),
-    };
-    let lines = vec![
-        Line::from(Span::styled(headline, theme.accent)).centered(),
-        Line::from(Span::styled(
-            "first scan reads pacman + flatpak and can take a few seconds",
-            theme.dim,
-        ))
-        .centered(),
-    ];
-    let rect = centered(inner, inner.width, 2);
-    frame.render_widget(Paragraph::new(lines), rect);
-    frame.render_widget(
-        Paragraph::new(keys_line(theme, &[("q", "quit")])),
-        bottom_line(inner),
-    );
-}
 
 // ---------------------------------------------------------------------------
 // Shared
@@ -4083,14 +4037,26 @@ mod tests {
         assert!(text.contains("c cleanup"), "hint missing:\n{text}");
     }
 
-    /// A scan in flight: `landed` names the sources whose lanes have come
-    /// back, and only those carry numbers.
-    /// Like `mid_scan`, but the app has a previous scan behind it, so the
-    /// `last` placeholder has something real to carry.
-    fn mid_scan_with(style: crate::tui::app::Placeholder, landed: &[SourceId]) -> App {
-        let full = settled_scan();
+    /// A scan in flight with a *previous* scan behind it, so the estimate has
+    /// a number to climb toward. `big` gives pacman a realistic package count.
+    fn mid_scan_after(landed: &[SourceId], big: bool) -> App {
+        let mut full = scan_with(vec![
+            upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
+            upd("timr-bin", "1", "2", SourceId::aur()),
+        ]);
+        full.packages = if big {
+            (0..1840)
+                .map(|i| pkg(&format!("pkg{i}"), SourceId::pacman()))
+                .collect()
+        } else {
+            vec![
+                pkg("linux", SourceId::pacman()),
+                pkg("bash", SourceId::pacman()),
+                pkg("org.gnome.Calculator", SourceId::flatpak()),
+                pkg("timr-bin", SourceId::aur()),
+            ]
+        };
         let mut app = App::new(full.clone(), Theme::none(), AppOptions::test());
-        app.set_placeholder(style);
         let mut partial = full;
         for source in partial.sources.iter_mut() {
             source.last_scanned = landed.contains(&source.id).then(Utc::now);
@@ -4099,20 +4065,6 @@ mod tests {
         partial.updates.retain(|u| landed.contains(&u.source_id));
         app.replace_scan_partial(partial);
         app
-    }
-
-    fn settled_scan() -> crate::model::ScanResult {
-        let mut s = scan_with(vec![
-            upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
-            upd("timr-bin", "1", "2", SourceId::aur()),
-        ]);
-        s.packages = vec![
-            pkg("linux", SourceId::pacman()),
-            pkg("bash", SourceId::pacman()),
-            pkg("org.gnome.Calculator", SourceId::flatpak()),
-            pkg("timr-bin", SourceId::aur()),
-        ];
-        s
     }
 
     fn mid_scan(landed: &[SourceId]) -> App {
@@ -4181,11 +4133,10 @@ mod tests {
 
     #[test]
     fn the_climbing_count_rises_toward_the_last_known_number_and_stops_short() {
-        use crate::tui::app::Placeholder;
         use std::time::{Duration, Instant};
 
         let at = |ago_ms: u64| {
-            let mut app = mid_scan_with(Placeholder::Count, &[]);
+            let mut app = mid_scan_after(&[], false);
             app.set_scan_started(Instant::now() - Duration::from_millis(ago_ms));
             app.rows()
                 .iter()
@@ -4204,7 +4155,7 @@ mod tests {
         );
 
         // And once the lane reports, it is the real number, plainly.
-        let landed = mid_scan_with(Placeholder::Count, &[SourceId::pacman()]);
+        let landed = mid_scan_after(&[SourceId::pacman()], false);
         let row = landed
             .rows()
             .into_iter()
@@ -4215,46 +4166,40 @@ mod tests {
     }
 
     #[test]
-    fn every_curve_keeps_the_count_moving_and_moving_forward() {
-        use crate::tui::app::{Curve, Placeholder};
+    fn the_count_keeps_moving_and_never_moves_backwards() {
         use std::time::{Duration, Instant};
-        // 30ms redraws over a 1500ms ramp. A curve costs distinct values
-        // wherever it flattens, so the guarantee is per-curve: never
-        // backwards, and never parked long enough to look finished.
-        for curve in [Curve::Linear, Curve::Out, Curve::Smooth] {
-            let seen: Vec<usize> = (0..49)
-                .map(|frame| {
-                    let mut app = mid_scan_big(Placeholder::Count);
-                    app.set_curve(curve);
-                    app.set_scan_started(Instant::now() - Duration::from_millis(frame * 30));
-                    app.rows()
-                        .into_iter()
-                        .find(|r| r.id == "pacman")
-                        .and_then(|r| r.installed)
-                        .unwrap_or(0)
-                })
-                .collect();
-            assert!(
-                seen.windows(2).all(|w| w[0] <= w[1]),
-                "{curve:?} went backwards: {seen:?}"
-            );
-            let parked = seen
-                .windows(4)
-                .filter(|w| w.iter().all(|n| *n == w[0]))
-                .count();
-            assert_eq!(parked, 0, "{curve:?} parked for four frames: {seen:?}");
-        }
+        // 30ms redraws: the ramp must show a different number often enough
+        // not to look parked, and must never correct downward mid-climb.
+        let seen: Vec<usize> = (0..49)
+            .map(|frame| {
+                let mut app = mid_scan_after(&[], true);
+                app.set_scan_started(Instant::now() - Duration::from_millis(frame * 30));
+                app.rows()
+                    .into_iter()
+                    .find(|r| r.id == "pacman")
+                    .and_then(|r| r.installed)
+                    .unwrap_or(0)
+            })
+            .collect();
+        assert!(
+            seen.windows(2).all(|w| w[0] <= w[1]),
+            "the count went backwards: {seen:?}"
+        );
+        let parked = seen
+            .windows(4)
+            .filter(|w| w.iter().all(|n| *n == w[0]))
+            .count();
+        assert_eq!(parked, 0, "the count parked for four frames: {seen:?}");
     }
 
     #[test]
     fn a_climb_keeps_counting_for_as_long_as_the_lane_takes() {
-        use crate::tui::app::Placeholder;
         use std::time::{Duration, Instant};
         // A stalled network runs to the provider timeout, many times the 1.5s
         // ramp. The number must still be moving out there: one that stops
         // looks like an answer.
         let at = |ms: u64| {
-            let mut app = mid_scan_big(Placeholder::Count);
+            let mut app = mid_scan_after(&[], true);
             app.set_scan_started(Instant::now() - Duration::from_millis(ms));
             app.rows()
                 .into_iter()
@@ -4269,11 +4214,10 @@ mod tests {
 
     #[test]
     fn a_small_machine_has_almost_nothing_to_climb() {
-        use crate::tui::app::Placeholder;
         use std::time::{Duration, Instant};
         // Four packages: the estimate can only ever be 0..=3, so the counter
         // is nearly pointless here — worth seeing rather than assuming.
-        let mut app = mid_scan_with(Placeholder::Count, &[]);
+        let mut app = mid_scan_after(&[], false);
         app.set_scan_started(Instant::now() - Duration::from_millis(750));
         let row = app
             .rows()
@@ -4287,57 +4231,53 @@ mod tests {
 
     #[test]
     fn an_unfinished_row_says_scanning_and_marks_nothing() {
-        use crate::tui::app::Placeholder;
         // One word, in the column that exists for row state and that no width
         // ever drops. No punctuation on any number.
-        for style in [Placeholder::Count, Placeholder::Last] {
-            let text = render(&mid_scan_with(style, &[]), 88, 10);
-            let row = text
-                .lines()
-                .find(|l| l.contains(" pacman"))
-                .expect("pacman row");
-            assert!(!row.contains('~'), "{style:?} marked a number:\n{row}");
-            assert!(row.contains("scanning"), "{style:?} row state:\n{row}");
-        }
+        let text = render(&mid_scan_after(&[], false), 88, 10);
+        let row = text
+            .lines()
+            .find(|l| l.contains(" pacman"))
+            .expect("pacman row");
+        assert!(!row.contains('~'), "a number was marked:\n{row}");
+        assert!(row.contains("scanning"), "row state:\n{row}");
     }
 
     #[test]
-    fn a_carried_number_is_shown_while_its_lane_is_out() {
-        use crate::tui::app::Placeholder;
-        let app = mid_scan_with(Placeholder::Last, &[SourceId::pacman()]);
+    fn a_lane_still_out_shows_an_estimate_and_the_one_that_landed_shows_truth() {
+        let app = mid_scan_after(&[SourceId::pacman()], false);
         let rows = app.rows();
+
         let flatpak = rows.iter().find(|r| r.id == "flatpak").expect("row");
         assert!(flatpak.stale, "its lane is still out");
-        assert_eq!(flatpak.installed, Some(1), "last scan's number is kept");
+        assert!(
+            flatpak.installed.is_some(),
+            "and it has a previous number to climb toward"
+        );
 
         let text = render(&app, 88, 10);
         let row = text
             .lines()
             .find(|l| l.contains(" flatpak"))
             .expect("flatpak row");
-        assert!(row.contains('1'), "the carried number is shown:\n{row}");
         assert!(row.contains("scanning"), "its lane is still out:\n{row}");
-        // The source that did report reads as settled.
-        let pacman = text
+
+        // The source that did report reads as settled, with its real count.
+        let pacman = rows.iter().find(|r| r.id == "pacman").expect("row");
+        assert!(!pacman.stale, "this one reported");
+        assert_eq!(pacman.installed, Some(2), "and shows what it found");
+        let row = text
             .lines()
             .find(|l| l.contains(" pacman"))
             .expect("pacman row");
-        assert!(
-            pacman.contains("ok"),
-            "a reported source is done:\n{pacman}"
-        );
-        assert!(
-            !pacman.contains("scanning"),
-            "and is no longer waiting:\n{pacman}"
-        );
+        assert!(row.contains("ok"), "a reported source is done:\n{row}");
+        assert!(!row.contains("scanning"), "and no longer waiting:\n{row}");
     }
 
     #[test]
     fn a_scan_that_dies_leaves_its_rows_saying_so() {
-        use crate::tui::app::Placeholder;
         // The bug: `fail` stopped the scan, every row went green, and last
         // scan's numbers sat there looking like this run's answer.
-        let mut app = mid_scan_with(Placeholder::Count, &[SourceId::pacman()]);
+        let mut app = mid_scan_after(&[SourceId::pacman()], false);
         app.fail_scan();
         assert!(!app.is_scanning(), "the scan is over");
 
@@ -4362,14 +4302,12 @@ mod tests {
 
     #[test]
     fn a_cold_start_has_nothing_to_carry() {
-        use crate::tui::app::Placeholder;
         // No previous scan behind this one: `last` cannot invent a number.
         let mut app = App::new(
             crate::model::ScanResult::empty(),
             Theme::none(),
             AppOptions::test(),
         );
-        app.set_placeholder(Placeholder::Last);
         let mut partial = scan_with(Vec::new());
         for source in partial.sources.iter_mut() {
             source.last_scanned = None;
@@ -4517,98 +4455,6 @@ mod tests {
             seen.len(),
             unique.len()
         );
-    }
-
-    /// Demo harness for the placeholder candidates (temporary — printed
-    /// with `cargo test demo_placeholders -- --nocapture`).
-    /// Prints the climb frame by frame — `cargo test demo_climb -- --nocapture`.
-    #[test]
-    fn demo_climb() {
-        use crate::tui::app::Placeholder;
-        use std::time::{Duration, Instant};
-
-        use crate::tui::app::Curve;
-        println!("\n########## the climbing count, real value 1840 ##########");
-        println!("  (redraws every 30ms while scanning — every 5th shown)\n");
-        println!("     time    linear      out     smooth      creep");
-        for ms in (0u64..=1500).step_by(250) {
-            let at = |curve: Curve| {
-                let mut app = mid_scan_big(Placeholder::Count);
-                app.set_curve(curve);
-                app.set_scan_started(Instant::now() - Duration::from_millis(ms));
-                app.rows()
-                    .into_iter()
-                    .find(|r| r.id == "pacman")
-                    .and_then(|r| r.installed)
-                    .unwrap_or(0)
-            };
-            println!(
-                "  {ms:>5}ms   {:>6}   {:>6}   {:>6}   {:>6}",
-                at(Curve::Linear),
-                at(Curve::Out),
-                at(Curve::Smooth),
-                at(Curve::Creep)
-            );
-        }
-        println!("\n  past the ramp, only creep is still moving:");
-        for ms in [2000u64, 3000, 5000, 8000, 12000] {
-            let mut app = mid_scan_big(Placeholder::Count);
-            app.set_curve(Curve::Creep);
-            app.set_scan_started(Instant::now() - Duration::from_millis(ms));
-            let n = app
-                .rows()
-                .into_iter()
-                .find(|r| r.id == "pacman")
-                .and_then(|r| r.installed)
-                .unwrap_or(0);
-            println!("  {ms:>5}ms   {n:>6}");
-        }
-        println!("\n  lane returns → 1840, status turns green");
-    }
-
-    /// A source with a realistic package count, for the climb demo.
-    fn mid_scan_big(style: crate::tui::app::Placeholder) -> App {
-        let mut full = settled_scan();
-        full.packages = (0..1840)
-            .map(|i| pkg(&format!("pkg{i}"), SourceId::pacman()))
-            .collect();
-        let mut app = App::new(full.clone(), Theme::none(), AppOptions::test());
-        app.set_placeholder(style);
-        let mut partial = full;
-        for source in partial.sources.iter_mut() {
-            source.last_scanned = None;
-        }
-        partial.packages.clear();
-        partial.updates.clear();
-        app.replace_scan_partial(partial);
-        app
-    }
-
-    #[test]
-    fn demo_placeholders() {
-        use crate::tui::app::Placeholder;
-
-        for style in [
-            Placeholder::Blank,
-            Placeholder::Spinner,
-            Placeholder::Dots,
-            Placeholder::Last,
-            Placeholder::Count,
-        ] {
-            println!("\n########## {style:?} ##########");
-            for (label, landed) in [
-                ("0ms — nothing back yet", &[][..]),
-                ("1.1s — pacman back", &[SourceId::pacman()][..]),
-                (
-                    "1.3s — flatpak back",
-                    &[SourceId::pacman(), SourceId::flatpak()][..],
-                ),
-            ] {
-                let mut app = mid_scan_with(style, landed);
-                app.set_placeholder(style);
-                println!("\n=== {style:?} · {label} ===\n{}", render(&app, 88, 10));
-            }
-        }
     }
 
     // --- history screen (#8) ---
@@ -4825,27 +4671,6 @@ mod tests {
     }
 
     // --- startup splash ---
-    #[test]
-    fn splash_shows_scanning_before_any_app_exists() {
-        let backend = TestBackend::new(70, 12);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let theme = Theme::none();
-        terminal
-            .draw(|frame| draw_splash(frame, &theme, Some("|")))
-            .unwrap();
-        let text = flatten(terminal.backend().buffer());
-        assert!(text.contains("paclens"), "title missing:\n{text}");
-        assert!(
-            text.contains("| scanning sources"),
-            "spinner + indicator missing:\n{text}"
-        );
-        assert!(
-            text.contains("can take a few seconds"),
-            "hint missing:\n{text}"
-        );
-        assert!(text.contains("q quit"), "splash key hint missing:\n{text}");
-    }
-
     #[test]
     fn cold_start_scanning_draws_the_splash_with_a_spinner() {
         // Scanning + no sources yet = the splash owns the whole frame.

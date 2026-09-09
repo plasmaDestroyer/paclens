@@ -63,20 +63,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Open the TUI (default when no subcommand is given).
-    Ui {
-        /// **Temporary.** Replay a cold start against the cached scan,
-        /// switching what an uncounted cell shows while its source's lane is
-        /// still out. Deleted once one is chosen.
-        #[arg(long, value_enum, value_name = "STYLE", hide = true)]
-        demo_coldstart: Option<crate::tui::Placeholder>,
-        /// **Temporary.** The shape of the climbing count's ramp.
-        #[arg(long, value_enum, value_name = "CURVE", hide = true)]
-        demo_curve: Option<crate::tui::Curve>,
-        /// **Temporary.** Which cold start to replay: a normal one, a stalled
-        /// network, a failed scan, a small machine, or one that shrank.
-        #[arg(long, value_enum, value_name = "CASE", hide = true)]
-        demo_scenario: Option<crate::tui::Scenario>,
-    },
+    Ui,
     /// Print a dashboard summary to stdout.
     Status,
     /// Update all sources or a specific one.
@@ -177,11 +164,7 @@ pub fn run() -> ExitCode {
         .clone()
         .or_else(|| config::default_config_path().ok());
 
-    let command = cli.command.unwrap_or(Command::Ui {
-        demo_coldstart: None,
-        demo_curve: None,
-        demo_scenario: None,
-    });
+    let command = cli.command.unwrap_or(Command::Ui);
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         ?command,
@@ -189,20 +172,8 @@ pub fn run() -> ExitCode {
     );
 
     match command {
-        Command::Ui {
-            demo_coldstart,
-            demo_curve,
-            demo_scenario,
-        } => report(
-            tui::run(
-                &config,
-                cli.refresh,
-                config_path.as_deref(),
-                cli.no_color,
-                demo_coldstart,
-                demo_curve,
-                demo_scenario,
-            ),
+        Command::Ui => report(
+            tui::run(&config, cli.refresh, config_path.as_deref(), cli.no_color),
             &err_styles,
         ),
         Command::Status => {

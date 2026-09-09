@@ -9,7 +9,7 @@ pub mod cache;
 
 use std::path::Path;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::config::Config;
 use crate::model::{
@@ -206,8 +206,17 @@ pub fn load_cached(
 /// is logged but non-fatal — the in-memory result is still returned
 /// (design §11 recovery table).
 pub fn scan_and_store(runner: &dyn CommandRunner, config: &Config) -> anyhow::Result<ScanResult> {
+    scan_and_store_with(runner, config, &|_| {})
+}
+
+/// [`scan_and_store`], reporting partial results as each lane lands.
+pub fn scan_and_store_with(
+    runner: &dyn CommandRunner,
+    config: &Config,
+    progress: &dyn Fn(ScanResult),
+) -> anyhow::Result<ScanResult> {
     let cache = cache::Cache::locate()?;
-    let scan = scan(runner, config);
+    let scan = scan_with_progress(runner, config, progress);
     if let Err(err) = cache.write(&scan) {
         tracing::error!(error = %err, "failed to write scan cache; continuing in-memory");
     }
@@ -217,7 +226,14 @@ pub fn scan_and_store(runner: &dyn CommandRunner, config: &Config) -> anyhow::Re
 /// Run every enabled, available provider and assemble a `ScanResult`.
 ///
 /// Detects provider availability on PATH, then delegates to [`assemble`].
-pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
+/// Reports partial results as each lane lands: the TUI opens on the dashboard
+/// and fills it in, so it wants every partial; the CLI wants the answer and
+/// passes a sink that drops them.
+pub fn scan_with_progress(
+    runner: &dyn CommandRunner,
+    config: &Config,
+    progress: &dyn Fn(ScanResult),
+) -> ScanResult {
     let pacman_available = PacmanProvider::new(runner).is_available();
     let flatpak_available = FlatpakProvider::new(runner).is_available();
     let checkupdates = crate::providers::binary_on_path(pacman::CHECKUPDATES_BIN);
@@ -241,73 +257,189 @@ pub fn scan(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
     assemble(
         runner,
         config,
-        pacman_available,
-        flatpak_available,
-        checkupdates,
+        Availability {
+            pacman: pacman_available,
+            flatpak: flatpak_available,
+            checkupdates,
+        },
         helper,
         home_dir.as_deref(),
+        progress,
     )
+}
+
+/// Which binaries were found on PATH. Passed in rather than probed, so the
+/// whole pipeline is hermetically testable with a mock runner.
+#[derive(Debug, Clone, Copy)]
+struct Availability {
+    pacman: bool,
+    flatpak: bool,
+    checkupdates: bool,
+}
+
+/// What one lane has finished.
+///
+/// Lanes report as they land rather than all at the end, so the dashboard can
+/// fill in a row at a time (design §13, 2026-09-09).
+/// What the flatpak lane produces: its packages, its updates, and the sizes
+/// of the `~/.var/app` profiles it found along the way.
+type FlatpakLane = (
+    Vec<Package>,
+    Vec<PendingUpdate>,
+    std::collections::HashMap<String, u64>,
+);
+
+enum LaneResult {
+    Pacman(Vec<Package>, Vec<PendingUpdate>),
+    Flatpak(FlatpakLane),
+    Sizes(CacheSizes),
+    /// `pacman -Qm`, which is fast — and which pacman's own package list has
+    /// to wait for, since a locally built foreign package belongs to the aur
+    /// source and must not be counted twice.
+    AurForeign(std::collections::HashSet<String>),
+    /// The helper's `-Qua`, which is the slow one.
+    AurUpdates(Vec<PendingUpdate>),
+}
+
+/// What the lanes have reported so far. `None` means still out.
+#[derive(Default)]
+struct Parts {
+    pacman: Option<(Vec<Package>, Vec<PendingUpdate>)>,
+    flatpak: Option<FlatpakLane>,
+    sizes: Option<CacheSizes>,
+    foreign: Option<std::collections::HashSet<String>>,
+    aur_updates: Option<Vec<PendingUpdate>>,
+}
+
+/// Which sources are being scanned at all, so "still out" can be told from
+/// "never asked for".
+#[derive(Clone, Copy)]
+struct Lanes {
+    pacman: bool,
+    aur: bool,
+    flatpak: bool,
+}
+
+impl Parts {
+    /// Has pacman's package list settled? It needs `-Qm` as well as `-Qi`:
+    /// relabelling moves locally built foreign packages to the aur source, so
+    /// counting pacman before that lands would count them twice and then
+    /// correct downward.
+    fn pacman_done(&self, lanes: Lanes) -> bool {
+        !lanes.pacman || (self.pacman.is_some() && (!lanes.aur || self.foreign.is_some()))
+    }
+    fn aur_done(&self, lanes: Lanes) -> bool {
+        !lanes.aur || (self.pacman_done(lanes) && self.aur_updates.is_some())
+    }
+    fn flatpak_done(&self, lanes: Lanes) -> bool {
+        !lanes.flatpak || self.flatpak.is_some()
+    }
 }
 
 /// Assemble a `ScanResult` from the providers, given which binaries are
 /// available. Availability is passed in (not probed) so the whole pipeline is
 /// hermetically testable with a mock runner.
 ///
-/// The three independent lanes — pacman, flatpak, and `du` cache sizing — run
-/// on scoped threads (spec Q5): wall time is the slowest lane, not the sum.
-/// Provider failures are isolated: a source that errors is logged and skipped,
-/// never aborting the others (design §6).
+/// The lanes — pacman, the AUR, flatpak, and `du` cache sizing — run on scoped
+/// threads (spec Q5): wall time is the slowest lane, not the sum. They report
+/// over a channel as they finish, and `progress` is called with a partial
+/// result each time, carrying `last_scanned` only for the sources whose own
+/// data is complete. Provider failures are isolated: a source that errors is
+/// logged and skipped, never aborting the others (design §6).
 fn assemble(
     runner: &dyn CommandRunner,
     config: &Config,
-    pacman_available: bool,
-    flatpak_available: bool,
-    checkupdates_available: bool,
+    found: Availability,
     aur_helper: aur::HelperChoice,
     home_dir: Option<&Path>,
+    progress: &dyn Fn(ScanResult),
 ) -> ScanResult {
+    let Availability {
+        pacman: pacman_available,
+        flatpak: flatpak_available,
+        checkupdates: checkupdates_available,
+    } = found;
     let now = Utc::now();
     let flatpak_profile_dir = home_dir.map(|h| h.join(".var").join("app"));
     let flatpak_profile_dir = flatpak_profile_dir.as_deref();
-    let scan_pacman = config.sources.pacman && pacman_available;
-    let scan_flatpak = config.sources.flatpak && flatpak_available;
-    let scan_aur = config.sources.aur && scan_pacman;
+    let lanes = Lanes {
+        pacman: config.sources.pacman && pacman_available,
+        flatpak: config.sources.flatpak && flatpak_available,
+        aur: config.sources.aur && config.sources.pacman && pacman_available,
+    };
 
-    let (
-        (mut packages, mut updates),
-        (flatpak_packages, mut flatpak_updates, flatpak_profile_sizes),
-        cache_sizes,
-        (foreign, mut aur_updates),
-    ) = std::thread::scope(|s| {
-        let pacman_lane = s.spawn(|| {
-            if !scan_pacman {
-                return (Vec::new(), Vec::new());
+    if config.sources.pacman && !pacman_available {
+        tracing::info!("pacman not found on PATH; skipping");
+    }
+    if config.sources.flatpak && !flatpak_available {
+        tracing::info!("flatpak not found on PATH; skipping");
+    }
+
+    let mut parts = Parts::default();
+    // The sources exist from the moment their binaries are found: the first
+    // frame the user sees is a dashboard with rows, not a splash.
+    progress(compose(
+        &parts,
+        &ComposeInput {
+            now,
+            config,
+            lanes,
+            pacman_available,
+            flatpak_available,
+            checkupdates_available,
+            aur_helper: &aur_helper,
+        },
+    ));
+
+    std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel::<LaneResult>();
+
+        let pacman_tx = tx.clone();
+        s.spawn(move || {
+            if !lanes.pacman {
+                return;
             }
             let provider = PacmanProvider::with_checkupdates(runner, checkupdates_available);
-            collect_provider(&provider, "pacman")
+            let (pkgs, ups) = collect_provider(&provider, "pacman");
+            let _ = pacman_tx.send(LaneResult::Pacman(pkgs, ups));
         });
-        let flatpak_lane = s.spawn(|| {
-            if !scan_flatpak {
-                return (Vec::new(), Vec::new(), Default::default());
+
+        let flatpak_tx = tx.clone();
+        s.spawn(move || {
+            if !lanes.flatpak {
+                return;
             }
             let (pkgs, ups) = collect_provider(&FlatpakProvider::new(runner), "flatpak");
             let sizes = gather_profile_sizes(runner, flatpak_profile_dir, &pkgs);
-            (pkgs, ups, sizes)
+            let _ = flatpak_tx.send(LaneResult::Flatpak((pkgs, ups, sizes)));
         });
-        let du_lane =
-            s.spawn(|| gather_cache_sizes(runner, scan_pacman, aur_helper.helper(), home_dir));
-        let aur_lane = s.spawn(|| {
-            if !scan_aur {
-                return (std::collections::HashSet::new(), Vec::new());
+
+        let du_tx = tx.clone();
+        let helper = aur_helper.helper();
+        s.spawn(move || {
+            let sizes = gather_cache_sizes(runner, lanes.pacman, helper, home_dir);
+            let _ = du_tx.send(LaneResult::Sizes(sizes));
+        });
+
+        let aur_tx = tx.clone();
+        s.spawn(move || {
+            if !lanes.aur {
+                return;
             }
+            // Two messages, because they take very different times: `-Qm` is
+            // local and immediate, the helper's `-Qua` is a network round
+            // trip. Sending them separately is what lets the pacman row land
+            // without waiting for the AUR's update check.
             let foreign = match aur::foreign_names(runner) {
                 Ok(names) => names,
                 Err(err) => {
                     tracing::error!(error = %err, "pacman -Qm failed; no aur source");
-                    return (std::collections::HashSet::new(), Vec::new());
+                    Default::default()
                 }
             };
-            let updates = if let Some(helper) = aur_helper.helper() {
+            let _ = aur_tx.send(LaneResult::AurForeign(foreign));
+
+            let updates = if let Some(helper) = helper {
                 match aur::scan_updates(runner, helper, config.scan.aur_devel) {
                     Ok(ups) => ups,
                     Err(err) => {
@@ -322,114 +454,55 @@ fn assemble(
             } else {
                 Vec::new()
             };
-            (foreign, updates)
+            let _ = aur_tx.send(LaneResult::AurUpdates(updates));
         });
-        (
-            join_lane(pacman_lane, "pacman"),
-            join_lane(flatpak_lane, "flatpak"),
-            join_lane(du_lane, "du"),
-            join_lane(aur_lane, "aur"),
-        )
-    });
 
-    if config.sources.pacman && !pacman_available {
-        tracing::info!("pacman not found on PATH; skipping");
-    }
-    if config.sources.flatpak && !flatpak_available {
-        tracing::info!("flatpak not found on PATH; skipping");
-    }
+        // The loop's own sender, or the receive below would never end.
+        drop(tx);
 
-    let mut sources = Vec::new();
-    if config.sources.pacman {
-        sources.push(Source {
-            id: SourceId::pacman(),
-            kind: SourceKind::Pacman,
-            available: pacman_available,
-            last_scanned: scan_pacman.then_some(now),
-            accurate_updates: checkupdates_available,
-        });
-    }
-    if config.sources.aur {
-        // Foreign packages list via pacman either way; "available" means the
-        // update path (a helper) exists — its absence shows as "not found".
-        sources.push(Source {
-            id: SourceId::aur(),
-            kind: SourceKind::Aur,
-            available: aur_helper.helper().is_some() && pacman_available,
-            last_scanned: scan_aur.then_some(now),
-            accurate_updates: true,
-        });
-    }
-    if config.sources.flatpak {
-        // One tool keeps both installations up to date, so flatpak is one
-        // source; the scope rides on each package (design §13, 2026-09-07).
-        // The include knobs now filter packages rather than hide a source row.
-        sources.push(Source {
-            id: SourceId::flatpak(),
-            kind: SourceKind::Flatpak,
-            available: flatpak_available,
-            last_scanned: scan_flatpak.then_some(now),
-            accurate_updates: true,
-        });
-    }
-
-    // Foreign packages keep their full pacman -Qi metadata but belong to the
-    // aur source (v0.3) — everything downstream keys on source_id.
-    //
-    // Foreign is not the same as from the AUR, though (#77). A repo that is
-    // removed from pacman.conf leaves its packages foreign without their ever
-    // having touched the AUR, so only the ones built on this machine are
-    // relabelled; the rest stay pacman's, which is what still manages them.
-    for pkg in packages.iter_mut().filter(|p| foreign.contains(&p.name)) {
-        pkg.foreign = true;
-        if scan_aur && crate::analyzer::provenance::built_here(pkg) {
-            pkg.source_id = SourceId::aur();
+        for message in rx {
+            match message {
+                LaneResult::Pacman(pkgs, ups) => parts.pacman = Some((pkgs, ups)),
+                LaneResult::Flatpak(lane) => parts.flatpak = Some(lane),
+                LaneResult::Sizes(sizes) => parts.sizes = Some(sizes),
+                LaneResult::AurForeign(names) => parts.foreign = Some(names),
+                LaneResult::AurUpdates(ups) => parts.aur_updates = Some(ups),
+            }
+            progress(compose(
+                &parts,
+                &ComposeInput {
+                    now,
+                    config,
+                    lanes,
+                    pacman_available,
+                    flatpak_available,
+                    checkupdates_available,
+                    aur_helper: &aur_helper,
+                },
+            ));
         }
-    }
-    updates.append(&mut aur_updates);
-
-    // The include knobs used to decide which flatpak *sources* existed. With
-    // one flatpak source they filter packages instead — same knob, same
-    // meaning ("show me user installs"), one row on the dashboard.
-    let keep_scope = |scope: Option<FlatpakScope>| match scope {
-        Some(FlatpakScope::User) => config.scan.flatpak_include_user,
-        Some(FlatpakScope::System) => config.scan.flatpak_include_system,
-        // A flatpak whose installation column was unreadable is kept: hiding
-        // an installed package is a worse answer than showing one whose scope
-        // is unknown.
-        None => true,
-    };
-    let flatpak_packages: Vec<Package> = flatpak_packages
-        .into_iter()
-        .filter(|p| keep_scope(p.scope))
-        .collect();
-    packages.extend(flatpak_packages);
-    reconcile_flatpak_updates(&mut flatpak_updates, &packages);
-    // An update for a package that was filtered out has nothing to update.
-    flatpak_updates.retain(|u| {
-        packages
-            .iter()
-            .any(|p| p.name == u.package_name && p.source_id == u.source_id)
     });
-    updates.append(&mut flatpak_updates);
 
-    let mut scan = ScanResult {
-        schema_version: SCHEMA_VERSION,
-        scanned_at: now,
-        sources,
-        packages,
-        updates,
-        cache_sizes,
-        flatpak_profile_sizes,
-        profile_dir_sizes: Default::default(),
-        aur_helper,
-        kernel: read_running_kernel(),
-        pacfiles: find_pacfiles(&config.cleanup.config_dirs),
-        stale_processes: if config.scan.stale_services {
-            find_stale_processes()
-        } else {
-            Vec::new()
+    let mut scan = compose(
+        &parts,
+        &ComposeInput {
+            now,
+            config,
+            lanes,
+            pacman_available,
+            flatpak_available,
+            checkupdates_available,
+            aur_helper: &aur_helper,
         },
+    );
+    // The rest of the scan is local and quick, and none of it belongs to a
+    // source row, so it lands with the finished result rather than partway.
+    scan.kernel = read_running_kernel();
+    scan.pacfiles = find_pacfiles(&config.cleanup.config_dirs);
+    scan.stale_processes = if config.scan.stale_services {
+        find_stale_processes()
+    } else {
+        Vec::new()
     };
 
     // v0.4 migration-advisory probe. Which paths matter is pure analyzer
@@ -444,6 +517,146 @@ fn assemble(
     let paths = crate::analyzer::migrate::probe_paths(&candidates, &config.overlap.extra_mappings);
     scan.profile_dir_sizes = measure_profile_dirs(runner, home_dir, &paths);
     scan
+}
+
+/// The unchanging half of what `compose` needs.
+struct ComposeInput<'a> {
+    now: DateTime<Utc>,
+    config: &'a Config,
+    lanes: Lanes,
+    pacman_available: bool,
+    flatpak_available: bool,
+    checkupdates_available: bool,
+    aur_helper: &'a aur::HelperChoice,
+}
+
+/// Build a `ScanResult` from whatever the lanes have reported.
+///
+/// Called for every partial as well as for the finished scan, so the two can
+/// never disagree about how a package list is assembled. A source carries
+/// `last_scanned` only once its own data has settled — that is what the
+/// dashboard reads to decide whether a count is real (design §13).
+fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
+    let ComposeInput {
+        now,
+        config,
+        lanes,
+        pacman_available,
+        flatpak_available,
+        checkupdates_available,
+        aur_helper,
+    } = *input;
+
+    let mut sources = Vec::new();
+    if config.sources.pacman {
+        sources.push(Source {
+            id: SourceId::pacman(),
+            kind: SourceKind::Pacman,
+            available: pacman_available,
+            last_scanned: parts.pacman_done(lanes).then_some(now),
+            accurate_updates: checkupdates_available,
+        });
+    }
+    if config.sources.aur {
+        // Foreign packages list via pacman either way; "available" means the
+        // update path (a helper) exists — its absence shows as "not found".
+        sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: aur_helper.helper().is_some() && pacman_available,
+            last_scanned: parts.aur_done(lanes).then_some(now),
+            accurate_updates: true,
+        });
+    }
+    if config.sources.flatpak {
+        // One tool keeps both installations up to date, so flatpak is one
+        // source; the scope rides on each package (design §13, 2026-09-07).
+        // The include knobs filter packages rather than hiding a source row.
+        sources.push(Source {
+            id: SourceId::flatpak(),
+            kind: SourceKind::Flatpak,
+            available: flatpak_available,
+            last_scanned: parts.flatpak_done(lanes).then_some(now),
+            accurate_updates: true,
+        });
+    }
+
+    let mut packages = Vec::new();
+    let mut updates = Vec::new();
+
+    // pacman's list is only assembled once `-Qm` is in, or the same package
+    // would be counted under pacman and then move to the aur.
+    if parts.pacman_done(lanes) {
+        if let Some((pkgs, ups)) = &parts.pacman {
+            packages.extend(pkgs.iter().cloned());
+            updates.extend(ups.iter().cloned());
+        }
+        // Foreign packages keep their full pacman -Qi metadata but belong to
+        // the aur source (v0.3) — everything downstream keys on source_id.
+        //
+        // Foreign is not the same as from the AUR, though (#77). A repo that
+        // is removed from pacman.conf leaves its packages foreign without
+        // their ever having touched the AUR, so only the ones built on this
+        // machine are relabelled; the rest stay pacman's, which is what still
+        // manages them.
+        if let Some(foreign) = &parts.foreign {
+            for pkg in packages.iter_mut().filter(|p| foreign.contains(&p.name)) {
+                pkg.foreign = true;
+                if lanes.aur && crate::analyzer::provenance::built_here(pkg) {
+                    pkg.source_id = SourceId::aur();
+                }
+            }
+        }
+    }
+    if let Some(ups) = &parts.aur_updates {
+        updates.extend(ups.iter().cloned());
+    }
+
+    let mut flatpak_profile_sizes = Default::default();
+    if let Some((pkgs, ups, sizes)) = &parts.flatpak {
+        // The include knobs used to decide which flatpak *sources* existed.
+        // With one flatpak source they filter packages instead — same knob,
+        // same meaning ("show me user installs"), one row on the dashboard.
+        let keep_scope = |scope: Option<FlatpakScope>| match scope {
+            Some(FlatpakScope::User) => config.scan.flatpak_include_user,
+            Some(FlatpakScope::System) => config.scan.flatpak_include_system,
+            // A flatpak whose installation column was unreadable is kept:
+            // hiding an installed package is a worse answer than showing one
+            // whose scope is unknown.
+            None => true,
+        };
+        let kept: Vec<Package> = pkgs
+            .iter()
+            .filter(|p| keep_scope(p.scope))
+            .cloned()
+            .collect();
+        let mut flatpak_updates = ups.clone();
+        packages.extend(kept);
+        reconcile_flatpak_updates(&mut flatpak_updates, &packages);
+        // An update for a package that was filtered out has nothing to update.
+        flatpak_updates.retain(|u| {
+            packages
+                .iter()
+                .any(|p| p.name == u.package_name && p.source_id == u.source_id)
+        });
+        updates.append(&mut flatpak_updates);
+        flatpak_profile_sizes = sizes.clone();
+    }
+
+    ScanResult {
+        schema_version: SCHEMA_VERSION,
+        scanned_at: now,
+        sources,
+        packages,
+        updates,
+        cache_sizes: parts.sizes.clone().unwrap_or_default(),
+        flatpak_profile_sizes,
+        profile_dir_sizes: Default::default(),
+        aur_helper: aur_helper.clone(),
+        kernel: None,
+        pacfiles: Vec::new(),
+        stale_processes: Vec::new(),
+    }
 }
 
 /// Measure the migration advisory's candidate dirs (`~/`-relative paths from
@@ -472,18 +685,6 @@ fn measure_profile_dirs(
         }
     }
     sizes
-}
-
-/// Join one scan lane; a panicked lane yields its default (empty) result and
-/// an error log rather than poisoning the whole scan.
-fn join_lane<T: Default>(handle: std::thread::ScopedJoinHandle<'_, T>, lane: &str) -> T {
-    match handle.join() {
-        Ok(value) => value,
-        Err(_) => {
-            tracing::error!(lane, "scan lane panicked; treating as empty");
-            T::default()
-        }
-    }
 }
 
 /// Gather disk-usage figures: pacman cache total, what paccache would
@@ -663,11 +864,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             Some(Path::new("/home/t")),
+            &|_| {},
         );
         assert_eq!(
             scan.flatpak_profile_sizes.get("org.mozilla.firefox"),
@@ -718,11 +922,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             Some(Path::new("/home/t")),
+            &|_| {},
         );
         assert_eq!(scan.profile_dir_sizes.get("~/.mozilla"), Some(&1200));
         assert_eq!(
@@ -745,11 +952,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         assert!(scan.profile_dir_sizes.is_empty());
 
@@ -757,11 +967,14 @@ mod tests {
         let scan = assemble(
             &full_runner(),
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             Some(Path::new("/home/t")),
+            &|_| {},
         );
         assert!(scan.profile_dir_sizes.is_empty());
     }
@@ -771,11 +984,14 @@ mod tests {
         let scan = assemble(
             &full_runner(),
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         assert!(scan.flatpak_profile_sizes.is_empty());
     }
@@ -798,11 +1014,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::Detected(aur::AurHelper::Paru),
             None,
+            &|_| {},
         );
         let local = scan
             .packages
@@ -849,11 +1068,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            false,
-            false,
+            Availability {
+                pacman: true,
+                flatpak: false,
+                checkupdates: false,
+            },
             HC::Detected(aur::AurHelper::Yay),
             None,
+            &|_| {},
         );
         assert_eq!(scan.aur_helper.helper(), Some(aur::AurHelper::Yay));
         assert!(
@@ -871,11 +1093,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            false,
-            false,
+            Availability {
+                pacman: true,
+                flatpak: false,
+                checkupdates: false,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         assert_eq!(scan.aur_helper.helper(), None);
         let aur_source = scan
@@ -895,11 +1120,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         let local = scan
             .packages
@@ -928,11 +1156,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &config,
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::Detected(aur::AurHelper::Paru),
             None,
+            &|_| {},
         );
         let bash = scan.packages.iter().find(|p| p.name == "bash").unwrap();
         assert_eq!(bash.source_id, SourceId::pacman());
@@ -948,11 +1179,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::Detected(aur::AurHelper::Paru),
             None,
+            &|_| {},
         );
         // None of the live foreign names exist in QI_SMALL — no relabels,
         // but the updates still land under aur.
@@ -966,15 +1200,101 @@ mod tests {
     }
 
     #[test]
+    fn the_scan_reports_its_sources_before_it_counts_anything() {
+        // The first partial is what replaces the cold-start splash: rows on
+        // screen, no numbers yet.
+        let seen = std::sync::Mutex::new(Vec::new());
+        let scan = assemble(
+            &full_runner(),
+            &Config::default(),
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
+            HC::None,
+            None,
+            &|partial| seen.lock().expect("lock").push(partial),
+        );
+        let seen = seen.into_inner().expect("lock");
+        let first = seen.first().expect("a partial before any lane lands");
+        assert!(!first.sources.is_empty(), "the sources are known at once");
+        assert!(
+            first.sources.iter().all(|s| s.last_scanned.is_none()),
+            "nothing has reported yet"
+        );
+        assert!(first.packages.is_empty(), "and nothing is counted yet");
+        // By the end every lane has reported, and the last partial matches
+        // what the caller gets back.
+        let last = seen.last().expect("a final partial");
+        assert_eq!(last.packages.len(), scan.packages.len());
+        assert!(
+            last.sources.iter().all(|s| s.last_scanned.is_some()),
+            "every source reported by the end"
+        );
+    }
+
+    #[test]
+    fn a_source_is_only_marked_scanned_once_its_own_data_has_settled() {
+        // pacman's list is not final until `pacman -Qm` lands: relabelling
+        // moves locally built foreign packages to the aur source, and a count
+        // published before that would include them and then drop.
+        let lanes = Lanes {
+            pacman: true,
+            aur: true,
+            flatpak: true,
+        };
+        let mut parts = Parts::default();
+        assert!(!parts.pacman_done(lanes), "nothing has landed");
+
+        parts.pacman = Some((Vec::new(), Vec::new()));
+        assert!(
+            !parts.pacman_done(lanes),
+            "-Qi alone is not enough while the aur source exists"
+        );
+
+        parts.foreign = Some(Default::default());
+        assert!(parts.pacman_done(lanes), "-Qm settles it");
+        assert!(
+            !parts.aur_done(lanes),
+            "the aur still owes its update check"
+        );
+
+        parts.aur_updates = Some(Vec::new());
+        assert!(parts.aur_done(lanes));
+        assert!(!parts.flatpak_done(lanes), "flatpak is its own lane");
+    }
+
+    #[test]
+    fn a_source_that_is_not_being_scanned_never_holds_the_others_up() {
+        // With the aur source off, pacman settles on `-Qi` alone.
+        let lanes = Lanes {
+            pacman: true,
+            aur: false,
+            flatpak: false,
+        };
+        let parts = Parts {
+            pacman: Some((Vec::new(), Vec::new())),
+            ..Default::default()
+        };
+        assert!(parts.pacman_done(lanes));
+        assert!(parts.aur_done(lanes), "a lane that never runs is not owed");
+        assert!(parts.flatpak_done(lanes));
+    }
+
+    #[test]
     fn assemble_full_pipeline_combines_both_sources() {
         let scan = assemble(
             &full_runner(),
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         // pacman + aur + flatpak (one source: one tool updates both
         // installations, design §13)
@@ -998,11 +1318,14 @@ mod tests {
         let with = assemble(
             &full_runner(),
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         let pacman = with
             .sources
@@ -1014,11 +1337,14 @@ mod tests {
         let without = assemble(
             &full_runner(),
             &Config::default(),
-            true,
-            true,
-            false,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: false,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         let pacman = without
             .sources
@@ -1040,7 +1366,18 @@ mod tests {
     fn assemble_respects_disabled_pacman_source() {
         let mut config = Config::default();
         config.sources.pacman = false;
-        let scan = assemble(&full_runner(), &config, true, true, true, HC::None, None);
+        let scan = assemble(
+            &full_runner(),
+            &config,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
+            HC::None,
+            None,
+            &|_| {},
+        );
         assert!(scan.sources.iter().all(|s| s.id != SourceId::pacman()));
         assert!(
             scan.packages
@@ -1057,7 +1394,18 @@ mod tests {
         // source now, so they filter packages — same knob, same meaning.
         let mut config = Config::default();
         config.scan.flatpak_include_system = false;
-        let scan = assemble(&full_runner(), &config, true, true, true, HC::None, None);
+        let scan = assemble(
+            &full_runner(),
+            &config,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
+            HC::None,
+            None,
+            &|_| {},
+        );
         assert!(
             scan.sources.iter().any(|s| s.id == SourceId::flatpak()),
             "the source stays: flatpak is still installed and still updates"
@@ -1097,11 +1445,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         assert!(
             scan.packages
@@ -1117,11 +1468,14 @@ mod tests {
         let scan = assemble(
             &full_runner(),
             &Config::default(),
-            false,
-            false,
-            false,
+            Availability {
+                pacman: false,
+                flatpak: false,
+                checkupdates: false,
+            },
             HC::None,
             None,
+            &|_| {},
         );
         assert!(scan.packages.is_empty());
         assert!(scan.updates.is_empty());
@@ -1166,11 +1520,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::Detected(aur::AurHelper::Paru),
             Some(Path::new("/home/t")),
+            &|_| {},
         );
         assert_eq!(
             scan.cache_sizes.pacman_cache_reclaimable_bytes,
@@ -1182,11 +1539,14 @@ mod tests {
         let scan = assemble(
             &full_runner(),
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::Detected(aur::AurHelper::Paru),
             None,
+            &|_| {},
         );
         assert_eq!(scan.cache_sizes.pacman_cache_reclaimable_bytes, None);
         assert_eq!(scan.cache_sizes.aur_cache_bytes, None);
@@ -1207,11 +1567,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::Detected(aur::AurHelper::Yay),
             Some(Path::new("/home/t")),
+            &|_| {},
         );
         assert_eq!(scan.cache_sizes.aur_cache_bytes, Some(700));
     }
@@ -1229,11 +1592,14 @@ mod tests {
         let scan = assemble(
             &runner,
             &Config::default(),
-            true,
-            true,
-            true,
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+            },
             HC::None,
             Some(Path::new("/home/t")),
+            &|_| {},
         );
         assert_eq!(scan.cache_sizes.aur_cache_bytes, None);
     }

@@ -52,7 +52,7 @@ Modules: `main.rs`, `cli/`, `tui/`, `model/`, `providers/`, `scanner/`, `analyze
 
 Module contracts (design §6):
 - **Provider** — accepts an injectable `CommandRunner` (the testing seam); returns `Ok(vec![])` when nothing is installed; `Err` only when the binary exists but the command failed; never calls sudo; never knows about other providers.
-- **Scanner** — detects providers, runs them concurrently on scoped threads (`std::thread::scope`), assembles `ScanResult`, writes cache. Never analyzes. One exception, made explicit in the 2026-07-14 decision: it asks the pure analyzer *which* paths to measure, then measures them.
+- **Scanner** — detects providers, runs them concurrently on scoped threads (`std::thread::scope`), assembles `ScanResult`, writes cache. Never analyzes. It also **reports partial results as each lane lands** (design §13, 2026-09-09) so the TUI can open on the dashboard and fill it in; `compose` builds every partial and the finished scan by the same path. One exception to "never analyzes", made explicit in the 2026-07-14 decision: it asks the pure analyzer *which* paths to measure, then measures them.
 - **Analyzer** — pure: same `ScanResult` → same output. Never calls subprocesses, never writes disk. Builds dep graph, overlaps, orphan list from `ScanResult`.
 - **Executor** — only runs pre-built `ActionPlan`s. Never decides what to do. Logs every command. Reports exit codes without interpretation.
 

@@ -1714,6 +1714,59 @@ YYYY-MM-DD | no --noconfirm for pacman
            | before anything runs. What changed is that the key which
            | changes the machine is now a key you have to mean.
 
+
+2026-09-09 | the dashboard opens before the scan finishes (user decision)
+           | The splash blocked every key for the length of the first scan —
+           | 1.8s on this machine, the whole provider timeout when the
+           | network is down — and paclens is a tool you open to look at
+           | something.
+           | The scan reports as it goes: its detected sources first, then
+           | each lane as that lane's own commands return. A source carries
+           | `last_scanned` only once *its* data has settled, which is what
+           | the dashboard reads to decide whether a count is real. The
+           | field already meant exactly that, so no new state was needed.
+           | The ordering constraint worth recording: pacman's package list
+           | is not final until `pacman -Qm` has landed as well as `-Qi`,
+           | because relabelling moves locally built foreign packages to the
+           | aur source (2026-09-05). Publishing pacman's count earlier would
+           | include them and then correct downward. So the aur lane sends
+           | two messages — the foreign list, which is local and immediate,
+           | then the helper's `-Qua`, which is a network round trip — and
+           | pacman's row lands on the first while the aur's waits for the
+           | second.
+           | `compose` builds every partial and the finished scan by the same
+           | path, so the two can never disagree about how a package list is
+           | assembled.
+           | A count that has not arrived is not zero. Until a source
+           | reports, its cell shows a number climbing toward the previous
+           | scan's — the only figure available to aim at, since `pacman -Qi`
+           | returns everything at once when the process exits and there is
+           | nothing to sample while it runs. It never reaches the target, so
+           | the real count always visibly replaces it, and it never stops:
+           | the ramp is hyperbolic, ~90% at the time a lane usually takes
+           | and still rising at eight times that, because a number that
+           | parks looks like an answer and a hung provider should not. A
+           | first run has nothing to climb toward and shows nothing.
+           | The status column breathes while a row is out — a per-frame
+           | interpolation from #ffb900 to #ffff00, red held at full so the
+           | hue moves and the brightness does not. The rows colour
+           | themselves rather than using ratatui's `row_highlight_style`,
+           | which patches the whole row's area and would freeze the breath
+           | under the cursor: the same style-patching trap as the group
+           | headers (2026-08-24).
+           | Keys follow what the data supports. History and the log viewer
+           | work from the first frame — neither reads the scan. A source's
+           | package list opens, and its row toggles, as soon as that source
+           | reports. Updating, overlaps and cleanup wait for the whole scan
+           | and say why. A scan that dies leaves the rows that never
+           | reported reading `unchecked` rather than turning green over the
+           | previous run's numbers.
+           | Not done, deliberately: a warm cache still does not rescan on
+           | open. It shows the cached numbers instantly and `r` is how you
+           | refresh — opening paclens should not cost a network round trip.
+           | Ceiling: the estimate aims at the last scan, so a machine that
+           | lost packages since then climbs past the truth and corrects
+           | downward when the lane lands.
 ```
 
 ---

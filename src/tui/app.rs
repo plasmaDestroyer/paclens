@@ -74,90 +74,6 @@ impl AppOptions {
     }
 }
 
-/// **Temporary** — what an uncounted cell shows while its source's lane is
-/// still out. Switched with `--demo-coldstart` so the candidates can be
-/// compared in the real TUI; one of them stays and this enum goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
-pub enum Placeholder {
-    /// Nothing at all.
-    #[default]
-    Blank,
-    /// The spinner, in the count column itself.
-    Spinner,
-    /// The previous scan's number, dimmed and marked approximate.
-    Last,
-    /// A dim ellipsis — something is coming.
-    Dots,
-    /// A number climbing toward the previous scan's count, replaced by the
-    /// real one the moment its lane reports.
-    Count,
-}
-
-/// **Temporary** — the shape of the climbing count's ramp, switched with
-/// `--demo-curve` so the candidates can be felt rather than argued about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
-pub enum Curve {
-    /// Constant speed. Every redraw shows a different number; nothing about
-    /// it suggests a beginning or an end.
-    Linear,
-    /// Fast off the mark, slowing as it approaches — the shape of something
-    /// converging on an answer.
-    Out,
-    /// Slow, then quick through the middle, then easing in. Reads as a
-    /// deliberate movement with a start and a finish.
-    Smooth,
-    /// Slow, then quick, then a tail that never finishes — it keeps counting,
-    /// more and more slowly, for as long as the lane takes.
-    #[default]
-    Creep,
-}
-
-impl Curve {
-    /// Map elapsed ramps (`t = elapsed / EXPECTED_LANE`, unbounded) onto a
-    /// fraction of the target.
-    ///
-    /// The first three finish: past `t = 1` they sit on their last value,
-    /// which is why they are only worth comparing against [`Curve::Creep`].
-    fn apply(self, t: f32) -> f32 {
-        let bounded = t.clamp(0.0, 1.0);
-        match self {
-            Curve::Linear => bounded,
-            Curve::Out => 1.0 - (1.0 - bounded).powi(2),
-            // Smoothstep: zero slope at both ends, steepest in the middle.
-            Curve::Smooth => bounded * bounded * (3.0 - 2.0 * bounded),
-            // Hyperbolic, tuned to reach ~90% by the time a lane usually
-            // returns and then to crawl: 90% at one ramp, 97% at two, 99% at
-            // four, and still rising at eight. It never arrives, which is the
-            // point — a number that stops looks like an answer, and a
-            // provider hanging on a dead network should look like what it is.
-            Curve::Creep => {
-                let k = 3.0 * t;
-                1.0 - 1.0 / (1.0 + k * k)
-            }
-        }
-    }
-}
-
-/// **Temporary** — which cold start the demo replays, so the edge cases can
-/// be watched instead of waited for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
-pub enum Scenario {
-    /// This machine's measured timings: 1.1s, 1.3s, 1.6s.
-    #[default]
-    Normal,
-    /// A network that is not answering: lanes land at the provider timeout,
-    /// long after the climb's ramp has run out.
-    Slow,
-    /// A lane that never lands at all — the scan reports a failure.
-    Fail,
-    /// A machine with a handful of packages, where a climbing count has
-    /// almost no room to climb.
-    Small,
-    /// Numbers that fell since the last scan, so the estimate overshoots and
-    /// the real value arrives *below* it.
-    Shrunk,
-}
-
 /// Which dashboard pane owns ↑/↓: the sources table or the updates preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashPane {
@@ -300,13 +216,9 @@ pub struct App {
     /// Sources whose visible numbers came from the previous scan because
     /// their lane has not reported yet.
     carried: std::collections::HashSet<SourceId>,
-    /// Temporary: which placeholder the demo is showing.
-    placeholder: Placeholder,
     /// When the running scan started — the clock the `count` placeholder
     /// animates against.
     scan_started: Option<std::time::Instant>,
-    /// Temporary: the ramp shape the demo is showing.
-    curve: Curve,
     /// Package list: which source's packages are shown.
     pkg_source: Option<SourceId>,
     /// Package list: cursor over `visible_packages()`.
@@ -482,9 +394,7 @@ impl App {
             flash: None,
             scanning: false,
             carried: std::collections::HashSet::new(),
-            placeholder: Placeholder::default(),
             scan_started: None,
-            curve: Curve::default(),
             pkg_source: None,
             pkg_cursor: 0,
             pkg_filter: String::new(),
@@ -528,7 +438,7 @@ impl App {
         // the row keeps showing what was true last time — a real measurement,
         // marked as an old one.
         let mut carried = std::collections::HashSet::new();
-        if matches!(self.placeholder, Placeholder::Last | Placeholder::Count) {
+        {
             let pending: Vec<SourceId> = scan
                 .sources
                 .iter()
@@ -561,7 +471,22 @@ impl App {
             }
         }
         let started = self.scan_started;
+        let previous_kernel = self.scan.kernel.clone();
+        let previous_pacfiles = std::mem::take(&mut self.scan.pacfiles);
+        let previous_stale = std::mem::take(&mut self.scan.stale_processes);
         self.replace_scan(scan);
+        // The attention findings land with the finished scan, not partway.
+        // Carrying the previous run's keeps them from blinking out of the
+        // system pane and back during a refresh.
+        if self.scan.kernel.is_none() {
+            self.scan.kernel = previous_kernel;
+        }
+        if self.scan.pacfiles.is_empty() {
+            self.scan.pacfiles = previous_pacfiles;
+        }
+        if self.scan.stale_processes.is_empty() {
+            self.scan.stale_processes = previous_stale;
+        }
         self.carried = carried;
         self.scanning = true;
         // The clock belongs to the scan, not to each partial result that
@@ -585,35 +510,26 @@ impl App {
     /// "scanning" status until the real count lands. A source with no
     /// previous count has nothing to climb toward and shows nothing.
     pub fn climbing_count(&self, id: &SourceId, target: usize) -> Option<usize> {
-        if self.placeholder != Placeholder::Count || !self.carried.contains(id) {
+        if !self.carried.contains(id) {
             return None;
         }
         let elapsed = self.scan_started?.elapsed();
         // Ramps elapsed, not a fraction of one: the curve decides what to do
         // past the first, and the default one keeps going.
         let progress = elapsed.as_secs_f32() / Self::EXPECTED_LANE.as_secs_f32();
-        // A curve costs distinct values wherever it flattens: a slow tail
-        // changing by less than one per frame parks the number exactly when
-        // it is being watched. With a large target there is room for both,
-        // which is why the shape is worth trying rather than reasoning about.
-        let shaped = self.curve.apply(progress);
+        // Hyperbolic, tuned to reach ~90% by the time a lane usually returns
+        // and then to crawl: 90% at one ramp, 97% at two, 99% at four, and
+        // still rising at eight. It never arrives, which is the point — a
+        // number that stops looks like an answer, and a provider hanging on a
+        // dead network should look like what it is.
+        let k = 3.0 * progress;
+        let shaped = 1.0 - 1.0 / (1.0 + k * k);
         // Never the target itself, however small the target is: the estimate
         // must always be visibly replaced when the real count lands, so it
         // can never be the number the user walks away with.
         Some((((target as f32) * shaped).floor() as usize).min(target.saturating_sub(1)))
     }
 
-    pub fn placeholder(&self) -> Placeholder {
-        self.placeholder
-    }
-    /// Temporary: set by `--demo-coldstart`.
-    pub fn set_placeholder(&mut self, placeholder: Placeholder) {
-        self.placeholder = placeholder;
-    }
-    /// Temporary: set by `--demo-curve`.
-    pub fn set_curve(&mut self, curve: Curve) {
-        self.curve = curve;
-    }
     /// Swap the theme, so a test can render with real colours.
     #[cfg(test)]
     pub fn set_theme(&mut self, theme: Theme) {
