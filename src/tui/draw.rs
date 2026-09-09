@@ -4357,6 +4357,70 @@ mod tests {
     }
 
     /// Prints one full breath, shade by shade — `cargo test demo_pulse -- --nocapture`.
+    /// Prints one breath — `cargo test demo_pulse -- --nocapture`.
+    #[test]
+    fn demo_pulse() {
+        use crate::tui::theme::Theme;
+        use std::time::{Duration, Instant};
+        let mut app = App::new(scan_with(Vec::new()), Theme::dark(), AppOptions::test());
+        println!("\n########## one breath at the scanning redraw rate ##########");
+        let mut seen = Vec::new();
+        for i in 0..54u64 {
+            app.set_started(Instant::now() - Duration::from_millis(i * 30));
+            let style = pulse_style(&app.theme, app.pulse());
+            seen.push(style.fg);
+            if i % 6 == 0 {
+                let shade = match style.fg {
+                    Some(ratatui::style::Color::Rgb(r, g, b)) => format!("#{r:02x}{g:02x}{b:02x}"),
+                    other => format!("{other:?}"),
+                };
+                println!(
+                    "  {:>5}ms   {}   {shade}",
+                    i * 30,
+                    app.theme.glyphs.available
+                );
+            }
+        }
+        let mut unique = seen.clone();
+        unique.dedup();
+        println!(
+            "\n  {} frames, {} distinct shades",
+            seen.len(),
+            unique.len()
+        );
+    }
+
+    #[test]
+    fn the_fade_gives_a_shade_per_frame_across_the_band() {
+        use crate::tui::theme::Theme;
+        // 30ms redraws across a 1.6s breath, so 27 frames in each direction.
+        // The band has to be wide enough that each of them lands on its own
+        // shade, or the fade is a stepped ramp wearing an interpolation's
+        // clothes.
+        let theme = Theme::dark();
+        let frames = 27;
+        let shades: Vec<Option<ratatui::style::Color>> = (0..frames)
+            .map(|i| pulse_style(&theme, i as f32 / (frames - 1) as f32).fg)
+            .collect();
+        let mut unique = shades.clone();
+        unique.dedup();
+        assert!(
+            unique.len() > 20,
+            "only {} distinct shades across half a breath",
+            unique.len()
+        );
+        let [_, high] = theme.pulse.expect("a colored theme breathes");
+        assert_eq!(
+            shades.last().and_then(|c| *c),
+            Some(ratatui::style::Color::Rgb(high.0, high.1, high.2)),
+            "the breath tops out at the theme's bright end"
+        );
+        // A theme with no fade holds still rather than panicking.
+        let plain = Theme::none();
+        assert_eq!(pulse_style(&plain, 0.0), plain.accent);
+        assert_eq!(pulse_style(&plain, 1.0), plain.accent);
+    }
+
     #[test]
     fn the_selected_row_keeps_breathing_under_the_cursor() {
         use crate::tui::theme::Theme;
@@ -4389,71 +4453,6 @@ mod tests {
         assert!(
             word.iter().all(is_pulse_shade),
             "the whole status glows, dot and word: {word:?}"
-        );
-    }
-
-    #[test]
-    fn the_fade_gives_a_shade_per_frame_and_ends_on_the_accent() {
-        use crate::tui::theme::Theme;
-        // 30ms redraws across a 1.6s breath: the fade must produce a distinct
-        // colour for most of those frames, or it is a stepped ramp wearing an
-        // interpolation's clothes.
-        let theme = Theme::dark();
-        let frames = 27; // half a breath at the scanning tick
-        let shades: Vec<Option<ratatui::style::Color>> = (0..frames)
-            .map(|i| pulse_style(&theme, i as f32 / (frames - 1) as f32).fg)
-            .collect();
-        let mut unique = shades.clone();
-        unique.dedup();
-        assert!(
-            unique.len() > 20,
-            "only {} distinct shades across half a breath",
-            unique.len()
-        );
-        assert_eq!(
-            shades.last().and_then(|c| *c),
-            Some(ratatui::style::Color::Rgb(255, 255, 0)),
-            "the breath tops out where accent lives"
-        );
-        // A theme with no fade holds still rather than panicking.
-        let plain = Theme::none();
-        assert_eq!(pulse_style(&plain, 0.0), plain.accent);
-        assert_eq!(pulse_style(&plain, 1.0), plain.accent);
-    }
-
-    #[test]
-    fn demo_pulse() {
-        use crate::tui::theme::Theme;
-        use std::time::{Duration, Instant};
-        let theme = Theme::dark();
-        let mut app = App::new(scan_with(Vec::new()), theme, AppOptions::test());
-        println!("\n########## one breath at the scanning redraw rate ##########");
-        println!("  30ms a frame, same dot, yellow warming toward orange\n");
-        let mut seen = Vec::new();
-        for i in 0..54u64 {
-            app.set_started(Instant::now() - Duration::from_millis(i * 30));
-            let style = pulse_style(&app.theme, app.pulse());
-            seen.push(style.fg);
-            if i % 6 == 0 {
-                let shade = match style.fg {
-                    Some(ratatui::style::Color::Rgb(r, g, b)) => {
-                        format!("#{r:02x}{g:02x}{b:02x}")
-                    }
-                    other => format!("{other:?}"),
-                };
-                println!(
-                    "  {:>5}ms   {}   {shade}",
-                    i * 30,
-                    app.theme.glyphs.available
-                );
-            }
-        }
-        let mut unique = seen.clone();
-        unique.dedup();
-        println!(
-            "\n  {} frames, {} distinct shades",
-            seen.len(),
-            unique.len()
         );
     }
 

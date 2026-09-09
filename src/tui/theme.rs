@@ -112,11 +112,17 @@ impl Theme {
             header: Style::new()
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::DIM),
-            // #ffb900 → #ffff00: amber-orange warming to yellow. Red stays at
-            // full and only green moves, so the dot changes colour without
-            // appearing to dim — brightness and hue are different signals and
-            // this one is not about brightness.
-            pulse: Some([(255, 185, 0), (255, 255, 0)]),
+            // #ffc300 → #ffe100: a short throw centred between orange and
+            // yellow — an orangey yellow shifting to a yellowy orange, rather
+            // than the full span, which read as two colours taking turns.
+            // Red stays at full and only green moves, so the dot changes hue
+            // without appearing to dim.
+            //
+            // The band is 30 values wide and a breath is 27 frames in each
+            // direction, so every frame still lands on a shade of its own:
+            // the redraw rate limits the stages, not the width of the band.
+            // Narrower than 27 and frames start repeating.
+            pulse: Some([(255, 195, 0), (255, 225, 0)]),
         }
     }
 
@@ -146,9 +152,12 @@ mod tests {
     #[test]
     fn the_pulse_fade_warms_toward_orange_without_dimming() {
         let [warm, high] = Theme::dark().pulse.expect("a colored theme breathes");
-        // The yellow end is the one a settled row wears, or the breath
-        // resolves into a colour nothing else on screen uses.
-        assert_eq!(high, (255, 255, 0));
+        // Both ends sit between amber and `accent`'s yellow — a band in the
+        // middle, not the whole span. The peak stops short of accent, which
+        // costs a barely visible step when a row settles and buys a fade
+        // narrow enough to read as one colour.
+        assert!(high.1 < 255, "the peak reaches all the way to accent");
+        assert!(high.1 > 180, "and is not still an orange");
         // Red at full on both ends: the hue moves, the brightness does not.
         // A ramp that drops luminance instead reads as the dot going dim,
         // which is what the first two attempts did.
@@ -159,6 +168,12 @@ mod tests {
             warm.1 > high.1 / 2,
             "and only slightly: below this it is orange, not warm yellow"
         );
+        // Wide enough that every frame of a breath gets its own shade — 27
+        // frames in each direction at the scanning redraw rate — and no
+        // wider, because a long throw reads as two colours rather than one.
+        let band = high.1 - warm.1;
+        assert!(band >= 27, "only {band} shades: frames would repeat");
+        assert!(band <= 50, "{band} shades is a colour change, not a glow");
         // The no-color theme has nothing to fade through.
         assert!(Theme::none().pulse.is_none());
     }
