@@ -6,9 +6,9 @@ paclens is **not** a package manager. It wraps pacman, whichever AUR helper you 
 
 ## Status
 
-**0.4.0 — working tool, daily-driveable.** ~17k lines of Rust across `src/`. 552 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+**0.5.0 — working tool, daily-driveable.** ~18k lines of Rust across `src/`. 579 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
 
-Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, history screen, pty exec console, log viewer), pacman + AUR + Flatpak providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`.
+Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, history screen, pty exec console, log viewer), pacman + AUR + Flatpak providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`. The dashboard opens before the first scan finishes and fills in as each source reports.
 
 Shipped milestones are **history, not a plan** — see "What shipped" below. All open work lives in GitHub issues; there is no roadmap file.
 
@@ -102,6 +102,12 @@ Three capability blocks, one minor each:
 0.4.0  attend     what needs attention after an upgrade: reboot required,
                   .pacnew/.pacsave leftovers, services running against
                   replaced files; one sudo prompt per run
+0.5.0  recall     what past upgrades actually changed, from pacman's own log:
+                  `paclens history`, the history screen, install dates in
+                  `why`. Rows are runs, not alpm transactions. Flatpak became
+                  one source and privilege is declared per step (#10), and
+                  the dashboard opens before the scan finishes instead of
+                  behind a splash
 ```
 
 **Renumbered 2026-08-24.** The old scheme mixed granularities — 0.1.x took a
