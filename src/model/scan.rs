@@ -97,10 +97,10 @@ impl ScanResult {
         }
         if id == &super::SourceId::cargo() && !source.accurate_updates {
             // Not an alarm: a machine with no `cargo-update` is not broken,
-            // it just has no update path for crates — paclens lists them and
-            // checks nothing. Short enough for the 12-column STATUS cell;
-            // which tool would restore it is the note below.
-            return Some("list only");
+            // it just has no update path for crates. The word says what
+            // paclens did with them — listed, nothing more — and sits beside
+            // "ok" and "not found" at the same length.
+            return Some("listed");
         }
         None
     }
@@ -129,7 +129,7 @@ impl ScanResult {
             return self.aur_helper.compact_note();
         }
         if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
-            return Some("cargo: list only - install cargo-update".to_string());
+            return Some("cargo: listed only - install cargo-update".to_string());
         }
         None
     }

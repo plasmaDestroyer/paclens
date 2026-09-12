@@ -406,7 +406,7 @@ mod tests {
         assert!(text.contains("cargo"), "no cargo row:\n{text}");
         // The row says why it cannot update, in the width a table cell has…
         assert!(
-            text.contains("list only"),
+            text.contains("listed"),
             "the row should say what it does instead:\n{text}"
         );
         // And not as a fault: no warning marker for a missing optional tool.
