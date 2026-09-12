@@ -131,6 +131,17 @@ impl HelperChoice {
     /// where every other row truncates too.
     ///
     /// The long form stays in `paclens status`, which has the width for it.
+    /// Is paclens using a different helper than the config asked for?
+    ///
+    /// This, and not "there is something to say about this source", is what
+    /// the row-level marker is for (design §13, 2026-08-24): a stale pin
+    /// leaves the source working, so nothing else on the row says it is not
+    /// what was configured. A helper that is simply absent needs no marker —
+    /// the row already reads as unavailable.
+    pub fn differs_from_config(&self) -> bool {
+        matches!(self, HelperChoice::FellBack { .. })
+    }
+
     pub fn compact_note(&self) -> Option<String> {
         match self {
             HelperChoice::Detected(_) | HelperChoice::Pinned(_) => Option::None,

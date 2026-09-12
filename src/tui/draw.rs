@@ -710,8 +710,7 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             // there is one.
             let warned = app
                 .scan()
-                .source_note(&crate::model::SourceId(r.id.clone()))
-                .is_some();
+                .source_warning(&crate::model::SourceId(r.id.clone()));
             // "no helper" rather than the generic "not found", but only when
             // the helper is actually the reason — a missing pacman takes the
             // aur source down too, and that is a different sentence.
@@ -3861,9 +3860,11 @@ mod tests {
         let app = App::new(s, Theme::none(), AppOptions::test());
         let text = render(&app, 110, 30);
         let row = source_row(&text, "cargo");
-        assert!(row.contains("no updater"), "reason is clipped:\n{row}");
+        assert!(row.contains("list only"), "reason is clipped:\n{row}");
+        // And not marked as a fault: a missing optional tool is not one.
+        assert!(!row.contains('!'), "marked as a problem:\n{row}");
         // Nothing in the cell may run off the end of it.
-        for word in ["no updater", "not found", "ok"] {
+        for word in ["list only", "not found", "ok"] {
             if let Some(at) = row.find(word) {
                 assert!(row[at..].contains(word), "the reason is cut off: {row:?}");
             }

@@ -152,6 +152,19 @@ mod tests {
     }
 
     #[test]
+    fn a_source_with_no_update_path_reports_no_count_rather_than_zero() {
+        // Nothing checked it, so there is no number — "0 updates" would read
+        // as "none pending" (design §3). What it has installed is still known.
+        let mut s = scan();
+        for source in s.sources.iter_mut() {
+            source.available = false;
+        }
+        let summary = summarize(&s, |id| id == &SourceId::flatpak());
+        assert!(!summary.available);
+        assert_eq!(summary.installed, 2, "what is installed is still known");
+    }
+
+    #[test]
     fn empty_scan_summarizes_to_zero_and_unavailable() {
         let empty = ScanResult {
             schema_version: SCHEMA_VERSION,

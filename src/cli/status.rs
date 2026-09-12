@@ -83,7 +83,7 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
         // Flag the row itself whenever there is a note, working or not — a
         // stale pin leaves the aur source fine, and the note alone is easy to
         // read past.
-        let warned = scan.source_note(&source.id).is_some();
+        let warned = scan.source_warning(&source.id);
         if reason.is_some() || warned {
             out.push_str(&render_row_because(
                 source.id.as_str(),
@@ -146,7 +146,13 @@ fn render_row_because(
     s: &Styles,
 ) -> String {
     let installed = format!("{:>9}", summary.installed);
-    let updates = s.updates_count(&format!("{:>7}", summary.updates), summary.updates);
+    // A source with no update path checked nothing, so it has no count to
+    // show — "0" there would read as "none pending" (design §3).
+    let updates = if summary.available {
+        s.updates_count(&format!("{:>7}", summary.updates), summary.updates)
+    } else {
+        s.dim(&format!("{:>7}", "—"))
+    };
     let status = match (summary.available, warned, reason) {
         (true, false, _) => s.available(),
         (true, true, _) => s.warned("ok"),
@@ -400,9 +406,15 @@ mod tests {
         assert!(text.contains("cargo"), "no cargo row:\n{text}");
         // The row says why it cannot update, in the width a table cell has…
         assert!(
-            text.contains("no updater"),
-            "the row should say it cannot update:\n{text}"
+            text.contains("list only"),
+            "the row should say what it does instead:\n{text}"
         );
+        // And not as a fault: no warning marker for a missing optional tool.
+        let row = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("cargo "))
+            .expect("cargo row");
+        assert!(!row.contains("! "), "marked as a problem:\n{row}");
         // …and the note below names the tool and how to get it.
         assert!(
             text.contains("install cargo-update"),
@@ -526,11 +538,18 @@ mod tests {
     /// The marker rides on the note, not on availability: every state that
     /// prints a note marks its row, and every state that does not, does not.
     #[test]
-    fn the_row_marker_and_the_note_agree() {
+    fn the_marker_means_a_surprise_and_the_note_means_an_explanation() {
         use crate::providers::aur::{AurHelper, HelperChoice};
+        // These were coupled: anything with a note got the `!` marker. They
+        // are different questions (user decision 2026-09-12). The marker is
+        // for a source that *works* but is not what the config asked for —
+        // nothing else on the row would say so. A source missing its optional
+        // tool reads as unavailable already, and marking it says something
+        // went wrong when nothing did.
         let cases = [
-            (HelperChoice::Detected(AurHelper::Paru), true, false),
-            (HelperChoice::Pinned(AurHelper::Yay), true, false),
+            // choice, available, marker, note
+            (HelperChoice::Detected(AurHelper::Paru), true, false, false),
+            (HelperChoice::Pinned(AurHelper::Yay), true, false, false),
             (
                 HelperChoice::FellBack {
                     configured: "yay".to_string(),
@@ -538,17 +557,19 @@ mod tests {
                 },
                 true,
                 true,
+                true,
             ),
-            (HelperChoice::None, false, true),
+            (HelperChoice::None, false, false, true),
             (
                 HelperChoice::ConfiguredMissing {
                     configured: "trizen".to_string(),
                 },
                 false,
+                false,
                 true,
             ),
         ];
-        for (choice, available, expect_mark) in cases {
+        for (choice, available, expect_mark, expect_note) in cases {
             let mut scan = scan_with(Vec::new(), Vec::new(), true);
             scan.sources.push(Source {
                 id: SourceId::aur(),
@@ -566,8 +587,8 @@ mod tests {
             assert_eq!(row.contains("! "), expect_mark, "{choice:?} row: {row:?}");
             assert_eq!(
                 out.contains("aur: "),
-                expect_mark,
-                "{choice:?} note presence should match the marker"
+                expect_note,
+                "{choice:?} note presence"
             );
         }
     }

@@ -96,10 +96,11 @@ impl ScanResult {
             return Some("no helper");
         }
         if id == &super::SourceId::cargo() && !source.accurate_updates {
-            // Short enough for the dashboard's 12-column STATUS cell, which
-            // is why it names the shape of the missing thing rather than the
-            // tool. Which tool, and how to get it, is the note below.
-            return Some("no updater");
+            // Not an alarm: a machine with no `cargo-update` is not broken,
+            // it just has no update path for crates — paclens lists them and
+            // checks nothing. Short enough for the 12-column STATUS cell;
+            // which tool would restore it is the note below.
+            return Some("list only");
         }
         None
     }
@@ -128,9 +129,19 @@ impl ScanResult {
             return self.aur_helper.compact_note();
         }
         if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
-            return Some("cargo: no updater - install cargo-update".to_string());
+            return Some("cargo: list only - install cargo-update".to_string());
         }
         None
+    }
+
+    /// Should this source's row carry the warning marker?
+    ///
+    /// Only when the source *works* but is not what the config asked for — a
+    /// stale helper pin. A source missing an optional tool is not a fault to
+    /// flag: it reads as unavailable already, and marking it says something
+    /// went wrong when nothing did (user decision 2026-09-12).
+    pub fn source_warning(&self, id: &super::SourceId) -> bool {
+        id == &super::SourceId::aur() && self.aur_helper.differs_from_config()
     }
 
     fn cargo_cannot_update(&self) -> bool {

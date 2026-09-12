@@ -809,7 +809,10 @@ impl App {
                 let known = counted || stale;
                 let climb = self.climbing_count(&s.id, summary.installed);
                 let installed = known.then(|| climb.unwrap_or(summary.installed));
-                let updates = known.then_some(summary.updates);
+                // A source with no update path checked nothing: it has no
+                // count to show, and "0" there reads as "none pending"
+                // (design §3). What it *has* installed is still known.
+                let updates = (known && s.available).then_some(summary.updates);
                 let enabled =
                     (s.available && summary.updates > 0 && counted).then(|| self.is_enabled(&s.id));
                 SourceRow {
