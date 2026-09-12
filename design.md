@@ -1812,6 +1812,13 @@ YYYY-MM-DD | no --noconfirm for pacman
            | output with no compatibility promise, parsed by column. It is
            | fixture-tested like every other parser (§12), and a row it
            | cannot read is skipped rather than guessed at.
+           | Shipped as a patch, not the minor it looked like. §14's test is
+           | whether the sentence needs an "except", and it names this exact
+           | case: "the source is detected but not updatable". On a stock
+           | machine cargo lists crates and cannot update them, so "paclens
+           | sees your cargo-installed binaries" does not stand on its own
+           | yet. The minor waits for update detection that works without a
+           | second tool installed (user decision 2026-09-12).
 ```
 
 ---
