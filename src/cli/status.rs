@@ -157,7 +157,10 @@ fn render_row_because(
         (true, false, _) => s.available(),
         (true, true, _) => s.warned("ok"),
         (false, true, reason) => s.warned(reason.unwrap_or("not found")),
-        (false, false, Some(reason)) => s.unavailable_because(reason),
+        // An explained limitation — the source lists fine, it just cannot
+        // check for updates. Grey "ok", with the `—` in the updates column
+        // and the note carrying the rest.
+        (false, false, Some(_)) => s.inactive(),
         (false, false, None) => s.unavailable(),
     };
     format!("  {name:<8} {installed}  {updates}  {status}")
@@ -363,7 +366,7 @@ mod tests {
     /// restores it. "not found" alone is the generic note design §3 rules out
     /// — it tells you nothing about what to do next.
     #[test]
-    fn a_missing_helper_names_itself_and_the_fix() {
+    fn a_missing_helper_reads_as_inactive_and_the_note_names_the_fix() {
         use crate::providers::aur::HelperChoice;
         let mut scan = scan_with(Vec::new(), Vec::new(), true);
         scan.sources.push(Source {
@@ -375,11 +378,19 @@ mod tests {
         });
         scan.aur_helper = HelperChoice::None;
         let out = render_status(&scan, &ascii_styles());
-        assert!(out.contains("no helper"), "status column:\n{out}");
+        // The row reads as inactive rather than broken — it lists AUR
+        // packages perfectly well, it just cannot check them (2026-09-12).
+        let row = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("aur "))
+            .expect("aur row");
+        assert!(row.contains("ok"), "row: {row:?}");
         assert!(
-            !out.contains("aur") || !out.contains("- not found"),
-            "{out}"
+            !row.contains("not found"),
+            "the source is not missing: {row:?}"
         );
+        // No count, because nothing checked.
+        assert!(row.contains('—'), "a count was claimed: {row:?}");
         assert!(
             out.contains("install paru, yay or pikaur for update detection"),
             "note missing:\n{out}"
@@ -405,16 +416,18 @@ mod tests {
         let text = render_status(&scan, &plain_styles());
         assert!(text.contains("cargo"), "no cargo row:\n{text}");
         // The row says why it cannot update, in the width a table cell has…
-        assert!(
-            text.contains("listed"),
-            "the row should say what it does instead:\n{text}"
-        );
-        // And not as a fault: no warning marker for a missing optional tool.
+        // Inactive, not broken: grey "ok" with no count, and no marker.
         let row = text
             .lines()
             .find(|l| l.trim_start().starts_with("cargo "))
             .expect("cargo row");
-        assert!(!row.contains("! "), "marked as a problem:\n{row}");
+        assert!(row.contains("ok"), "row: {row:?}");
+        assert!(!row.contains("! "), "marked as a problem: {row:?}");
+        assert!(
+            !row.contains("not found"),
+            "the source is not missing: {row:?}"
+        );
+        assert!(row.contains('—'), "a count was claimed: {row:?}");
         // …and the note below names the tool and how to get it.
         assert!(
             text.contains("install cargo-update"),

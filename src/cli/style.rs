@@ -124,6 +124,18 @@ impl Styles {
         self.dim(&text)
     }
 
+    /// "<glyph> ok" in dim — the source is fine, it just has no update path,
+    /// so nothing about it is being checked.
+    ///
+    /// Green would claim its update count means something; "not found" would
+    /// claim the source is missing when it is listing packages perfectly
+    /// well. Grey is the honest middle: present, inactive (user decision
+    /// 2026-09-12). What is missing, and what would restore it, is the note.
+    pub fn inactive(&self) -> String {
+        let text = format!("{} ok", self.glyphs.available);
+        self.dim(&text)
+    }
+
     /// "<warning glyph> <state>" — the source has something to say about it,
     /// whether or not it still works. Yellow rather than dim: a degraded
     /// source that keeps working is the case most easily missed.

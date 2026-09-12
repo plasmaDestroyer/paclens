@@ -720,19 +720,32 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 (true, true) => Span::styled(format!("{} ok", theme.glyphs.warning), theme.accent),
                 (false, warned) => {
-                    // The same answer the CLI status table prints, from the
-                    // same place (P5) — a source added later gets its reason
+                    // The same answer the CLI status table gives, from the
+                    // same place (P5) — a source added later gets its state
                     // without either renderer learning its name.
                     let reason = app
                         .scan()
-                        .unavailable_reason(&crate::model::SourceId(r.id.clone()))
-                        .unwrap_or("not found");
-                    let (glyph, style) = if warned {
-                        (theme.glyphs.warning, theme.accent)
-                    } else {
-                        (theme.glyphs.unavailable, theme.unavailable)
-                    };
-                    Span::styled(format!("{glyph} {reason}"), style)
+                        .unavailable_reason(&crate::model::SourceId(r.id.clone()));
+                    match (warned, reason) {
+                        (true, reason) => Span::styled(
+                            format!("{} {}", theme.glyphs.warning, reason.unwrap_or("not found")),
+                            theme.accent,
+                        ),
+                        // An explained limitation: the source lists fine, it
+                        // just cannot check for updates. Grey "ok" — green
+                        // would claim its update count meant something, and
+                        // "not found" would claim it was missing while it is
+                        // listing packages perfectly well. The `—` in the
+                        // updates column and the pane's note carry the rest.
+                        (false, Some(_)) => Span::styled(
+                            format!("{} ok", theme.glyphs.available),
+                            theme.unavailable,
+                        ),
+                        (false, None) => Span::styled(
+                            format!("{} not found", theme.glyphs.unavailable),
+                            theme.unavailable,
+                        ),
+                    }
                 }
             };
             // A count the scan has not produced yet is a dash, not a zero:
@@ -3777,7 +3790,7 @@ mod tests {
     /// The dashboard says the same thing `paclens status` does (P5): which
     /// capability the missing helper costs, and what restores it.
     #[test]
-    fn dashboard_names_a_missing_helper_and_the_fix() {
+    fn dashboard_shows_a_helperless_aur_as_inactive() {
         use crate::providers::aur::HelperChoice;
         let mut s = scan_with(Vec::new());
         s.aur_helper = HelperChoice::None;
@@ -3787,9 +3800,16 @@ mod tests {
             source.available = false;
         }
         let mut app = App::new(s, Theme::none(), AppOptions::test());
-        // The status column says it regardless of the cursor.
+        // The row reads as inactive rather than broken: it lists AUR packages
+        // perfectly well, it just cannot check them (2026-09-12). What is
+        // missing, and the fix, is the note — which waits for the cursor.
         let text = render(&app, 110, 30);
-        assert!(text.contains("no helper"), "status column:\n{text}");
+        let row = source_row(&text, "aur");
+        assert!(row.contains("ok"), "row: {row:?}");
+        assert!(
+            !row.contains("not found"),
+            "the source is not missing: {row:?}"
+        );
         assert!(
             !text.contains("install paru/yay/pikaur"),
             "note must wait for the aur row to be selected:\n{text}"
@@ -3845,7 +3865,7 @@ mod tests {
     /// explanation and stays behind the cursor; the marker is the reason you
     /// would move the cursor there at all.
     #[test]
-    fn a_degraded_row_reason_fits_the_status_cell() {
+    fn an_inactive_row_reads_as_present_not_missing() {
         // STATUS is twelve columns wide. "no cargo-update" needed seventeen
         // and came out clipped mid-word, so the row says what it can in the
         // width it has and the system pane carries the tool's name.
@@ -3860,11 +3880,15 @@ mod tests {
         let app = App::new(s, Theme::none(), AppOptions::test());
         let text = render(&app, 110, 30);
         let row = source_row(&text, "cargo");
-        assert!(row.contains("listed"), "reason is clipped:\n{row}");
-        // And not marked as a fault: a missing optional tool is not one.
+        // Inactive, not broken: it lists crates, it just cannot check them.
+        assert!(row.contains("ok"), "row: {row:?}");
         assert!(!row.contains('!'), "marked as a problem:\n{row}");
+        assert!(
+            !row.contains("not found"),
+            "the source is not missing: {row:?}"
+        );
         // Nothing in the cell may run off the end of it.
-        for word in ["listed", "not found", "ok"] {
+        for word in ["not found", "ok"] {
             if let Some(at) = row.find(word) {
                 assert!(row[at..].contains(word), "the reason is cut off: {row:?}");
             }
