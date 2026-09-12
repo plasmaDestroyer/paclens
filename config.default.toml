@@ -43,6 +43,12 @@ flatpak = true
 # pacman; update detection and the update step need paru installed.
 aur     = true
 
+# Crates installed with `cargo install`, read from cargo's own record
+# (~/.cargo/.crates.toml) rather than from ~/.cargo/bin, most of which is
+# rustup's. Update detection and the update step need cargo-update installed;
+# without it the source still lists what you have.
+cargo   = true
+
 
 [scan]
 

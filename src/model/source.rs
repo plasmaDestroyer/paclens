@@ -29,6 +29,10 @@ impl SourceId {
         SourceId("flatpak".to_string())
     }
 
+    pub fn cargo() -> Self {
+        SourceId("cargo".to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -76,6 +80,19 @@ mod tests {
         assert_eq!(SourceId::pacman().as_str(), "pacman");
         assert_eq!(SourceId::aur().as_str(), "aur");
         assert_eq!(SourceId::flatpak().as_str(), "flatpak");
+        assert_eq!(SourceId::cargo().as_str(), "cargo");
+    }
+
+    #[test]
+    fn cargo_has_no_dependency_data_but_does_know_why_a_crate_is_there() {
+        // The first source with no dependency edges at all. It still records
+        // an install reason — everything was asked for by name — and claiming
+        // otherwise made `why` describe a crate as a flatpak app.
+        let caps = SourceKind::Cargo.capabilities();
+        assert!(!caps.dependency_graph);
+        assert!(caps.install_reason);
+        assert!(!caps.orphans);
+        assert_eq!(caps.removal_hint, Some("cargo uninstall"));
     }
 
     #[test]
@@ -123,6 +140,11 @@ pub enum SourceKind {
     /// Both scopes. One tool updates them, so they are one source; which
     /// scope a package lives in rides on the package (design §13).
     Flatpak,
+    /// Crates installed with `cargo install`, living under `$HOME` — never
+    /// privileged, and known from cargo's own `.crates2.json` rather than
+    /// from whatever happens to be in `~/.cargo/bin` (rustup owns most of
+    /// that).
+    Cargo,
 }
 
 /// What a screen may ask a source about (design §13, 2026-09-07).
@@ -143,7 +165,11 @@ pub struct SourceCapabilities {
     /// itself. Flatpak's app → runtime edge is inferred by the analyzer, not
     /// reported by flatpak, so it does not count.
     pub dependency_graph: bool,
-    /// The source records whether a package was asked for or pulled in.
+    /// The source knows why a package is installed. True for a source where
+    /// every install is explicit by construction (cargo) as well as one that
+    /// distinguishes explicit from dependency (pacman) — what it rules out is
+    /// a source that records nothing, where "installed as a dependency" would
+    /// be a fact nobody has.
     pub install_reason: bool,
     /// A package here can become an orphan: installed as a dependency, with
     /// nothing left requiring it.
@@ -187,6 +213,19 @@ impl SourceKind {
                 // fact anyone here has.
                 orphans: false,
                 removal_hint: Some("flatpak uninstall"),
+            },
+            // No dependency edges between installed crates, and nothing is
+            // ever installed on another crate's behalf — so no orphans
+            // either. It *does* record an install reason, though: every crate
+            // cargo installs was asked for by name, so the answer is always
+            // "explicit". Saying otherwise sends `why` down the branch for
+            // sources that record nothing, which is flatpak's, and a cargo
+            // crate came out described as a self-contained flatpak app.
+            SourceKind::Cargo => SourceCapabilities {
+                dependency_graph: false,
+                install_reason: true,
+                orphans: false,
+                removal_hint: Some("cargo uninstall"),
             },
         }
     }

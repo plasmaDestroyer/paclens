@@ -100,6 +100,16 @@ mod tests {
     }
 
     #[test]
+    fn a_source_the_config_predates_defaults_to_on() {
+        // A config written before cargo existed as a source has no key for
+        // it; it must come up enabled, the way a fresh install would.
+        let loaded = parse_config("[sources]\npacman  = true\nflatpak = true\n").unwrap();
+        assert!(loaded.config.sources.cargo, "cargo defaulted to off");
+        assert!(loaded.config.sources.aur, "aur defaulted to off");
+        assert!(loaded.unknown_keys.is_empty());
+    }
+
+    #[test]
     fn explicit_value_overrides_default() {
         let loaded = parse_config("[general]\ncache_ttl = 60\n").unwrap();
         assert_eq!(loaded.config.general.cache_ttl, 60);

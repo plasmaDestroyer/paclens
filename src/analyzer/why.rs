@@ -159,6 +159,18 @@ fn flatten(nodes: &[TreeNode], indent: &str, g: (&str, &str, &str, &str), out: &
 /// blocks anything.
 fn caveats_for(pkg: &crate::model::Package) -> Vec<String> {
     let mut out = Vec::new();
+    // A crate installed from a local path or a git checkout has no published
+    // version to compare against, so "up to date" is not a claim anyone can
+    // make about it — the same shape as an AUR `-git` package.
+    if pkg.source_id == SourceId::cargo() {
+        if pkg.foreign {
+            out.push(
+                "installed from a local path or git — no published version to compare against"
+                    .to_string(),
+            );
+        }
+        return out;
+    }
     if pkg.source_id != SourceId::aur() {
         return out;
     }

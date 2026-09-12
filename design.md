@@ -1767,6 +1767,51 @@ YYYY-MM-DD | no --noconfirm for pacman
            | Ceiling: the estimate aims at the last scan, so a machine that
            | lost packages since then climbs past the truth and corrects
            | downward when the lane lands.
+
+2026-09-12 | cargo as a source, and what it broke on the way in (#11)
+           | The first non-alpm source, and the first real test of the
+           | contract settled on 2026-09-07. Most of it fitted: one flat id,
+           | a capability row, an unprivileged update step, `why` degrading
+           | rather than refusing. No model changes were needed, which is
+           | what #10 was for.
+           | The inventory is `~/.cargo/.crates.toml`, not `~/.cargo/bin`.
+           | Fourteen of the seventeen binaries in that directory are
+           | rustup's, and claiming them would have paclens offering to
+           | `cargo install` things cargo never installed. `.crates.toml`
+           | over the newer `.crates2.json` for one reason: it carries the
+           | same facts and it is TOML, already a dependency — a JSON parser
+           | would be a new dependency bought for one file. Cargo writes
+           | both; the fixture test is what will say so if that stops.
+           | Update detection needs `cargo-update`, and its absence reads the
+           | way a missing AUR helper does: the crates still list, the row
+           | says `no cargo-update`, and `available` means the update path
+           | exists rather than the tool. A row showing "0 updates" for a
+           | source nothing had checked would be the confident wrong answer
+           | §3 forbids.
+           | Path and git installs have no published version to compare
+           | against, so they are flagged the way an AUR `-git` package is —
+           | `why` says so. On the author's machine that is *every* crate,
+           | which is worth knowing: the registry path is the one the
+           | reference system cannot exercise.
+           |
+           | Two defects it surfaced, both the same shape — a renderer that
+           | knows source names instead of asking.
+           | The CLI status table enumerated its rows: pacman, aur, flatpak.
+           | Cargo was scanned, cached, and invisible. It iterates the scan's
+           | sources now, and the "why can this source not update" sentence
+           | moved onto `ScanResult` so the dashboard and the status table
+           | read it from one place.
+           | And `why` treated "no install reason" as "must be flatpak",
+           | describing a cargo crate as a self-contained flatpak app. Cargo
+           | does know why a crate is there — everything was asked for by
+           | name — so the capability is true for it, and the flatpak wording
+           | is reached only by a source that records nothing at all. That
+           | branch is still flatpak's alone; the next such source needs its
+           | own sentence.
+           | Ceiling: `cargo install-update --list` is a third-party tool's
+           | output with no compatibility promise, parsed by column. It is
+           | fixture-tested like every other parser (§12), and a row it
+           | cannot read is skipped rather than guessed at.
 ```
 
 ---

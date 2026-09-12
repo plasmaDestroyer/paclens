@@ -70,27 +70,34 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     )));
     out.push('\n');
 
-    let pacman = summarize(scan, |id| id == &SourceId::pacman());
-    let flatpak = summarize(scan, is_flatpak);
-    out.push_str(&render_row("pacman", &pacman, s));
-    out.push('\n');
-    // The aur row only exists when the source is configured (v0.3).
+    // One row per source the scan found, in the order the scan lists them.
+    // Naming the sources here instead is how `cargo` came to be scanned,
+    // cached, and then invisible: a renderer that enumerates what it knows
+    // about cannot show a source added later (#11).
     let aur_shown = scan.sources.iter().any(|src| src.id == SourceId::aur());
-    if aur_shown {
-        let aur = summarize(scan, |id| id == &SourceId::aur());
-        // "no helper" rather than "not found" — but only when the helper is
-        // actually the reason. A missing pacman makes the aur source
-        // unavailable too, and that is a different sentence.
-        let reason = (scan.aur_helper.helper().is_none()).then_some("no helper");
+    for source in &scan.sources {
+        let id = source.id.clone();
+        let summary = summarize(scan, |candidate| candidate == &id);
+        // Why a source cannot be updated, when that is more specific than
+        // "not found" — one answer, shared with the dashboard (P5).
+        let reason = scan.unavailable_reason(&source.id);
         // Flag the row itself whenever there is a note, working or not — a
-        // stale pin leaves the source fine, and the note alone is easy to read
-        // past.
-        let warned = scan.aur_helper.note().is_some();
-        out.push_str(&render_row_because("aur", &aur, reason, warned, s));
+        // stale pin leaves the aur source fine, and the note alone is easy to
+        // read past.
+        let warned = source.id == SourceId::aur() && scan.aur_helper.note().is_some();
+        if reason.is_some() || warned {
+            out.push_str(&render_row_because(
+                source.id.as_str(),
+                &summary,
+                reason,
+                warned,
+                s,
+            ));
+        } else {
+            out.push_str(&render_row(source.id.as_str(), &summary, s));
+        }
         out.push('\n');
     }
-    out.push_str(&render_row("flatpak", &flatpak, s));
-    out.push('\n');
 
     out.push('\n');
     // Why the aur source is degraded, and what fixes it. Shared with the TUI
@@ -375,6 +382,28 @@ mod tests {
     /// Using a different helper than the one configured is exactly the
     /// unexplained behaviour design §2 rules out, so it is said out loud even
     /// though the source is working.
+    #[test]
+    fn every_source_the_scan_found_gets_a_row() {
+        // The bug this pins: the table named its rows, so `cargo` was
+        // scanned, cached, and then invisible. A source added later has to
+        // appear without this renderer learning its name.
+        let mut scan = scan_with(vec![pkg("a", SourceId::pacman())], Vec::new(), true);
+        scan.sources.push(Source {
+            id: SourceId::cargo(),
+            kind: crate::model::SourceKind::Cargo,
+            available: false,
+            last_scanned: None,
+            accurate_updates: false,
+        });
+        let text = render_status(&scan, &plain_styles());
+        assert!(text.contains("cargo"), "no cargo row:\n{text}");
+        // And it says why it cannot update, rather than the generic reason.
+        assert!(
+            text.contains("no cargo-update"),
+            "the row should name the missing tool:\n{text}"
+        );
+    }
+
     #[test]
     fn a_stale_pin_is_reported_even_though_the_source_works() {
         use crate::providers::aur::{AurHelper, HelperChoice};

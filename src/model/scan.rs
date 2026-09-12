@@ -79,6 +79,28 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
+    /// Why this source cannot be updated, when the reason is more specific
+    /// than "not found".
+    ///
+    /// Shared by the CLI status table and the TUI dashboard so the two can
+    /// never word it differently (P5). Derived rather than stored: both facts
+    /// it reads are already in the scan.
+    pub fn unavailable_reason(&self, id: &super::SourceId) -> Option<&'static str> {
+        let source = self.sources.iter().find(|s| &s.id == id)?;
+        if source.available {
+            return None;
+        }
+        if id == &super::SourceId::aur() && self.aur_helper.helper().is_none() {
+            // A missing pacman takes the aur source down too, and that is a
+            // different sentence.
+            return Some("no helper");
+        }
+        if id == &super::SourceId::cargo() && !source.accurate_updates {
+            return Some("no cargo-update");
+        }
+        None
+    }
+
     /// What the source of `id` can answer (design §13, 2026-09-07).
     ///
     /// A package whose source the scan has no row for gets

@@ -1,0 +1,6 @@
+[v1]
+"paclens 0.5.0 (path+file:///home/satyxsing/Projects/paclens)" = ["paclens"]
+"soundviz 0.1.0 (path+file:///home/satyxsing/Projects/soundviz)" = ["soundviz"]
+"tack 0.8.2 (path+file:///home/satyxsing/Projects/tack)" = ["tack"]
+"ripgrep 14.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = ["rg"]
+"eza 0.20.1 (git+https://github.com/eza-community/eza?branch=main#a1b2c3d4)" = ["eza"]

@@ -719,11 +719,13 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 (true, true) => Span::styled(format!("{} ok", theme.glyphs.warning), theme.accent),
                 (false, warned) => {
-                    let reason = if r.id == aur_id && app.scan().aur_helper.helper().is_none() {
-                        "no helper"
-                    } else {
-                        "not found"
-                    };
+                    // The same answer the CLI status table prints, from the
+                    // same place (P5) — a source added later gets its reason
+                    // without either renderer learning its name.
+                    let reason = app
+                        .scan()
+                        .unavailable_reason(&crate::model::SourceId(r.id.clone()))
+                        .unwrap_or("not found");
                     let (glyph, style) = if warned {
                         (theme.glyphs.warning, theme.accent)
                     } else {

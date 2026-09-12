@@ -237,6 +237,10 @@ pub fn scan_with_progress(
     let pacman_available = PacmanProvider::new(runner).is_available();
     let flatpak_available = FlatpakProvider::new(runner).is_available();
     let checkupdates = crate::providers::binary_on_path(pacman::CHECKUPDATES_BIN);
+    // Cargo's record can exist without cargo on PATH, but nothing could then
+    // update or remove what it lists — the source is only meaningful with the
+    // tool that owns it.
+    let cargo_available = crate::providers::binary_on_path(crate::providers::cargo::CARGO_BIN);
     let helper = aur::detect(&config.general.aur_helper);
     // Say so when the config asked for something else. A stale pin is not an
     // error, but silently using a different helper than the one configured is
@@ -261,11 +265,24 @@ pub fn scan_with_progress(
             pacman: pacman_available,
             flatpak: flatpak_available,
             checkupdates,
+            cargo: cargo_available,
         },
         helper,
         home_dir.as_deref(),
         progress,
     )
+}
+
+/// Cargo's own record of what it installed, if there is one.
+///
+/// `$CARGO_HOME` wins over `~/.cargo` — a user who moved it has moved the
+/// record with it, and reading the default path would report someone else's
+/// crates.
+fn read_cargo_record(home_dir: Option<&Path>) -> Option<String> {
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| home_dir.map(|h| h.join(".cargo")))?;
+    std::fs::read_to_string(cargo_home.join(".crates.toml")).ok()
 }
 
 /// Which binaries were found on PATH. Passed in rather than probed, so the
@@ -275,6 +292,7 @@ struct Availability {
     pacman: bool,
     flatpak: bool,
     checkupdates: bool,
+    cargo: bool,
 }
 
 /// What one lane has finished.
@@ -291,6 +309,7 @@ type FlatpakLane = (
 
 enum LaneResult {
     Pacman(Vec<Package>, Vec<PendingUpdate>),
+    Cargo(Vec<Package>, Vec<PendingUpdate>),
     Flatpak(FlatpakLane),
     Sizes(CacheSizes),
     /// `pacman -Qm`, which is fast — and which pacman's own package list has
@@ -306,6 +325,7 @@ enum LaneResult {
 struct Parts {
     pacman: Option<(Vec<Package>, Vec<PendingUpdate>)>,
     flatpak: Option<FlatpakLane>,
+    cargo: Option<(Vec<Package>, Vec<PendingUpdate>)>,
     sizes: Option<CacheSizes>,
     foreign: Option<std::collections::HashSet<String>>,
     aur_updates: Option<Vec<PendingUpdate>>,
@@ -318,6 +338,7 @@ struct Lanes {
     pacman: bool,
     aur: bool,
     flatpak: bool,
+    cargo: bool,
 }
 
 impl Parts {
@@ -333,6 +354,9 @@ impl Parts {
     }
     fn flatpak_done(&self, lanes: Lanes) -> bool {
         !lanes.flatpak || self.flatpak.is_some()
+    }
+    fn cargo_done(&self, lanes: Lanes) -> bool {
+        !lanes.cargo || self.cargo.is_some()
     }
 }
 
@@ -358,6 +382,7 @@ fn assemble(
         pacman: pacman_available,
         flatpak: flatpak_available,
         checkupdates: checkupdates_available,
+        cargo: cargo_available,
     } = found;
     let now = Utc::now();
     let flatpak_profile_dir = home_dir.map(|h| h.join(".var").join("app"));
@@ -366,6 +391,7 @@ fn assemble(
         pacman: config.sources.pacman && pacman_available,
         flatpak: config.sources.flatpak && flatpak_available,
         aur: config.sources.aur && config.sources.pacman && pacman_available,
+        cargo: config.sources.cargo && cargo_available,
     };
 
     if config.sources.pacman && !pacman_available {
@@ -387,6 +413,7 @@ fn assemble(
             pacman_available,
             flatpak_available,
             checkupdates_available,
+            cargo_available,
             aur_helper: &aur_helper,
         },
     ));
@@ -412,6 +439,35 @@ fn assemble(
             let (pkgs, ups) = collect_provider(&FlatpakProvider::new(runner), "flatpak");
             let sizes = gather_profile_sizes(runner, flatpak_profile_dir, &pkgs);
             let _ = flatpak_tx.send(LaneResult::Flatpak((pkgs, ups, sizes)));
+        });
+
+        let cargo_tx = tx.clone();
+        s.spawn(move || {
+            if !lanes.cargo {
+                return;
+            }
+            // Cargo's record is a file, not a command: read it here and hand
+            // the text to the pure parser (the `staleness_with` pattern).
+            let packages = match read_cargo_record(home_dir) {
+                Some(text) => match crate::providers::cargo::parse_installed(&text) {
+                    Ok(pkgs) => pkgs,
+                    Err(err) => {
+                        tracing::error!(error = %err, "could not parse cargo's record");
+                        Vec::new()
+                    }
+                },
+                // No record means nothing has been `cargo install`ed, which is
+                // an empty source rather than a failure (design §6).
+                None => Vec::new(),
+            };
+            let updates = match crate::providers::cargo::scan_updates(runner) {
+                Ok(ups) => ups,
+                Err(err) => {
+                    tracing::error!(error = %err, "cargo update check failed; no cargo updates");
+                    Vec::new()
+                }
+            };
+            let _ = cargo_tx.send(LaneResult::Cargo(packages, updates));
         });
 
         let du_tx = tx.clone();
@@ -464,6 +520,7 @@ fn assemble(
             match message {
                 LaneResult::Pacman(pkgs, ups) => parts.pacman = Some((pkgs, ups)),
                 LaneResult::Flatpak(lane) => parts.flatpak = Some(lane),
+                LaneResult::Cargo(pkgs, ups) => parts.cargo = Some((pkgs, ups)),
                 LaneResult::Sizes(sizes) => parts.sizes = Some(sizes),
                 LaneResult::AurForeign(names) => parts.foreign = Some(names),
                 LaneResult::AurUpdates(ups) => parts.aur_updates = Some(ups),
@@ -477,6 +534,7 @@ fn assemble(
                     pacman_available,
                     flatpak_available,
                     checkupdates_available,
+                    cargo_available,
                     aur_helper: &aur_helper,
                 },
             ));
@@ -492,6 +550,7 @@ fn assemble(
             pacman_available,
             flatpak_available,
             checkupdates_available,
+            cargo_available,
             aur_helper: &aur_helper,
         },
     );
@@ -527,10 +586,15 @@ struct ComposeInput<'a> {
     pacman_available: bool,
     flatpak_available: bool,
     checkupdates_available: bool,
+    cargo_available: bool,
     aur_helper: &'a aur::HelperChoice,
 }
 
 /// Build a `ScanResult` from whatever the lanes have reported.
+///
+/// `last_scanned` is set only for a source this run actually scanned: a
+/// source whose binary is missing never reports, and stamping it with "just
+/// now" would say it had been looked at.
 ///
 /// Called for every partial as well as for the finished scan, so the two can
 /// never disagree about how a package list is assembled. A source carries
@@ -544,6 +608,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         pacman_available,
         flatpak_available,
         checkupdates_available,
+        cargo_available,
         aur_helper,
     } = *input;
 
@@ -553,7 +618,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             id: SourceId::pacman(),
             kind: SourceKind::Pacman,
             available: pacman_available,
-            last_scanned: parts.pacman_done(lanes).then_some(now),
+            last_scanned: (lanes.pacman && parts.pacman_done(lanes)).then_some(now),
             accurate_updates: checkupdates_available,
         });
     }
@@ -564,7 +629,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             id: SourceId::aur(),
             kind: SourceKind::Aur,
             available: aur_helper.helper().is_some() && pacman_available,
-            last_scanned: parts.aur_done(lanes).then_some(now),
+            last_scanned: (lanes.aur && parts.aur_done(lanes)).then_some(now),
             accurate_updates: true,
         });
     }
@@ -576,8 +641,27 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             id: SourceId::flatpak(),
             kind: SourceKind::Flatpak,
             available: flatpak_available,
-            last_scanned: parts.flatpak_done(lanes).then_some(now),
+            last_scanned: (lanes.flatpak && parts.flatpak_done(lanes)).then_some(now),
             accurate_updates: true,
+        });
+    }
+
+    if config.sources.cargo {
+        // `cargo` itself makes the source meaningful; `cargo-update` is what
+        // makes its updates knowable, and its absence reads the same way a
+        // missing AUR helper does — the crates still list.
+        // "Available" means the *update path* exists, the same as it does for
+        // the aur source: the crates still list without `cargo-update`, but
+        // nothing can tell you whether they are current, and a row reading
+        // "0 updates" would be claiming something nobody checked.
+        let can_update =
+            crate::providers::binary_on_path(crate::providers::cargo::INSTALL_UPDATE_BIN);
+        sources.push(Source {
+            id: SourceId::cargo(),
+            kind: SourceKind::Cargo,
+            available: cargo_available && can_update,
+            last_scanned: (lanes.cargo && parts.cargo_done(lanes)).then_some(now),
+            accurate_updates: can_update,
         });
     }
 
@@ -609,6 +693,11 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         }
     }
     if let Some(ups) = &parts.aur_updates {
+        updates.extend(ups.iter().cloned());
+    }
+
+    if let Some((pkgs, ups)) = &parts.cargo {
+        packages.extend(pkgs.iter().cloned());
         updates.extend(ups.iter().cloned());
     }
 
@@ -868,6 +957,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             Some(Path::new("/home/t")),
@@ -926,6 +1016,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             Some(Path::new("/home/t")),
@@ -956,6 +1047,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -971,6 +1063,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             Some(Path::new("/home/t")),
@@ -988,6 +1081,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1018,6 +1112,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1072,6 +1167,7 @@ mod tests {
                 pacman: true,
                 flatpak: false,
                 checkupdates: false,
+                cargo: false,
             },
             HC::Detected(aur::AurHelper::Yay),
             None,
@@ -1097,6 +1193,7 @@ mod tests {
                 pacman: true,
                 flatpak: false,
                 checkupdates: false,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1124,6 +1221,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1160,6 +1258,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1183,6 +1282,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1211,6 +1311,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1228,9 +1329,21 @@ mod tests {
         // what the caller gets back.
         let last = seen.last().expect("a final partial");
         assert_eq!(last.packages.len(), scan.packages.len());
+        // Every source this run actually scanned has reported. Cargo is off
+        // in this fixture, so it never does — and must not claim otherwise.
         assert!(
-            last.sources.iter().all(|s| s.last_scanned.is_some()),
-            "every source reported by the end"
+            last.sources
+                .iter()
+                .filter(|s| s.id != SourceId::cargo())
+                .all(|s| s.last_scanned.is_some()),
+            "a scanned source failed to report"
+        );
+        assert!(
+            last.sources
+                .iter()
+                .filter(|s| s.id == SourceId::cargo())
+                .all(|s| s.last_scanned.is_none()),
+            "a source that was never scanned claimed it had been"
         );
     }
 
@@ -1243,6 +1356,7 @@ mod tests {
             pacman: true,
             aur: true,
             flatpak: true,
+            cargo: false,
         };
         let mut parts = Parts::default();
         assert!(!parts.pacman_done(lanes), "nothing has landed");
@@ -1272,6 +1386,7 @@ mod tests {
             pacman: true,
             aur: false,
             flatpak: false,
+            cargo: false,
         };
         let parts = Parts {
             pacman: Some((Vec::new(), Vec::new())),
@@ -1291,19 +1406,23 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
             &|_| {},
         );
-        // pacman + aur + flatpak (one source: one tool updates both
-        // installations, design §13)
-        assert_eq!(scan.sources.len(), 3);
+        // pacman + aur + flatpak + cargo. Flatpak is one source: one tool
+        // updates both installations (design §13).
+        assert_eq!(scan.sources.len(), 4);
         // Everything available except aur (no paru in this fixture).
+        // Everything available except aur (no helper in this fixture) and
+        // cargo (the fixture does not enable it, so its binary was never
+        // probed for).
         assert!(
             scan.sources
                 .iter()
-                .all(|s| s.available || s.id == SourceId::aur())
+                .all(|s| s.available || s.id == SourceId::aur() || s.id == SourceId::cargo())
         );
         // 3 pacman packages + 3 flatpak apps
         assert_eq!(scan.packages.len(), 6);
@@ -1322,6 +1441,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1341,6 +1461,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: false,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1357,7 +1478,9 @@ mod tests {
             without
                 .sources
                 .iter()
-                .filter(|s| s.id != SourceId::pacman())
+                // Cargo's accuracy follows `cargo-update`, which is its own
+                // question — this one is about checkupdates.
+                .filter(|s| s.id != SourceId::pacman() && s.id != SourceId::cargo())
                 .all(|s| s.accurate_updates)
         );
     }
@@ -1373,6 +1496,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1401,6 +1525,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1449,6 +1574,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1472,6 +1598,7 @@ mod tests {
                 pacman: false,
                 flatpak: false,
                 checkupdates: false,
+                cargo: false,
             },
             HC::None,
             None,
@@ -1524,6 +1651,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::Detected(aur::AurHelper::Paru),
             Some(Path::new("/home/t")),
@@ -1543,6 +1671,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1571,6 +1700,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::Detected(aur::AurHelper::Yay),
             Some(Path::new("/home/t")),
@@ -1596,6 +1726,7 @@ mod tests {
                 pacman: true,
                 flatpak: true,
                 checkupdates: true,
+                cargo: false,
             },
             HC::None,
             Some(Path::new("/home/t")),

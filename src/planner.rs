@@ -11,7 +11,7 @@ use crate::model::{
     ActionKind, ActionPlan, ActionStep, Direction, FlatpakScope, MigrationReport, OverlapCandidate,
     PathKind, PathMapping, ScanResult, SourceId, SourceKind,
 };
-use crate::providers::{aur, flatpak, pacman};
+use crate::providers::{aur, cargo, flatpak, pacman};
 
 /// Build the update plan from a scan, including only **available** sources that
 /// have at least one pending update and pass `is_enabled` (the per-source
@@ -73,6 +73,16 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
             // and the scope is what it *does*. An update whose package the
             // scan cannot place falls to user scope, the unprivileged half —
             // it must not vanish from a plan the dashboard already counted.
+            // Everything cargo installs lives under `$HOME`, so no step it
+            // produces is ever privileged. `cargo-update` is what does the
+            // updating; without it the source has no update path and the scan
+            // records no updates, so this arm is not reached.
+            SourceKind::Cargo => vec![(
+                cargo::update_command(),
+                false,
+                targets,
+                source.id.to_string(),
+            )],
             SourceKind::Flatpak => {
                 let scope_of = |name: &String| {
                     let scopes: Vec<FlatpakScope> = scan
@@ -467,6 +477,24 @@ mod tests {
     }
 
     #[test]
+    fn a_cargo_step_is_never_privileged() {
+        // Everything cargo installs lives under $HOME. This is the first
+        // source whose steps are unprivileged by nature rather than by the
+        // helper self-elevating, and the old id-sniffing rule would have
+        // wrapped it in sudo (design §13, 2026-09-07).
+        let mut s = scan();
+        s.sources
+            .push(source(SourceId::cargo(), SourceKind::Cargo, true));
+        s.updates.push(upd("ripgrep", SourceId::cargo()));
+        let plan = plan_updates(&s, |id| id == &SourceId::cargo());
+        assert_eq!(plan.steps.len(), 1);
+        let step = &plan.steps[0];
+        assert!(!step.privileged, "cargo must never run under sudo");
+        assert_eq!(step.command, ["cargo-install-update", "-a"]);
+        assert!(!plan.requires_sudo);
+    }
+
+    #[test]
     fn every_step_declares_its_own_privilege() {
         // The planner is where privilege is decided now (design §13,
         // 2026-09-07). Each step says so on its own, rather than the executor
@@ -478,6 +506,7 @@ mod tests {
                 // The helper self-elevates after building as the user.
                 ("aur", _) => false,
                 ("flatpak", Some(flag)) => flag == "--system",
+                ("cargo", _) => false,
                 other => panic!("unexpected step in the plan: {other:?}"),
             };
             assert_eq!(

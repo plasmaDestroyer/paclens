@@ -364,6 +364,29 @@ mod tests {
     }
 
     #[test]
+    fn a_cargo_crate_is_explicit_with_a_removal_hint_and_its_caveat() {
+        // The bug this pins: `why` read "no install reason" as "must be
+        // flatpak", so a crate came out described as a self-contained flatpak
+        // app. Cargo records the reason — everything was asked for by name.
+        let p = WhyDetail {
+            package: "tack".to_string(),
+            source_id: SourceId::cargo(),
+            caps: crate::model::SourceKind::Cargo.capabilities(),
+            reason: InstallReason::Explicit,
+            caveats: vec![
+                "installed from a local path or git — no published version to compare against"
+                    .to_string(),
+            ],
+            ..base()
+        };
+        let text = render_report(&WhyReport::Found(p), true, None, &plain());
+        assert!(text.contains("explicitly installed"), "{text}");
+        assert!(!text.contains("flatpak"), "described as a flatpak:\n{text}");
+        assert!(text.contains("cargo uninstall tack"), "{text}");
+        assert!(text.contains("no published version"), "{text}");
+    }
+
+    #[test]
     fn flatpak_app_report_says_self_contained_with_uninstall_hint() {
         let p = WhyDetail {
             package: "org.gnome.Calculator".to_string(),
