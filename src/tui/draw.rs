@@ -735,10 +735,12 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                         // just cannot check for updates. Grey "ok" — green
                         // would claim its update count meant something, and
                         // "not found" would claim it was missing while it is
-                        // listing packages perfectly well. The `—` in the
-                        // updates column and the pane's note carry the rest.
+                        // listing packages perfectly well. The glyph is the
+                        // hollow one so the state reads without relying on
+                        // the grey. The `—` in the updates column and the
+                        // pane's note carry the rest.
                         (false, Some(_)) => Span::styled(
-                            format!("{} ok", theme.glyphs.available),
+                            format!("{} ok", theme.glyphs.unavailable),
                             theme.unavailable,
                         ),
                         (false, None) => Span::styled(
@@ -3882,6 +3884,17 @@ mod tests {
         let row = source_row(&text, "cargo");
         // Inactive, not broken: it lists crates, it just cannot check them.
         assert!(row.contains("ok"), "row: {row:?}");
+        // The hollow glyph, not the filled one — the state has to read in a
+        // terminal where grey and green look alike.
+        let theme = Theme::none();
+        assert!(
+            row.contains(&format!("{} ok", theme.glyphs.unavailable)),
+            "inactive should wear the hollow glyph: {row:?}"
+        );
+        assert!(
+            !row.contains(&format!("{} ok", theme.glyphs.available)),
+            "inactive must not look identical to a working source: {row:?}"
+        );
         assert!(!row.contains('!'), "marked as a problem:\n{row}");
         assert!(
             !row.contains("not found"),

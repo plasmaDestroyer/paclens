@@ -124,15 +124,18 @@ impl Styles {
         self.dim(&text)
     }
 
-    /// "<glyph> ok" in dim — the source is fine, it just has no update path,
-    /// so nothing about it is being checked.
+    /// "<hollow glyph> ok" in dim — the source is fine, it just has no update
+    /// path, so nothing about it is being checked.
     ///
     /// Green would claim its update count means something; "not found" would
     /// claim the source is missing when it is listing packages perfectly
-    /// well. Grey is the honest middle: present, inactive (user decision
-    /// 2026-09-12). What is missing, and what would restore it, is the note.
+    /// well. Grey "ok" is the honest middle: present, inactive (user decision
+    /// 2026-09-12). The glyph is the hollow one so the state survives a
+    /// terminal where grey and green are hard to tell apart — colour is not
+    /// the only thing carrying it. What is missing, and what would restore
+    /// it, is the note.
     pub fn inactive(&self) -> String {
-        let text = format!("{} ok", self.glyphs.available);
+        let text = format!("{} ok", self.glyphs.unavailable);
         self.dim(&text)
     }
 
