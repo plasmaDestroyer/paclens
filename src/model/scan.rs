@@ -96,9 +96,47 @@ impl ScanResult {
             return Some("no helper");
         }
         if id == &super::SourceId::cargo() && !source.accurate_updates {
-            return Some("no cargo-update");
+            // Short enough for the dashboard's 12-column STATUS cell, which
+            // is why it names the shape of the missing thing rather than the
+            // tool. Which tool, and how to get it, is the note below.
+            return Some("no updater");
         }
         None
+    }
+
+    /// The sentence explaining a degraded source, for the pane that has room
+    /// for one. `None` when there is nothing to explain.
+    ///
+    /// Same split as the aur source has always had: the row says *that* a
+    /// source cannot update, in the width a table cell allows, and this says
+    /// *why* and what fixes it.
+    pub fn source_note(&self, id: &super::SourceId) -> Option<String> {
+        if id == &super::SourceId::aur() {
+            return self.aur_helper.note();
+        }
+        if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
+            return Some("cargo: install cargo-update for update detection".to_string());
+        }
+        None
+    }
+
+    /// The same sentence, short enough for the dashboard's system pane — one
+    /// row, 44 columns, the width the aur helper's own compact note is
+    /// written to.
+    pub fn source_note_compact(&self, id: &super::SourceId) -> Option<String> {
+        if id == &super::SourceId::aur() {
+            return self.aur_helper.compact_note();
+        }
+        if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
+            return Some("cargo: no updater - install cargo-update".to_string());
+        }
+        None
+    }
+
+    fn cargo_cannot_update(&self) -> bool {
+        self.sources
+            .iter()
+            .any(|s| s.id == super::SourceId::cargo() && !s.accurate_updates)
     }
 
     /// What the source of `id` can answer (design §13, 2026-09-07).

@@ -74,7 +74,6 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     // Naming the sources here instead is how `cargo` came to be scanned,
     // cached, and then invisible: a renderer that enumerates what it knows
     // about cannot show a source added later (#11).
-    let aur_shown = scan.sources.iter().any(|src| src.id == SourceId::aur());
     for source in &scan.sources {
         let id = source.id.clone();
         let summary = summarize(scan, |candidate| candidate == &id);
@@ -84,7 +83,7 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
         // Flag the row itself whenever there is a note, working or not — a
         // stale pin leaves the aur source fine, and the note alone is easy to
         // read past.
-        let warned = source.id == SourceId::aur() && scan.aur_helper.note().is_some();
+        let warned = scan.source_note(&source.id).is_some();
         if reason.is_some() || warned {
             out.push_str(&render_row_because(
                 source.id.as_str(),
@@ -100,11 +99,13 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     }
 
     out.push('\n');
-    // Why the aur source is degraded, and what fixes it. Shared with the TUI
+    // Why a source is degraded, and what fixes it. Shared with the TUI
     // dashboard so the two can never word it differently (P5).
-    if aur_shown && let Some(note) = scan.aur_helper.note() {
-        out.push_str(&s.dim(&format!("  {note}")));
-        out.push('\n');
+    for source in &scan.sources {
+        if let Some(note) = scan.source_note(&source.id) {
+            out.push_str(&s.dim(&format!("  {note}")));
+            out.push('\n');
+        }
     }
     // Same sentence the dashboard prints, from the same analyzer (#3).
     let reboot = crate::analyzer::reboot_status(scan.kernel.as_ref(), &scan.packages);
@@ -397,10 +398,15 @@ mod tests {
         });
         let text = render_status(&scan, &plain_styles());
         assert!(text.contains("cargo"), "no cargo row:\n{text}");
-        // And it says why it cannot update, rather than the generic reason.
+        // The row says why it cannot update, in the width a table cell has…
         assert!(
-            text.contains("no cargo-update"),
-            "the row should name the missing tool:\n{text}"
+            text.contains("no updater"),
+            "the row should say it cannot update:\n{text}"
+        );
+        // …and the note below names the tool and how to get it.
+        assert!(
+            text.contains("install cargo-update"),
+            "the note should name the tool:\n{text}"
         );
     }
 

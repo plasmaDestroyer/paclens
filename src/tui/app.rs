@@ -874,11 +874,11 @@ impl App {
     /// It lives in the system pane rather than under the table because it is
     /// advice, not data — and it is tied to the cursor so a healthy pacman or
     /// flatpak row is never interrupted by a sentence about the AUR.
-    pub fn selected_aur_note(&self) -> Option<String> {
+    /// The note for whichever source the dashboard cursor is on — why it is
+    /// degraded, and what fixes it. Any source can have one (#11).
+    pub fn selected_source_note(&self) -> Option<String> {
         let source = self.dash_source()?;
-        (source.id == SourceId::aur())
-            .then(|| self.scan.aur_helper.compact_note())
-            .flatten()
+        self.scan.source_note_compact(&source.id)
     }
 
     pub fn selected_overlap(&self) -> Option<&OverlapCandidate> {

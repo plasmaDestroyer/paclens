@@ -534,7 +534,7 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     // Why the aur source is degraded, shown only while it is the selected row
     // (the pane already follows the sources cursor) and in accent rather than
     // dim: it is the one line here that asks the user to do something.
-    if let Some(note) = app.selected_aur_note() {
+    if let Some(note) = app.selected_source_note() {
         lines.push(Line::from(Span::styled(note, theme.accent)));
     }
     // Deliberately unwrapped: the pane has exactly one row to spare and the
@@ -677,7 +677,6 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let rows = app.rows();
 
-    let aur_id = crate::model::SourceId::aur().to_string();
     if rows.is_empty() {
         frame.render_widget(
             Paragraph::new("No package sources detected.")
@@ -709,7 +708,10 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             // functional, and without this the only hint lives behind the
             // cursor. The explanation stays in the system pane; this just says
             // there is one.
-            let warned = r.id == aur_id && app.scan().aur_helper.note().is_some();
+            let warned = app
+                .scan()
+                .source_note(&crate::model::SourceId(r.id.clone()))
+                .is_some();
             // "no helper" rather than the generic "not found", but only when
             // the helper is actually the reason — a missing pacman takes the
             // aur source down too, and that is a different sentence.
@@ -3843,6 +3845,55 @@ mod tests {
     /// The row is marked whatever the cursor is doing. The note is the
     /// explanation and stays behind the cursor; the marker is the reason you
     /// would move the cursor there at all.
+    #[test]
+    fn a_degraded_row_reason_fits_the_status_cell() {
+        // STATUS is twelve columns wide. "no cargo-update" needed seventeen
+        // and came out clipped mid-word, so the row says what it can in the
+        // width it has and the system pane carries the tool's name.
+        let mut s = scan_with(Vec::new());
+        s.sources.push(Source {
+            id: SourceId::cargo(),
+            kind: crate::model::SourceKind::Cargo,
+            available: false,
+            last_scanned: None,
+            accurate_updates: false,
+        });
+        let app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 110, 30);
+        let row = source_row(&text, "cargo");
+        assert!(row.contains("no updater"), "reason is clipped:\n{row}");
+        // Nothing in the cell may run off the end of it.
+        for word in ["no updater", "not found", "ok"] {
+            if let Some(at) = row.find(word) {
+                assert!(row[at..].contains(word), "the reason is cut off: {row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_pane_note_follows_whichever_source_is_selected() {
+        // The note used to be the aur helper's alone; any degraded source
+        // gets one now (#11).
+        let mut s = scan_with(Vec::new());
+        s.sources.push(Source {
+            id: SourceId::cargo(),
+            kind: crate::model::SourceKind::Cargo,
+            available: false,
+            last_scanned: None,
+            accurate_updates: false,
+        });
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        // Move the cursor onto the cargo row.
+        while app.dash_source().map(|s| s.id.clone()) != Some(SourceId::cargo()) {
+            app.on_next();
+        }
+        let text = render(&app, 110, 30);
+        assert!(
+            text.contains("install cargo-update"),
+            "the pane should explain the selected source:\n{text}"
+        );
+    }
+
     #[test]
     fn a_degraded_aur_row_is_marked_without_selecting_it() {
         use crate::providers::aur::{AurHelper, HelperChoice};
