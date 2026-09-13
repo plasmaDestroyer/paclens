@@ -309,6 +309,8 @@ type FlatpakLane = (
 
 enum LaneResult {
     Pacman(Vec<Package>, Vec<PendingUpdate>),
+    /// What every configured repo offers — `pacman -Sl`, local and cheap.
+    RepoOffers(Vec<pacman::RepoOffer>),
     Cargo(Vec<Package>, Vec<PendingUpdate>),
     Flatpak(FlatpakLane),
     Sizes(CacheSizes),
@@ -326,6 +328,7 @@ struct Parts {
     pacman: Option<(Vec<Package>, Vec<PendingUpdate>)>,
     flatpak: Option<FlatpakLane>,
     cargo: Option<(Vec<Package>, Vec<PendingUpdate>)>,
+    offers: Option<Vec<pacman::RepoOffer>>,
     sizes: Option<CacheSizes>,
     foreign: Option<std::collections::HashSet<String>>,
     aur_updates: Option<Vec<PendingUpdate>>,
@@ -347,7 +350,10 @@ impl Parts {
     /// counting pacman before that lands would count them twice and then
     /// correct downward.
     fn pacman_done(&self, lanes: Lanes) -> bool {
-        !lanes.pacman || (self.pacman.is_some() && (!lanes.aur || self.foreign.is_some()))
+        !lanes.pacman
+            || (self.pacman.is_some()
+                && self.offers.is_some()
+                && (!lanes.aur || self.foreign.is_some()))
     }
     fn aur_done(&self, lanes: Lanes) -> bool {
         !lanes.aur || (self.pacman_done(lanes) && self.aur_updates.is_some())
@@ -441,6 +447,24 @@ fn assemble(
             let _ = flatpak_tx.send(LaneResult::Flatpak((pkgs, ups, sizes)));
         });
 
+        let offers_tx = tx.clone();
+        s.spawn(move || {
+            if !lanes.pacman {
+                return;
+            }
+            // The sync databases are already on disk: no network, no
+            // privilege, 0.16s for 15,000 lines. What the repos offer is what
+            // decides whether an installed package can still move (#78).
+            let offers = match pacman::sync_list(runner) {
+                Ok(offers) => offers,
+                Err(err) => {
+                    tracing::error!(error = %err, "pacman -Sl failed; no repo versions");
+                    Vec::new()
+                }
+            };
+            let _ = offers_tx.send(LaneResult::RepoOffers(offers));
+        });
+
         let cargo_tx = tx.clone();
         s.spawn(move || {
             if !lanes.cargo {
@@ -521,6 +545,7 @@ fn assemble(
                 LaneResult::Pacman(pkgs, ups) => parts.pacman = Some((pkgs, ups)),
                 LaneResult::Flatpak(lane) => parts.flatpak = Some(lane),
                 LaneResult::Cargo(pkgs, ups) => parts.cargo = Some((pkgs, ups)),
+                LaneResult::RepoOffers(offers) => parts.offers = Some(offers),
                 LaneResult::Sizes(sizes) => parts.sizes = Some(sizes),
                 LaneResult::AurForeign(names) => parts.foreign = Some(names),
                 LaneResult::AurUpdates(ups) => parts.aur_updates = Some(ups),
@@ -683,6 +708,35 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         // their ever having touched the AUR, so only the ones built on this
         // machine are relabelled; the rest stay pacman's, which is what still
         // manages them.
+        // What the repos offer, for the packages where that differs from what
+        // is installed. Stored as a fact; whether a difference is an update or
+        // a package the repos can no longer reach is the analyzer's call
+        // (#78).
+        if let Some(offers) = &parts.offers {
+            // The *first* repo that carries a package wins, not the one with
+            // the highest version: pacman walks the sync databases in the
+            // order `pacman.conf` lists them and takes the first match, which
+            // `pacman -Sl` prints in that same order.
+            //
+            // Taking the maximum instead invents updates. On the author's
+            // machine `[cachyos-v3]` precedes `[core]` and offers
+            // `binutils 2.47-2` — exactly what is installed — while core has
+            // 2.47-4; pacman reports nothing to do, and a maximum would have
+            // claimed seven pending updates that will never happen.
+            let mut best: std::collections::HashMap<&str, (&str, &str)> =
+                std::collections::HashMap::new();
+            for offer in offers {
+                best.entry(offer.name.as_str())
+                    .or_insert((offer.repo.as_str(), offer.version.as_str()));
+            }
+            for pkg in packages.iter_mut() {
+                if let Some((repo, version)) = best.get(pkg.name.as_str())
+                    && *version != pkg.version
+                {
+                    pkg.repo_version = Some(((*repo).to_string(), (*version).to_string()));
+                }
+            }
+        }
         if let Some(foreign) = &parts.foreign {
             for pkg in packages.iter_mut().filter(|p| foreign.contains(&p.name)) {
                 pkg.foreign = true;
@@ -1368,7 +1422,13 @@ mod tests {
         );
 
         parts.foreign = Some(Default::default());
-        assert!(parts.pacman_done(lanes), "-Qm settles it");
+        assert!(
+            !parts.pacman_done(lanes),
+            "what the repos offer is part of pacman's own answer (#78)"
+        );
+
+        parts.offers = Some(Vec::new());
+        assert!(parts.pacman_done(lanes), "-Qm and -Sl settle it");
         assert!(
             !parts.aur_done(lanes),
             "the aur still owes its update check"
@@ -1390,6 +1450,7 @@ mod tests {
         };
         let parts = Parts {
             pacman: Some((Vec::new(), Vec::new())),
+            offers: Some(Vec::new()),
             ..Default::default()
         };
         assert!(parts.pacman_done(lanes));
@@ -1747,6 +1808,7 @@ mod tests {
 
     fn flatpak_pkg(name: &str, version: &str, scope: SourceId) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: version.to_string(),

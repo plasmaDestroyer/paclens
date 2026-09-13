@@ -223,6 +223,7 @@ mod tests {
 
     fn pacman_pkg(name: &str, reason: InstallReason) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "128.0-1".to_string(),
@@ -243,6 +244,7 @@ mod tests {
 
     fn flatpak_app(id: &str, display: Option<&str>) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: id.to_string(),
             version: "128.0".to_string(),

@@ -26,11 +26,14 @@ use super::{Package, PendingUpdate, Source};
 /// v10: `aur_helper` widens from the resolved helper to the whole
 /// `HelperChoice`, so the dashboard can say *why* — a stale pin needs the name
 /// that was configured, which the resolved value has already thrown away.
+/// v16: `Package::repo_version` — what the configured repos offer, when that
+/// differs from what is installed. Feeds the check for packages no repo can
+/// reach any more (#78).
 /// v15: one flatpak source instead of two, and `Package::scope` carries which
 /// installation a flatpak lives in (design §13, 2026-09-07). A v14 cache holds
 /// `flatpak-user` / `flatpak-system` ids that nothing matches any more, so it
 /// must be discarded rather than read.
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {

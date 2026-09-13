@@ -49,6 +49,16 @@ pub struct Package {
     /// is makepkg's default and says only "built here".
     #[serde(default)]
     pub packager: Option<String>,
+    /// The best version any configured repo offers, **when it differs from
+    /// the installed one** — `(repo, version)`.
+    ///
+    /// `None` means either that no repo offers this package at all (see
+    /// `foreign`) or that the repos offer exactly what is installed, which is
+    /// the ordinary case and not worth storing 1,800 times. Whether a
+    /// difference is an update or a package the repos can no longer reach is
+    /// a comparison, and comparisons belong to the analyzer (#78).
+    #[serde(default)]
+    pub repo_version: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

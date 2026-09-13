@@ -6,7 +6,7 @@ paclens is **not** a package manager. It wraps pacman, whichever AUR helper you 
 
 ## Status
 
-**0.5.1 — working tool, daily-driveable.** ~18k lines of Rust across `src/`. 584 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+**0.5.1 — working tool, daily-driveable.** ~18k lines of Rust across `src/`. 600 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
 
 Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, history screen, pty exec console, log viewer), pacman + AUR + Flatpak + cargo providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`. The dashboard opens before the first scan finishes and fills in as each source reports.
 

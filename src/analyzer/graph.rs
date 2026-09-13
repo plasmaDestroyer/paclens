@@ -242,6 +242,7 @@ mod tests {
 
     fn pkg(name: &str, reason: InstallReason, depends: &[&str], provides: &[&str]) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "1".to_string(),

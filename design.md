@@ -1819,6 +1819,45 @@ YYYY-MM-DD | no --noconfirm for pacman
            | sees your cargo-installed binaries" does not stand on its own
            | yet. The minor waits for update detection that works without a
            | second tool installed (user decision 2026-09-12).
+
+2026-09-14 | packages no configured repo can reach (#78, first half)
+           | An installed package newer than anything the configured repos
+           | offer never moves again: `-Syu` prints "local is newer than" and
+           | skips it, silently, every time. Nothing looks wrong — the source
+           | reads ok and the update count is correct — which is exactly why
+           | it needs saying before an update runs rather than in a report
+           | nobody opens.
+           | Comparing versions is the whole of it, and it cannot be done with
+           | strings: `1:7.1-1` outranks `7.2-1` because an epoch wins, `1.0a`
+           | is older than `1.0` because a trailing letter is a pre-release,
+           | and `1..0` outranks `1.0` because rpmvercmp compares how many
+           | separator characters each side skipped. All three are in
+           | `analyzer::version`, which is libalpm's algorithm rather than a
+           | dependency: the code is eighty lines and a table captured from
+           | pacman's own `vercmp` is what pins it — 124 real pairs from this
+           | machine plus 1500 fuzzed ones. The fuzz earned its keep: it found
+           | that an empty epoch still consumes its colon (`:1.0` is version
+           | `1.0`, not `:1.0`), which hand-picked cases had missed.
+           | The scanner stores what the repos offer only where it *differs*
+           | from what is installed — seven entries rather than eighteen
+           | hundred — and leaves the comparison to the analyzer.
+           |
+           | The bug worth recording: **the first repo that carries a package
+           | wins, not the one with the highest version.** pacman walks the
+           | sync databases in `pacman.conf` order and takes the first match,
+           | and `pacman -Sl` prints them in that order. Taking the maximum
+           | invents updates — on this machine `[cachyos-v3]` precedes
+           | `[core]` and offers `binutils 2.47-2`, precisely what is
+           | installed, while core has 2.47-4. The first implementation
+           | claimed seven pending updates that pacman would never perform,
+           | and it disagreed with `checkupdates` on the same screen, which is
+           | how it was caught. The same mistake made the first measurement of
+           | this machine report twelve stranded packages when the true answer
+           | was none.
+           | Ceiling: the architecture half of #78 is not built. A repo
+           | serving an architecture the config does not accept makes pacman
+           | refuse the whole transaction, and detecting it needs the arch the
+           | repo's packages carry, which `pacman -Sl` does not give.
 ```
 
 ---
@@ -1862,6 +1901,13 @@ release later.
   tool is lying until a tag ships, so it ships the same day.
 - **Anything touching privilege.** A defect in what runs as root, or in what
   the AUR helper is handed, does not wait for company.
+
+**The minor is the maintainer's call, not the changelog's.** Work accumulates
+on patches until it feels substantial enough to be worth a number — capability
+by capability is the test in this section, and whether enough of them have
+landed is a judgement only the person shipping it makes. Do not propose a minor
+because the diff looks big; propose the release, and let the number be asked
+for (2026-09-14).
 
 Everything else is judgement, with one guardrail: **do not let `main` sit far
 ahead of a tag while it carries something user-visible.** Unreleased work helps

@@ -305,6 +305,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId, reason: InstallReason, size: Option<u64>) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "1".to_string(),

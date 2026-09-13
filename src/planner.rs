@@ -348,6 +348,7 @@ mod tests {
 
     fn flatpak_pkg(name: &str, scope: FlatpakScope) -> crate::model::Package {
         crate::model::Package {
+            repo_version: None,
             name: name.to_string(),
             version: "1".to_string(),
             source_id: SourceId::flatpak(),

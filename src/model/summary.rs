@@ -44,6 +44,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "1".to_string(),

@@ -177,6 +177,7 @@ mod tests {
                 },
             ],
             packages: vec![Package {
+                repo_version: None,
                 scope: None,
                 name: "firefox".to_string(),
                 version: "128.0-1".to_string(),

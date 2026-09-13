@@ -59,6 +59,7 @@ mod tests {
 
     fn pkg(name: &str, foreign: bool, signed: bool, packager: Option<&str>) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "1".to_string(),

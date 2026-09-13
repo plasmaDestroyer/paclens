@@ -519,6 +519,15 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{} want restarting", stale.len()), theme.accent),
         ));
     }
+    // Packages the configured repos can no longer reach: `-Syu` skips them
+    // silently, every time, and the update count says nothing about it (#78).
+    let stranded = app.stranded_count();
+    if stranded > 0 {
+        lines.push(kv(
+            "stranded",
+            Span::styled(format!("{stranded} no repo can reach"), theme.accent),
+        ));
+    }
     lines.extend([
         kv("pacman cache", cache),
         kv("orphans", count(app.orphan_count())),
@@ -2343,6 +2352,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "1".to_string(),

@@ -140,6 +140,7 @@ fn parse_list(stdout: &str, runtime: bool) -> Vec<Package> {
                 .map(|r| r.to_string());
             let size_bytes = parse_flatpak_size(cols.next().unwrap_or_default().trim());
             Some(Package {
+                repo_version: None,
                 name: app_id.to_string(),
                 version: version.to_string(),
                 source_id: SourceId::flatpak(),

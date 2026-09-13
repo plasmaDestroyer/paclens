@@ -1093,6 +1093,12 @@ impl App {
 
     /// Units running against files an upgrade replaced (#4). Inferred, and
     /// only what this user could see.
+    /// Installed packages no configured repo can reach — they never update
+    /// again, and nothing else on the dashboard would say so (#78).
+    pub fn stranded_count(&self) -> usize {
+        crate::analyzer::outranked::outranked(&self.scan).len()
+    }
+
     pub fn stale_units(&self) -> Vec<crate::analyzer::StaleUnit> {
         crate::analyzer::stale_units(&self.scan.stale_processes)
     }
@@ -1719,6 +1725,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "1".to_string(),

@@ -9,10 +9,12 @@ mod graph;
 pub mod history;
 pub mod kernel;
 pub mod migrate;
+pub mod outranked;
 mod overlap;
 pub mod pacfiles;
 pub mod provenance;
 pub mod services;
+pub mod version;
 mod why;
 
 pub use graph::DepGraph;

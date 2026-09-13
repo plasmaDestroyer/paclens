@@ -87,6 +87,7 @@ pub fn parse_installed(text: &str) -> Result<Vec<Package>, ProviderError> {
         .filter_map(|(key, bins)| {
             let (name, version, origin) = parse_key(key)?;
             Some(Package {
+                repo_version: None,
                 name,
                 version,
                 source_id: SourceId::cargo(),

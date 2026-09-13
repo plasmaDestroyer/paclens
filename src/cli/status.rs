@@ -107,6 +107,14 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
             out.push('\n');
         }
     }
+    // Packages no configured repo can reach: they never update again, and
+    // nothing else on this screen would say so (#78).
+    if let Some(note) =
+        crate::analyzer::outranked::summary(&crate::analyzer::outranked::outranked(scan))
+    {
+        out.push_str(&s.summary_updates(&format!("  {note}")));
+        out.push('\n');
+    }
     // Same sentence the dashboard prints, from the same analyzer (#3).
     let reboot = crate::analyzer::reboot_status(scan.kernel.as_ref(), &scan.packages);
     if let Some(note) = reboot.note() {
@@ -188,6 +196,7 @@ mod tests {
 
     fn pkg(name: &str, source: SourceId) -> Package {
         Package {
+            repo_version: None,
             scope: None,
             name: name.to_string(),
             version: "1".to_string(),
@@ -400,6 +409,39 @@ mod tests {
     /// Using a different helper than the one configured is exactly the
     /// unexplained behaviour design §2 rules out, so it is said out loud even
     /// though the source is working.
+    #[test]
+    fn packages_no_repo_can_reach_are_reported_before_an_update_runs() {
+        // The machine this was built on cannot demonstrate it any more — its
+        // repos were put back — so the positive path is exercised here: a
+        // CachyOS rebuild stranded when the repo that built it went away.
+        let mut scan = scan_with(vec![pkg("a", SourceId::pacman())], Vec::new(), true);
+        let mut php = pkg("php", SourceId::pacman());
+        php.version = "8.5.10-2".to_string();
+        php.packager = Some("CachyOS <x@y>".to_string());
+        php.repo_version = Some(("extra".to_string(), "8.5.10-1".to_string()));
+        scan.packages.push(php);
+
+        let text = render_status(&scan, &plain_styles());
+        assert!(
+            text.contains("1 package no configured repo can reach"),
+            "the finding is missing:\n{text}"
+        );
+        assert!(text.contains("CachyOS"), "who built it:\n{text}");
+        // And it is not counted as an available update, which it is not.
+        assert!(!text.contains("1 update available"), "{text}");
+    }
+
+    #[test]
+    fn an_ordinary_pending_update_is_not_reported_as_stranded() {
+        let mut scan = scan_with(vec![pkg("a", SourceId::pacman())], Vec::new(), true);
+        let mut bash = pkg("bash", SourceId::pacman());
+        bash.version = "5.3.15-1".to_string();
+        bash.repo_version = Some(("core".to_string(), "5.3.15-2".to_string()));
+        scan.packages.push(bash);
+        let text = render_status(&scan, &plain_styles());
+        assert!(!text.contains("no configured repo can reach"), "{text}");
+    }
+
     #[test]
     fn every_source_the_scan_found_gets_a_row() {
         // The bug this pins: the table named its rows, so `cargo` was
