@@ -226,6 +226,39 @@ pub fn scan_and_store_with(
 /// Run every enabled, available provider and assemble a `ScanResult`.
 ///
 /// Detects provider availability on PATH, then delegates to [`assemble`].
+/// Which sources exist on this machine, without asking any of them anything.
+///
+/// PATH probes and the config, nothing more: no package lists, no update
+/// checks, no network. `paclens update` uses it to build a plan for every
+/// source it could run, having been told to update rather than to look
+/// (design §13, 2026-09-17).
+pub fn detect_sources(runner: &dyn CommandRunner, config: &Config) -> ScanResult {
+    let pacman_available = PacmanProvider::new(runner).is_available();
+    let flatpak_available = FlatpakProvider::new(runner).is_available();
+    let now = Utc::now();
+    let aur_helper = aur::detect(&config.general.aur_helper);
+    let lanes = Lanes {
+        pacman: config.sources.pacman && pacman_available,
+        flatpak: config.sources.flatpak && flatpak_available,
+        aur: config.sources.aur && config.sources.pacman && pacman_available,
+        cargo: config.sources.cargo
+            && crate::providers::binary_on_path(crate::providers::cargo::CARGO_BIN),
+    };
+    compose(
+        &Parts::default(),
+        &ComposeInput {
+            now,
+            config,
+            lanes,
+            pacman_available,
+            flatpak_available,
+            checkupdates_available: crate::providers::binary_on_path(pacman::CHECKUPDATES_BIN),
+            cargo_available: lanes.cargo,
+            aur_helper: &aur_helper,
+        },
+    )
+}
+
 /// Reports partial results as each lane lands: the TUI opens on the dashboard
 /// and fills it in, so it wants every partial; the CLI wants the answer and
 /// passes a sink that drops them.

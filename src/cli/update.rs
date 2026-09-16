@@ -8,19 +8,16 @@
 //! runs without an explicit `y`, and the per-source report hides nothing.
 
 use std::io::Write;
-use std::path::Path;
 
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::executor::{self, ExecutionReport, InteractiveRunner, StepStatus, UpdateLog};
-use crate::model::{ActionPlan, ScanResult};
+use crate::model::ActionPlan;
 use crate::providers::SystemCommandRunner;
 use crate::{planner, scanner};
 
 pub fn run(
     config: &Config,
-    refresh: bool,
-    config_path: Option<&Path>,
     dry_run: bool,
     source: Option<&str>,
     stdin_is_tty: bool,
@@ -33,7 +30,12 @@ pub fn run(
     }
 
     let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
-    let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
+    // No scan: someone who typed `update` has decided, and checking first
+    // means waiting on `checkupdates`, the helper and `flatpak remote-ls` —
+    // three network round trips — to produce a list the tools recompute a
+    // second later anyway (user decision 2026-09-17). Detection is PATH
+    // probes only.
+    let scan = scanner::detect_sources(&runner, config);
 
     if let Some(requested) = source
         && !scan.sources.iter().any(|s| s.id.as_str() == requested)
@@ -45,12 +47,12 @@ pub fn run(
         );
     }
 
-    let plan = planner::plan_updates(&scan, |id| match source {
+    let plan = planner::plan_full_upgrade(&scan, |id| match source {
         Some(requested) => id.as_str() == requested,
         None => true,
     });
 
-    print!("{}", render_plan(&plan, &scan, styles));
+    print!("{}", render_plan(&plan, styles));
 
     if dry_run || plan.is_empty() {
         return Ok(());
@@ -128,57 +130,38 @@ fn accepts(answer: &str) -> bool {
 
 /// Render the whole plan block. Pure (no IO) so the no-color output is
 /// deterministic and unit-testable.
-fn render_plan(plan: &ActionPlan, scan: &ScanResult, s: &Styles) -> String {
-    let total = plan.total_targets();
-    let summary = if total == 0 {
-        s.summary_ok("nothing to update")
+/// The plan: which sources will run and the exact command for each.
+///
+/// No package list, because none was looked up — the tools report what they
+/// change as they change it. P1 asks for the commands, and they are here
+/// (user decision 2026-09-17).
+fn render_plan(plan: &ActionPlan, s: &Styles) -> String {
+    let srcs = plan.source_count();
+    let summary = if plan.is_empty() {
+        s.summary_ok("no source can be updated")
     } else {
-        let pkgs = if total == 1 { "package" } else { "packages" };
-        let srcs = plan.source_count();
         let src_word = if srcs == 1 { "source" } else { "sources" };
-        s.summary_updates(&format!(
-            "{total} {pkgs} will update across {srcs} {src_word}"
-        ))
+        s.summary_updates(&format!("updating {srcs} {src_word}"))
     };
 
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{} {} {}\n",
+    let mut out = format!(
+        "{} {} {}\n\n",
         s.title("paclens"),
         s.dim(s.bullet()),
         summary
-    ));
-
+    );
+    let label_w = plan
+        .steps
+        .iter()
+        .map(|step| step.label.len())
+        .max()
+        .unwrap_or(0);
     for step in &plan.steps {
-        let ups: Vec<_> = scan
-            .updates
-            .iter()
-            .filter(|u| u.source_id == step.source_id)
-            .collect();
-        let name_w = ups.iter().map(|u| u.package_name.len()).max().unwrap_or(0);
-
-        out.push('\n');
         out.push_str(&format!(
             "  {}  {}\n",
-            s.title(step.source_id.as_str()),
-            s.dim(&format!("({})", ups.len()))
+            s.title(&format!("{:label_w$}", step.label)),
+            s.dim(&step.command.join(" "))
         ));
-        for u in ups {
-            // flatpak omits the new version when the remote's appstream data
-            // is stale; an honest "?" beats a dangling arrow.
-            let new_version = if u.available_version.is_empty() {
-                s.dim("?")
-            } else {
-                s.summary_updates(&u.available_version)
-            };
-            out.push_str(&format!(
-                "     {:name_w$}  {} {} {}\n",
-                u.package_name,
-                s.dim(&u.current_version),
-                s.dim(s.arrow()),
-                new_version,
-            ));
-        }
     }
 
     if plan.requires_sudo {
@@ -258,7 +241,9 @@ fn render_report(report: &ExecutionReport, s: &Styles) -> String {
 mod tests {
     use super::*;
     use crate::config::ColorTheme;
-    use crate::model::{CacheSizes, PendingUpdate, SCHEMA_VERSION, Source, SourceId, SourceKind};
+    use crate::model::{
+        CacheSizes, PendingUpdate, SCHEMA_VERSION, ScanResult, Source, SourceId, SourceKind,
+    };
     use chrono::Utc;
 
     /// Piped styler: Unicode glyphs, no ANSI — deterministic for assertions.
@@ -268,15 +253,6 @@ mod tests {
 
     fn ascii() -> Styles {
         Styles::resolve(true, ColorTheme::Dark, true)
-    }
-
-    fn upd(name: &str, cur: &str, new: &str, source: SourceId) -> PendingUpdate {
-        PendingUpdate {
-            package_name: name.to_string(),
-            current_version: cur.to_string(),
-            available_version: new.to_string(),
-            source_id: source,
-        }
     }
 
     fn scan(updates: Vec<PendingUpdate>) -> ScanResult {
@@ -314,69 +290,61 @@ mod tests {
     }
 
     #[test]
-    fn renders_summary_groups_and_version_transitions() {
-        let s = scan(vec![
-            upd("linux", "6.9.1", "6.9.2", SourceId::pacman()),
-            upd("firefox", "127.0", "127.0.1", SourceId::pacman()),
-            upd("org.gimp.GIMP", "2.10", "2.10.1", SourceId::flatpak()),
-        ]);
-        let plan = planner::plan_updates(&s, |_| true);
-        let text = render_plan(&plan, &s, &plain());
-
-        assert!(text.starts_with("paclens · 3 packages will update across 2 sources"));
-        assert!(text.contains("pacman"));
-        assert!(text.contains("flatpak"));
-        assert!(text.contains("linux"));
-        assert!(text.contains("6.9.1 → 6.9.2"));
-        assert!(text.contains("requires sudo")); // pacman in plan
-        assert!(!text.contains('\u{1b}')); // no ANSI in the plain styler
-    }
-
-    #[test]
-    fn ascii_styler_uses_ascii_arrow() {
-        let s = scan(vec![upd("linux", "6.9.1", "6.9.2", SourceId::pacman())]);
-        let plan = planner::plan_updates(&s, |_| true);
-        let text = render_plan(&plan, &s, &ascii());
-        assert!(text.contains("6.9.1 -> 6.9.2"));
-    }
-
-    #[test]
-    fn singular_package_and_source_wording() {
-        let s = scan(vec![upd(
-            "org.gimp.GIMP",
-            "2.10",
-            "2.10.1",
-            SourceId::flatpak(),
-        )]);
-        let plan = planner::plan_updates(&s, |_| true);
-        let text = render_plan(&plan, &s, &plain());
-        assert!(text.starts_with("paclens · 1 package will update across 1 source"));
-        // A user-scope flatpak step only → no sudo note.
-        assert!(!text.contains("requires sudo"));
-    }
-
-    #[test]
-    fn unknown_new_version_renders_as_a_question_mark() {
-        // Seen live: flatpak remote-ls omits the version column entirely when
-        // the remote's appstream data has not been synced yet.
-        let s = scan(vec![upd(
-            "org.gnome.Calculator",
-            "49.2",
-            "",
-            SourceId::flatpak(),
-        )]);
-        let plan = planner::plan_updates(&s, |_| true);
-        let text = render_plan(&plan, &s, &plain());
-        assert!(text.contains("49.2 → ?"), "dangling arrow:\n{text}");
-    }
-
-    #[test]
-    fn empty_plan_says_nothing_to_update() {
+    fn the_plan_names_each_source_and_the_exact_command_it_will_run() {
+        // No package list: nothing was looked up. P1 asks for the commands,
+        // and these are them (2026-09-17).
         let s = scan(Vec::new());
-        let plan = planner::plan_updates(&s, |_| true);
-        let text = render_plan(&plan, &s, &plain());
-        assert!(text.contains("nothing to update"));
-        assert!(!text.contains("requires sudo"));
+        let plan = planner::plan_full_upgrade(&s, |_| true);
+        let text = render_plan(&plan, &plain());
+
+        assert!(text.starts_with("paclens · updating"), "{text}");
+        assert!(text.contains("pacman -Syu"), "{text}");
+        assert!(text.contains("flatpak update --user"), "{text}");
+        assert!(text.contains("flatpak update --system"), "{text}");
+        assert!(
+            text.contains("requires sudo"),
+            "pacman is in the plan:\n{text}"
+        );
+        assert!(!text.contains('\u{1b}'), "no ANSI in the plain styler");
+    }
+
+    #[test]
+    fn a_source_with_nothing_pending_still_gets_its_command() {
+        // The whole point: paclens did not check, so it cannot skip a source
+        // for having nothing to do. The tool says that itself, faster.
+        let s = scan(Vec::new());
+        assert!(
+            planner::plan_updates(&s, |_| true).is_empty(),
+            "the checked plan has nothing to run"
+        );
+        let plan = planner::plan_full_upgrade(&s, |_| true);
+        assert!(!plan.is_empty(), "the unchecked plan runs anyway");
+    }
+
+    #[test]
+    fn both_flatpak_installations_are_in_an_unchecked_plan() {
+        // Which installation holds an out-of-date app is exactly what was not
+        // looked up, so both get a command — and the system one asks for
+        // root, which the plan shows before the prompt.
+        let s = scan(Vec::new());
+        let plan = planner::plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
+        assert_eq!(plan.steps.len(), 2, "one per installation");
+        assert!(plan.requires_sudo, "the system half needs it");
+        let text = render_plan(&plan, &plain());
+        assert!(text.contains("flatpak · user"), "{text}");
+        assert!(text.contains("flatpak · system"), "{text}");
+    }
+
+    #[test]
+    fn a_machine_with_no_usable_source_says_so() {
+        let mut s = scan(Vec::new());
+        for source in s.sources.iter_mut() {
+            source.available = false;
+        }
+        let plan = planner::plan_full_upgrade(&s, |_| true);
+        let text = render_plan(&plan, &plain());
+        assert!(text.contains("no source can be updated"), "{text}");
+        assert!(!text.contains("requires sudo"), "{text}");
     }
 
     // --- the y/N answer ---

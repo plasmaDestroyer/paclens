@@ -17,6 +17,37 @@ use crate::providers::{aur, cargo, flatpak, pacman};
 /// have at least one pending update and pass `is_enabled` (the per-source
 /// toggle / `--source` filter). Predicate-based, mirroring `model::summarize`.
 pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -> ActionPlan {
+    plan_for(scan, is_enabled, Coverage::Pending)
+}
+
+/// Build a plan that runs every available, enabled source's update command
+/// **without having checked what is pending** (user decision 2026-09-17).
+///
+/// `paclens update` used to scan first, which meant waiting on
+/// `checkupdates`, the AUR helper and `flatpak remote-ls` — every one of them
+/// a network round trip — to produce a list that pacman then recomputes for
+/// itself a second later. Someone who has typed `update` has already decided;
+/// the check only delays the thing they asked for.
+///
+/// P1 is untouched: the exact commands still print before anything runs, and
+/// the confirmation still gates them. What is gone is the package list, which
+/// was never what P1 asked for — "not a summary of it, the commands".
+pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -> ActionPlan {
+    plan_for(scan, is_enabled, Coverage::Everything)
+}
+
+/// Whether a plan covers what is known to be pending, or simply everything.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Coverage {
+    Pending,
+    Everything,
+}
+
+fn plan_for(
+    scan: &ScanResult,
+    is_enabled: impl Fn(&SourceId) -> bool,
+    coverage: Coverage,
+) -> ActionPlan {
     let mut steps = Vec::new();
     let mut requires_sudo = false;
 
@@ -30,7 +61,10 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
             .filter(|u| u.source_id == source.id)
             .map(|u| u.package_name.clone())
             .collect();
-        if targets.is_empty() {
+        // With nothing checked there is nothing to skip for: a source with no
+        // known updates still gets its command, and the tool says "nothing to
+        // do" far faster than paclens could have found that out.
+        if targets.is_empty() && coverage == Coverage::Pending {
             continue;
         }
         // Most sources are one step. Flatpak is one source updated by one
@@ -105,7 +139,11 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
                             .filter(|name| scope_of(name).contains(&scope))
                             .cloned()
                             .collect();
-                        (!scoped.is_empty()).then(|| {
+                        // Unchecked, both installations get a command: which
+                        // one holds an out-of-date app is exactly what was not
+                        // looked up. The system half asks for root, and the
+                        // user sees that in the plan before confirming.
+                        (!scoped.is_empty() || coverage == Coverage::Everything).then(|| {
                             (
                                 flatpak::update_command(scope),
                                 scope.needs_privilege(),

@@ -1858,6 +1858,26 @@ YYYY-MM-DD | no --noconfirm for pacman
            | serving an architecture the config does not accept makes pacman
            | refuse the whole transaction, and detecting it needs the arch the
            | repo's packages carry, which `pacman -Sl` does not give.
+
+2026-09-17 | `update` runs the command, it does not check first
+           | `paclens update` used to scan for pending updates and then plan
+           | from that list. Every one of those seconds bought nothing: the
+           | user already asked to update, and `pacman -Syu`, `paru -Sua`,
+           | `flatpak update` and `cargo-install-update -a` each do their own
+           | check anyway — better than paclens can, because they check at the
+           | moment they act rather than a scan earlier.
+           | So the plan is now built from *which sources exist*
+           | (`scanner::detect_sources`) rather than from what a scan found
+           | pending: `planner::plan_full_upgrade` is `plan_for` with
+           | `Coverage::Everything`, which drops the "this source has pending
+           | work" filter. The visible consequence is that flatpak emits both
+           | scopes — unchecked, neither can be ruled out, and the user sees
+           | both commands before confirming.
+           | The plan prints the source label and the exact command, and no
+           | package list, because there is no list: nothing was looked up.
+           | That is the honest rendering (P1).
+           | `status` is still where "what is pending" lives. This is only
+           | about the verb that already committed to acting.
 ```
 
 ---

@@ -196,8 +196,6 @@ pub fn run() -> ExitCode {
             report(
                 update::run(
                     &config,
-                    cli.refresh,
-                    config_path.as_deref(),
                     dry_run,
                     source.as_deref(),
                     std::io::stdin().is_terminal(),
