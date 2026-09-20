@@ -1886,6 +1886,31 @@ YYYY-MM-DD | no --noconfirm for pacman
            | gathered, every consumer that counted it is a suspect — the
            | dry-run path returned before the gate, so nothing I looked at
            | showed the break.
+
+2026-09-21 | Enter means yes, and one password for the whole run
+           | Two changes to the bare `update`, both from watching a real run.
+           | **`[Y/n]`.** The plan is printed directly above the prompt, and
+           | the person answering typed `update` a second earlier. Making them
+           | type `y` to confirm what they asked for is a keystroke that
+           | catches nothing. An unrecognised answer is still a refusal, so a
+           | typo cancels rather than upgrades.
+           | **One `sudo -v` before the first step.** `pacman -Syu` asked for
+           | a password, then paru asked again seconds later, because an AUR
+           | helper escalates on its own and is never run under sudo. Priming
+           | satisfies both — they share the terminal's sudo timestamp — and
+           | costs nothing, because it authenticates without running anything.
+           | Worth noting: a plan can need a password while carrying no
+           | privileged step at all. `worth_priming` therefore asks "will
+           | anything here escalate", which includes the AUR step, rather than
+           | reading `requires_sudo`.
+           | sudo only. `doas` and `pkexec` have no "authenticate now, run
+           | nothing" a later command then finds satisfied — the same reason
+           | the keepalive is sudo-only (2026-07-12).
+           | The ceiling: a build that outlives sudo's timeout still stops for
+           | a second prompt. `sudo_loop` is the opt-in for that and stays
+           | opt-in, because a warm timestamp is usable by anything running as
+           | this user.
+           |
 ```
 
 ---

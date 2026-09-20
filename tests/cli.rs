@@ -161,7 +161,7 @@ fn bare_update_refuses_to_execute_without_a_terminal() {
     assert!(stderr.contains("needs a terminal"), "stderr was: {stderr}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !stdout.contains("[y/N]"),
+        !stdout.contains("[Y/n]"),
         "must never reach the prompt: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&home);

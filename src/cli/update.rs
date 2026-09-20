@@ -1,5 +1,5 @@
 //! `paclens update [--dry-run] [--source <id>]` — show the update plan (spec
-//! §11.3) and, since v0.0.6, execute it after a y/N confirmation. v0.0.6 runs
+//! §11.3) and, since v0.0.6, execute it after a Y/n confirmation. v0.0.6 runs
 //! Flatpak user-scope only; everything needing sudo is reported as skipped.
 //!
 //! The plan is built by the shared `crate::planner` and executed by the shared
@@ -61,7 +61,7 @@ pub fn run(
 }
 
 /// The confirm + execute half of a bare `paclens update`: show the exact
-/// commands (P1), announce skips, ask `[y/N]`, run, report every outcome.
+/// commands (P1), announce skips, ask `[Y/n]`, run, report every outcome.
 fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
     let tool = executor::sudo::detect();
 
@@ -97,7 +97,7 @@ fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
             "Run {sources} command{}?",
             if sources == 1 { "" } else { "s" },
         )),
-        styles.dim("[y/N]")
+        styles.dim("[Y/n]")
     );
     std::io::stdout().flush()?;
     let mut answer = String::new();
@@ -108,6 +108,8 @@ fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
     }
 
     println!();
+    prime_privilege(plan, tool, styles);
+
     let mut log = UpdateLog::open_default()?;
     let report = executor::execute(plan, &InteractiveRunner, &mut log, tool);
 
@@ -124,9 +126,67 @@ fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Does this answer to `[y/N]` mean yes? Default (empty / anything else) is no.
+/// Authenticate once, here, where the reader is looking.
+///
+/// Without this, `pacman -Syu` asks for a password and then paru — which
+/// self-elevates, and is never run under sudo — asks again seconds later.
+/// One `sudo -v` up front satisfies both, because they share the terminal's
+/// sudo timestamp (user decision 2026-09-21).
+///
+/// Failure is not fatal: the steps ask for themselves, exactly as before.
+/// A build long enough to outlive sudo's timeout will still stop for a second
+/// prompt — `sudo_loop` in the config is the opt-in for that, and it stays
+/// opt-in because keeping the timestamp warm lets anything running as this
+/// user use sudo unasked.
+fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) {
+    if !worth_priming(plan, tool) {
+        return;
+    }
+
+    let argv = executor::sudo::prime_command();
+    println!(
+        "  {}",
+        s.dim(&format!("{} (once, for the whole run)", argv.join(" ")))
+    );
+    let ok = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false);
+    if !ok {
+        println!(
+            "  {}",
+            s.dim("could not authenticate — each step will ask for itself")
+        );
+    }
+    println!();
+}
+
+/// Will something in this plan ask for a password? Pure, so the AUR case can
+/// be pinned by a test: a helper escalates on its own, so a plan can need a
+/// password without carrying a single privileged step.
+///
+/// sudo only — `doas` and `pkexec` have no "authenticate without running
+/// anything" that a later command then finds satisfied.
+fn worth_priming(plan: &ActionPlan, tool: Option<&str>) -> bool {
+    tool == Some("sudo")
+        && plan.steps.iter().any(|st| {
+            executor::skip_reason(st, tool).is_none()
+                && (executor::needs_privilege(st) || st.source_id.as_str() == "aur")
+        })
+}
+
+/// Does this answer to `[Y/n]` mean yes?
+///
+/// Enter means yes (user decision 2026-09-21): the plan is on screen above
+/// the prompt, and someone who typed `update` and read it is answering the
+/// question they asked. Anything that is not a yes or an empty line is still
+/// a refusal — a typo cancels rather than upgrades the system.
 fn accepts(answer: &str) -> bool {
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "" | "y" | "yes"
+    )
 }
 
 /// Render the whole plan block. Pure (no IO) so the no-color output is
@@ -369,13 +429,43 @@ mod tests {
         assert!(!text.contains("requires sudo"), "{text}");
     }
 
-    // --- the y/N answer ---
     #[test]
-    fn only_y_and_yes_accept_case_insensitively() {
-        for yes in ["y", "Y", "yes", "YES", " y \n"] {
+    fn an_aur_only_plan_is_still_worth_priming() {
+        // paru is never run under sudo — it escalates itself — so the plan
+        // carries no privileged step and would still stop for a password.
+        let mut s = scan(Vec::new());
+        s.sources.push(Source {
+            id: SourceId::aur(),
+            kind: SourceKind::Aur,
+            available: true,
+            last_scanned: None,
+            accurate_updates: true,
+        });
+        let plan = planner::plan_full_upgrade(&s, |id| id.as_str() == "aur");
+
+        assert!(
+            !plan.requires_sudo,
+            "nothing in an AUR plan runs under sudo"
+        );
+        assert!(worth_priming(&plan, Some("sudo")));
+        assert!(!worth_priming(&plan, Some("doas")), "sudo -v is sudo's own");
+        assert!(!worth_priming(&plan, None));
+    }
+
+    #[test]
+    fn a_plan_that_never_escalates_is_not_worth_priming() {
+        let s = scan(Vec::new());
+        let plan = planner::plan_full_upgrade(&s, |id| id.as_str() == "cargo");
+        assert!(!worth_priming(&plan, Some("sudo")));
+    }
+
+    // --- the Y/n answer ---
+    #[test]
+    fn enter_accepts_and_anything_unrecognised_still_refuses() {
+        for yes in ["y", "Y", "yes", "YES", " y \n", "", "\n", "  \n"] {
             assert!(accepts(yes), "{yes:?} should accept");
         }
-        for no in ["", "\n", "n", "N", "no", "q", "yep", "sure"] {
+        for no in ["n", "N", "no", "q", "yep", "sure"] {
             assert!(!accepts(no), "{no:?} should refuse");
         }
     }
