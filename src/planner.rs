@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(plan.steps.len(), 1);
         let step = &plan.steps[0];
         assert!(!step.privileged, "cargo must never run under sudo");
-        assert_eq!(step.command, ["cargo-install-update", "-a"]);
+        assert_eq!(step.command, ["cargo", "install-update", "-a"]);
         assert!(!plan.requires_sudo);
     }
 

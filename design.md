@@ -1911,6 +1911,14 @@ YYYY-MM-DD | no --noconfirm for pacman
            | opt-in, because a warm timestamp is usable by anything running as
            | this user.
            |
+           | Follow-up the same day: the cargo step ran `cargo-install-update
+           | -a` as a bare binary, which fails with "unexpected argument '-a'
+           | found" — it is a cargo subcommand and wants `install-update` as
+           | its own first argument. It is `cargo install-update -a` now. The
+           | PATH probe still looks for the binary, because that is what says
+           | the subcommand exists. Nothing caught this because until the gate
+           | fix two commits earlier, `update` executed nothing at all.
+           |
 ```
 
 ---

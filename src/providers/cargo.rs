@@ -146,10 +146,20 @@ pub fn parse_updates(stdout: &str) -> Vec<PendingUpdate> {
 
 /// `cargo install-update -a` — every crate cargo can place, in one go.
 ///
+/// Run through `cargo`, not as the bare binary: `cargo-install-update` is a
+/// cargo subcommand, and invoked directly it expects `install-update` as its
+/// own first argument ("error: unexpected argument '-a' found"). The PATH
+/// probe still looks for the binary — that is what tells us the subcommand
+/// exists.
+///
 /// Never privileged: `cargo install` writes to `$CARGO_HOME`, under the user's
 /// own home.
 pub fn update_command() -> Vec<String> {
-    vec![INSTALL_UPDATE_BIN.to_string(), "-a".to_string()]
+    vec![
+        "cargo".to_string(),
+        "install-update".to_string(),
+        "-a".to_string(),
+    ]
 }
 
 /// Ask `cargo-update` what is out of date. `Ok(vec![])` when it is not
@@ -258,6 +268,6 @@ tack     0.8.2      -        No
     fn the_update_command_is_never_privileged() {
         // Everything cargo installs lives under $HOME; the planner declares
         // this step unprivileged and this is the command it declares it for.
-        assert_eq!(update_command(), ["cargo-install-update", "-a"]);
+        assert_eq!(update_command(), ["cargo", "install-update", "-a"]);
     }
 }
