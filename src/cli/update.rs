@@ -82,18 +82,19 @@ fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
         }
     }
 
-    let total = executor::executable_targets(plan, tool);
-    if total == 0 {
+    // Counted in commands, not packages: nothing was looked up, so there is no
+    // package count to offer. Commands rather than sources, because flatpak
+    // contributes two steps and the prompt must match what runs (2026-09-17).
+    let sources = executor::executable_steps(plan, tool);
+    if sources == 0 {
         println!("\n{}", styles.dim("nothing to execute"));
         return Ok(());
     }
 
-    let sources = executor::executable_steps(plan, tool);
     print!(
         "\n{} {} ",
         styles.summary_updates(&format!(
-            "Update {total} package{} across {sources} source{}?",
-            if total == 1 { "" } else { "s" },
+            "Run {sources} command{}?",
             if sources == 1 { "" } else { "s" },
         )),
         styles.dim("[y/N]")
@@ -208,6 +209,12 @@ fn render_report(report: &ExecutionReport, s: &Styles) -> String {
     for st in &report.steps {
         let name = format!("{:name_w$}", st.label.as_str());
         let line = match &st.status {
+            // No targets means nothing was counted, not that nothing moved:
+            // an unchecked run has no list to count. Say "done" rather than
+            // report zero packages (P1).
+            StepStatus::Succeeded if st.targets == 0 => {
+                format!("  {} {}  done", s.success(s.check()), s.title(&name),)
+            }
             StepStatus::Succeeded => format!(
                 "  {} {}  {} updated",
                 s.success(s.check()),
@@ -287,6 +294,21 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_unchecked_plan_still_has_something_to_execute() {
+        // The bug this pins: the confirm gate counted *packages*, and an
+        // unchecked plan carries none, so `update` printed "nothing to
+        // execute" and ran nothing. Count sources (2026-09-17).
+        let s = scan(Vec::new());
+        let plan = planner::plan_full_upgrade(&s, |_| true);
+
+        assert!(plan.steps.iter().all(|step| step.targets.is_empty()));
+        assert!(
+            executor::executable_steps(&plan, Some("sudo")) > 0,
+            "an unchecked plan must still be executable"
+        );
     }
 
     #[test]

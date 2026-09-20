@@ -1878,6 +1878,14 @@ YYYY-MM-DD | no --noconfirm for pacman
            | That is the honest rendering (P1).
            | `status` is still where "what is pending" lives. This is only
            | about the verb that already committed to acting.
+           | Caught the same day: the confirm gate counted *packages*
+           | (`executable_targets`), and an unchecked plan carries none, so
+           | `update` printed "nothing to execute" and ran nothing. It counts
+           | commands now, and the success line says "done" where it used to
+           | say "0 packages updated". Lesson: when a value stops being
+           | gathered, every consumer that counted it is a suspect — the
+           | dry-run path returned before the gate, so nothing I looked at
+           | showed the break.
 ```
 
 ---

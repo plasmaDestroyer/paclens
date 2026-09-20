@@ -126,15 +126,6 @@ pub fn effective_command(step: &ActionStep, tool: Option<&str>) -> Vec<String> {
     }
 }
 
-/// Total packages/apps across the steps that would actually run.
-pub fn executable_targets(plan: &ActionPlan, tool: Option<&str>) -> usize {
-    plan.steps
-        .iter()
-        .filter(|s| skip_reason(s, tool).is_none())
-        .map(|s| s.targets.len())
-        .sum()
-}
-
 /// How many steps would actually run.
 pub fn executable_steps(plan: &ActionPlan, tool: Option<&str>) -> usize {
     plan.steps
@@ -401,9 +392,7 @@ mod tests {
             flatpak_user_step(),
         ]);
         assert_eq!(executable_steps(&p, None), 1);
-        assert_eq!(executable_targets(&p, None), 2); // flatpak apps only
         assert_eq!(executable_steps(&p, Some("sudo")), 2);
-        assert_eq!(executable_targets(&p, Some("sudo")), 4);
     }
 
     #[test]
