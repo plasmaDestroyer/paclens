@@ -6,9 +6,9 @@ paclens is **not** a package manager. It wraps pacman, whichever AUR helper you 
 
 ## Status
 
-**0.3.0 — working tool, daily-driveable.** ~16k lines of Rust across `src/`. 398 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+**0.5.1 — working tool, daily-driveable.** ~18k lines of Rust across `src/`. 600 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
 
-Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, pty exec console, log viewer), pacman + AUR + Flatpak providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`.
+Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, history screen, pty exec console, log viewer), pacman + AUR + Flatpak + cargo providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. Headless equivalents exist for everything except `cleanup`. The dashboard opens before the first scan finishes and fills in as each source reports.
 
 Shipped milestones are **history, not a plan** — see "What shipped" below. All open work lives in GitHub issues; there is no roadmap file.
 
@@ -33,7 +33,7 @@ without an explanation, no misleading numbers, and the rest).
 3. **Honest confidence.** Every inference carries a `Confirmed`, `Inferred`, or `Unknown` label. Never present inference as fact. Never promote a label — an `Unknown` edge in a path caps the verdict at `Unknown`.
 4. **Pipeline:** scan → analyze → plan → confirm → execute. No shortcuts, no "fix all" button.
 5. **One source of truth:** the scan cache. The TUI, `why`, and the overlap detector all read from it. Nothing re-derives what a scan already computed.
-6. **Source-specific logic.** pacman and Flatpak differ in every respect. No generic cross-source shortcuts. *(Under active review — see "What's next".)*
+6. **Source-specific logic, asked as questions.** pacman and Flatpak differ in every respect. What generalizes is the *question* a screen asks a source, never a generic answer — and **a source is the tool responsible for keeping its packages up to date**, so nothing about its behaviour is read out of its name. Settled 2026-09-07 (design §13, #10).
 
 `design.md` also carries **the test** that decides whether something becomes a
 rule at all: *can you state the harm?* If yes, it is a rule and it holds. If the
@@ -52,7 +52,7 @@ Modules: `main.rs`, `cli/`, `tui/`, `model/`, `providers/`, `scanner/`, `analyze
 
 Module contracts (design §6):
 - **Provider** — accepts an injectable `CommandRunner` (the testing seam); returns `Ok(vec![])` when nothing is installed; `Err` only when the binary exists but the command failed; never calls sudo; never knows about other providers.
-- **Scanner** — detects providers, runs them concurrently on scoped threads (`std::thread::scope`), assembles `ScanResult`, writes cache. Never analyzes. One exception, made explicit in the 2026-07-14 decision: it asks the pure analyzer *which* paths to measure, then measures them.
+- **Scanner** — detects providers, runs them concurrently on scoped threads (`std::thread::scope`), assembles `ScanResult`, writes cache. Never analyzes. It also **reports partial results as each lane lands** (design §13, 2026-09-09) so the TUI can open on the dashboard and fill it in; `compose` builds every partial and the finished scan by the same path. One exception to "never analyzes", made explicit in the 2026-07-14 decision: it asks the pure analyzer *which* paths to measure, then measures them.
 - **Analyzer** — pure: same `ScanResult` → same output. Never calls subprocesses, never writes disk. Builds dep graph, overlaps, orphan list from `ScanResult`.
 - **Executor** — only runs pre-built `ActionPlan`s. Never decides what to do. Logs every command. Reports exit codes without interpretation.
 
@@ -60,15 +60,16 @@ Module contracts (design §6):
 
 Orientation only — **design §3 carries the rules and §13 the dated reasoning.**
 
+- **`update` does not scan first.** Typing `update` is the decision; the plan is built from which sources are *present* (`scanner::detect_sources` + `planner::plan_full_upgrade`), and each tool does its own, fresher check as it runs. The plan therefore lists commands, never packages — there is no list, because nothing was looked up. `status` is where "what is pending" lives (design §13, 2026-09-17).
 - **Dep graph from one `pacman -Qi` call**, not per-package `pactree`. All graph queries run in-memory on `petgraph`.
-- **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`, currently `SCHEMA_VERSION = 7`. The dep graph and overlaps are recomputed on load, never serialized. Atomic writes: write `.tmp`, then `rename()`.
+- **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`, currently `SCHEMA_VERSION = 16`. The dep graph and overlaps are recomputed on load, never serialized. Atomic writes: write `.tmp`, then `rename()`.
 - **Execution runs on a real pty** (`portable-pty` + `vt100`) inside the TUI. The child sees a genuine terminal, so sudo/doas/pkexec/pacman/paru prompt, colour and redraw natively; every key including Ctrl-C passes through. This replaced both the piped-stdio console and the original suspend/restore flow.
 - **No `--noconfirm` for pacman**, ever. It suppresses conflict resolution.
-- **The dashboard *is* the plan view.** There is no separate update screen. `space` toggles a source, **`enter` runs the plan** (`u` is an alias), `i` opens the selected source's package list, and the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
-- **AUR is the libalpm split, not a second scan.** Foreign packages already carry full `pacman -Qi` metadata; the scanner relabels them via `pacman -Qm`. the helper only does what pacman can't: update detection (`-Qua`) and the update step (`-Sua`). paru, yay and pikaur are autodetected in that order. **An AUR helper is never run under sudo** — they self-elevate.
+- **The dashboard *is* the plan view.** There is no separate update screen. `space` toggles a source, **`u` runs the plan** (the only key that does), `enter` (or `i`) opens the selected source's package list — enter means "look closer" on every screen, and the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
+- **AUR is the libalpm split, not a second scan** — but *foreign* is not *from the AUR*. Foreign packages carry full `pacman -Qi` metadata; the scanner relabels only the ones built here (`Validated By: None`, `Packager: Unknown Packager`). A signed foreign package came from a repo that is no longer configured, stays pacman's, and is reported as "in no configured repository" (design §13, 2026-09-05). The helper only does what pacman can't: update detection (`-Qua`) and the update step (`-Sua`). paru, yay and pikaur are autodetected in that order. **An AUR helper is never run under sudo** — they self-elevate.
 - **Overlap matching** in priority order: known map → reverse-DNS suffix → display-name match, each with a decreasing confidence label. A generic blocklist suppresses false positives. A false negative is better than a false positive.
 - **Migration copy plans contain no `rm` anywhere.** Backups are staged into a timestamped dir, then targets are copied with `cp -aT`. Source removal is a separate plan, armed only by a clean copy and a user's explicit verification. `ActionKind::Migrate` is never privileged; `ActionKind::Remove` follows the source.
-- **Cleanup figures are honest.** The reclaimable number comes from the matching `paccache -dk2` dry run, shown next to the total — an 11 GiB cache that reclaims nothing says so. `pacman -Sc` is never suggested (it trips over pacman ≥7's sandboxed-download partials); `paccache` and `paru -Sc --aur` are.
+- **Cleanup figures are honest.** The reclaimable number comes from the matching `paccache -dk3` dry run, shown next to the total — an 11 GiB cache that reclaims nothing says so. `pacman -Sc` is never suggested (it trips over pacman ≥7's sandboxed-download partials); `paccache` and `paru -Sc --aur` are.
 
 ## Conventions
 
@@ -80,8 +81,10 @@ Orientation only — **design §3 carries the rules and §13 the dated reasoning
 - Every parser has unit tests against real-output fixtures in `tests/fixtures/`, driven by a mock `CommandRunner`. Capture fixtures from a real Arch system.
 - **Every config knob must be consumed.** A knob that exists in the schema but changes no behaviour is a bug (v0.2.0 audit).
 - **Versioning:** a minor is a capability you can point at; a patch is fixes and polish. Every release gets a `vX.Y.Z` git tag — the PKGBUILD builds from `#tag=v$pkgver` and cannot build without one. **design §14 says when each one ships** — a minor is cut per describable capability, several to a milestone, never on a milestone boundary.
-- **Git:** work on `main` directly — this is a solo repo, no feature branches. Commits are authored by the repo owner alone: **no `Co-Authored-By` or `Codex-Session` trailers.** Keep the existing message style — a `type(scope):` subject line, then prose explaining *why*, not a bullet list of what changed.
+- **Git:** work on `main` directly — this is a solo repo, no feature branches. Commits are authored by the repo owner alone: **no `Co-Authored-By` or `Claude-Session` trailers.** Keep the existing message style — a `type(scope):` subject line, then prose explaining *why*, not a bullet list of what changed.
 - **Git hooks do the checking.** `.githooks/` is tracked and wired up with `git config core.hooksPath .githooks` (local config, so a fresh clone must set it once). `pre-commit` runs `cargo fmt` (fixing and re-staging), then clippy and the tests, aborting the commit if either fails; it skips entirely when no Rust or manifest file is staged. `pre-push` runs `cargo install --path .` so `paclens` on PATH is what last landed — on push rather than on commit, because the fat-LTO relink costs ~80s (#76) and commits here are deliberately granular. It never blocks the push, and skips when the pushed range changes no build file. `pre-push` also publishes to the AUR, but only what it can verify: pushing a `v*` tag schedules the **source** package, which waits in the background for the tag to reach origin (the PKGBUILD builds from that tag, and pre-push runs before it lands) and gives up rather than publishing if the push never happens; **`paclens-bin` is never published by a tag push** — its checksum belongs to a release asset the workflow builds minutes later, so it goes out on the push that changes `packaging/`, and only when the sum in the tree matches the asset actually published. `.SRCINFO` is regenerated with `makepkg --printsrcinfo`, and every check is read from it rather than from the PKGBUILD text. Escape hatches: `--no-verify`, `PACLENS_SKIP_HOOKS=1`, `PACLENS_NO_INSTALL=1` for the install alone, `PACLENS_NO_AUR=1` for the AUR alone, and `PACLENS_AUR=1` to force the AUR check on an ordinary push. Log: `~/.cache/paclens/aur-push.log`.
+- **Every finished job ends with how to test it by hand.** Green tests are not the same as "I saw it work". After any change that a person could look at — a screen, a command, an output line, a behaviour change — end the reply with the exact steps: the build command, what to run or which key to press, and **what should appear**. Name what would prove it broken, not just what proves it right, and say plainly when a path cannot be exercised on this machine (no system-scope flatpak here, no second AUR helper) rather than implying it was checked. Automated tests still ship with the change; this is in addition, never instead.
+
 - **Testing is a hard requirement, not an afterthought.** Every module carries unit tests; every feature ships with tests. Keep them small, granular, and specific — test pure helpers directly, not just via their callers. Make logic hermetically testable by injecting the `CommandRunner` seam and passing environment-derived inputs (availability flags, mtimes) into pure cores rather than reading PATH/filesystem inside the logic (see `scan`→`assemble`, `staleness`→`staleness_with`). Integration tests in `tests/` drive the built binary (`CARGO_BIN_EXE_paclens`) sandboxed with temp `XDG_*` dirs. `cargo test`, `clippy -- -D warnings -D clippy::unwrap_used`, and `fmt --check` stay green on every commit.
 
 ## What shipped
@@ -97,6 +100,15 @@ Three capability blocks, one minor each:
                   every config knob consumed, provider timeouts
 0.3.0  extend     AUR as its own source via paru, migration advisory and
                   execution behind backups, honest reclaimable cleanup figures
+0.4.0  attend     what needs attention after an upgrade: reboot required,
+                  .pacnew/.pacsave leftovers, services running against
+                  replaced files; one sudo prompt per run
+0.5.0  recall     what past upgrades actually changed, from pacman's own log:
+                  `paclens history`, the history screen, install dates in
+                  `why`. Rows are runs, not alpm transactions. Flatpak became
+                  one source and privilege is declared per step (#10), and
+                  the dashboard opens before the scan finishes instead of
+                  behind a splash
 ```
 
 **Renumbered 2026-08-24.** The old scheme mixed granularities — 0.1.x took a
@@ -129,7 +141,7 @@ Where #75 and a tracking issue disagree, #75 wins on order and the tracking issu
 
 **Broader sources.** This is now a stated goal, not a maybe: paclens should be the one tool for everything that updates on this machine. cargo, rustup, npm globals, pipx, fwupd, optionally go/brew. Each lands only after its parser is solid and tested — never as a batch.
 
-Before any of them: **the provider contract needs generalizing** for sources with no install reason, no dependency metadata and no orphan concept. This presses directly on principle 6 and on the "no extension points for deferred features" rule below — both were written when there were two sources. Settle it deliberately and record it in design §13 rather than drifting into it one provider at a time.
+Before any of them: **the provider contract is settled** (#10, design §13, 2026-09-07). A source is the tool that updates it, so ids are flat — flatpak's two installations are one source and the scope rides on the package. Privilege is declared by each step, never inferred from an id, and defaults to unprivileged. A screen asks a source only what a screen already branches on: dependency graph, install reason, orphans, removal. `why` degrades rather than refusing.
 
 The payoff that keeps this from becoming "topgrade with a TUI": overlap detection extended across sources. The same tool installed via pacman *and* cargo is the same duplicate problem as native-vs-Flatpak, and `PATH` precedence decides which one you actually run.
 
