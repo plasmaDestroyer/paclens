@@ -142,6 +142,7 @@ Everything is also available headless:
 ```sh
 paclens status            # dashboard summary to stdout
 paclens update            # update all sources (asks y/N first)
+paclens update --parallel # flatpak and cargo run at once; pacman keeps the terminal
 paclens why firefox       # why is this installed, what breaks without it
 paclens overlaps          # Flatpak/native duplicates with tradeoffs
 paclens migrate firefox         # where both sides keep data + the steps

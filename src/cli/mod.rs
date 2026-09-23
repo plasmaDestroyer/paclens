@@ -74,6 +74,10 @@ pub enum Command {
         /// Limit the update to a single source id.
         #[arg(long, value_name = "ID")]
         source: Option<String>,
+        /// Run the sources that ask no questions at the same time, while
+        /// pacman and the AUR helper take the terminal in turn.
+        #[arg(long)]
+        parallel: bool,
     },
     /// Explain why a package is installed and what removing it affects.
     Why {
@@ -187,7 +191,11 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
-        Command::Update { dry_run, source } => {
+        Command::Update {
+            dry_run,
+            source,
+            parallel,
+        } => {
             let out_styles = Styles::resolve(
                 cli.no_color,
                 config.general.color_theme(),
@@ -198,6 +206,7 @@ pub fn run() -> ExitCode {
                     &config,
                     dry_run,
                     source.as_deref(),
+                    parallel,
                     std::io::stdin().is_terminal(),
                     &out_styles,
                 ),
@@ -318,12 +327,26 @@ mod tests {
         let cli =
             Cli::try_parse_from(["paclens", "update", "--dry-run", "--source", "pacman"]).unwrap();
         match cli.command {
-            Some(Command::Update { dry_run, source }) => {
+            Some(Command::Update {
+                dry_run,
+                source,
+                parallel,
+            }) => {
                 assert!(dry_run);
                 assert_eq!(source.as_deref(), Some("pacman"));
+                assert!(!parallel, "sequential unless asked");
             }
             other => panic!("expected update, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parallel_is_opt_in() {
+        let cli = Cli::try_parse_from(["paclens", "update", "--parallel"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Update { parallel: true, .. })
+        ));
     }
 
     #[test]

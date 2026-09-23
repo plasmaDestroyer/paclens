@@ -328,6 +328,7 @@ mod tests {
                 targets: vec!["x".to_string()],
                 command: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
                 privileged: false,
+                interactive: true,
             }],
             requires_sudo: false,
         }

@@ -44,6 +44,16 @@ pub struct ActionStep {
     /// costs the planner nothing: it already knows, because it just chose the
     /// command.
     pub privileged: bool,
+    /// Does this step need the terminal to itself?
+    ///
+    /// Declared by whoever builds the step, for the same reason `privileged`
+    /// is (design §13, 2026-09-07): `pacman -Syu` and an AUR helper ask
+    /// questions and expect answers, while `flatpak update --noninteractive`
+    /// and `cargo install-update -a` never do. Nothing reads it out of the
+    /// source id, and forgetting it means a step keeps the terminal — the
+    /// harmless direction, since that is what every step did before
+    /// `--parallel` existed.
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

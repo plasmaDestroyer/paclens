@@ -1,4 +1,4 @@
-//! `paclens update [--dry-run] [--source <id>]` — show the update plan (spec
+//! `paclens update [--dry-run] [--source <id>] [--parallel]` — show the update plan (spec
 //! §11.3) and, since v0.0.6, execute it after a Y/n confirmation. v0.0.6 runs
 //! Flatpak user-scope only; everything needing sudo is reported as skipped.
 //!
@@ -12,7 +12,7 @@ use std::io::Write;
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::executor::{self, ExecutionReport, InteractiveRunner, StepStatus, UpdateLog};
-use crate::model::ActionPlan;
+use crate::model::{ActionPlan, ActionStep};
 use crate::providers::SystemCommandRunner;
 use crate::{planner, scanner};
 
@@ -20,6 +20,7 @@ pub fn run(
     config: &Config,
     dry_run: bool,
     source: Option<&str>,
+    parallel: bool,
     stdin_is_tty: bool,
     styles: &Styles,
 ) -> anyhow::Result<()> {
@@ -55,14 +56,20 @@ pub fn run(
     print!("{}", render_plan(&plan, styles));
 
     if dry_run || plan.is_empty() {
+        if dry_run && parallel {
+            println!(
+                "  {}",
+                styles.dim(&parallel_note(&plan, executor::sudo::detect()))
+            );
+        }
         return Ok(());
     }
-    execute_flow(&plan, styles)
+    execute_flow(&plan, parallel, styles)
 }
 
 /// The confirm + execute half of a bare `paclens update`: show the exact
 /// commands (P1), announce skips, ask `[Y/n]`, run, report every outcome.
-fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
+fn execute_flow(plan: &ActionPlan, parallel: bool, styles: &Styles) -> anyhow::Result<()> {
     let tool = executor::sudo::detect();
 
     for step in &plan.steps {
@@ -76,7 +83,7 @@ fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
             ),
             None => println!(
                 "  {} {}",
-                styles.dim("will run:"),
+                styles.dim(will_run_label(parallel, step, tool)),
                 executor::effective_command(step, tool).join(" ")
             ),
         }
@@ -111,7 +118,11 @@ fn execute_flow(plan: &ActionPlan, styles: &Styles) -> anyhow::Result<()> {
     prime_privilege(plan, tool, styles);
 
     let mut log = UpdateLog::open_default()?;
-    let report = executor::execute(plan, &InteractiveRunner, &mut log, tool);
+    let report = if parallel {
+        executor::execute_concurrent(plan, &InteractiveRunner, &mut log, tool)
+    } else {
+        executor::execute(plan, &InteractiveRunner, &mut log, tool)
+    };
 
     println!();
     print!("{}", render_report(&report, styles));
@@ -174,6 +185,39 @@ fn worth_priming(plan: &ActionPlan, tool: Option<&str>) -> bool {
             executor::skip_reason(st, tool).is_none()
                 && (executor::needs_privilege(st) || st.source_id.as_str() == "aur")
         })
+}
+
+/// What `--dry-run --parallel` owes the reader: which steps would not wait for
+/// each other. Pure, so the wording is pinned by a test.
+///
+/// A plan where nothing qualifies says so rather than printing nothing —
+/// `--parallel` on a pacman-only plan changes exactly nothing, and silence
+/// would leave that to be guessed at.
+fn parallel_note(plan: &ActionPlan, tool: Option<&str>) -> String {
+    let labels: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter(|s| executor::runs_in_background(s, tool))
+        .map(|s| s.label.as_str())
+        .collect();
+    if labels.is_empty() {
+        "nothing in this plan can run in parallel".to_string()
+    } else {
+        format!("in parallel: {}", labels.join(", "))
+    }
+}
+
+/// What the preview line calls a step.
+///
+/// `--parallel` changes *when* a step runs, so it has to change what the plan
+/// says will happen — P1 is "show exactly what will happen", and "these four
+/// start at once while pacman has the terminal" is part of that.
+fn will_run_label(parallel: bool, step: &ActionStep, tool: Option<&str>) -> &'static str {
+    if parallel && executor::runs_in_background(step, tool) {
+        "will run (in parallel):"
+    } else {
+        "will run:"
+    }
 }
 
 /// Does this answer to `[Y/n]` mean yes?
@@ -312,6 +356,73 @@ mod tests {
         CacheSizes, PendingUpdate, SCHEMA_VERSION, ScanResult, Source, SourceId, SourceKind,
     };
     use chrono::Utc;
+
+    /// A plan step, spelled out: `(interactive, privileged)` is the pair the
+    /// preview turns into a promise about when it runs.
+    fn plan_step(label: &str, interactive: bool, privileged: bool) -> crate::model::ActionStep {
+        crate::model::ActionStep {
+            label: label.to_string(),
+            source_id: SourceId::pacman(),
+            kind: crate::model::ActionKind::Update,
+            targets: Vec::new(),
+            command: vec![label.to_string()],
+            privileged,
+            interactive,
+        }
+    }
+
+    /// The preview promises when a step runs, not just what it runs (P1), and
+    /// it promises it by asking the executor — not by repeating the rule.
+    #[test]
+    fn the_preview_says_which_steps_run_at_once() {
+        let quiet = plan_step("cargo", false, false);
+        let asks = plan_step("pacman", true, true);
+        let rooted = plan_step("flatpak · system", false, true);
+
+        assert_eq!(will_run_label(false, &quiet, Some("sudo")), "will run:");
+        assert_eq!(
+            will_run_label(true, &quiet, Some("sudo")),
+            "will run (in parallel):"
+        );
+        assert_eq!(
+            will_run_label(true, &asks, Some("sudo")),
+            "will run:",
+            "a step that asks questions keeps the terminal"
+        );
+        assert_eq!(
+            will_run_label(true, &rooted, Some("sudo")),
+            "will run:",
+            "design §11 — nothing privileged runs in the background"
+        );
+    }
+
+    #[test]
+    fn dry_run_names_the_steps_that_would_share_the_run() {
+        let plan = ActionPlan {
+            created_at: Utc::now(),
+            steps: vec![
+                plan_step("pacman", true, true),
+                plan_step("flatpak · user", false, false),
+                plan_step("cargo", false, false),
+            ],
+            requires_sudo: true,
+        };
+        assert_eq!(
+            parallel_note(&plan, Some("sudo")),
+            "in parallel: flatpak · user, cargo"
+        );
+
+        let alone = ActionPlan {
+            created_at: Utc::now(),
+            steps: vec![plan_step("pacman", true, true)],
+            requires_sudo: true,
+        };
+        assert_eq!(
+            parallel_note(&alone, Some("sudo")),
+            "nothing in this plan can run in parallel",
+            "silence would leave the reader to guess"
+        );
+    }
 
     /// Piped styler: Unicode glyphs, no ANSI — deterministic for assertions.
     fn plain() -> Styles {

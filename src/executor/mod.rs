@@ -23,10 +23,19 @@ use crate::model::{ActionPlan, ActionStep, SourceId};
 
 pub use log::UpdateLog;
 
-/// Runs one command with inherited stdio, returning its exit code (`None` when
-/// the process was terminated by a signal). Injectable for testing.
+/// Runs one command, returning its exit code (`None` when the process was
+/// terminated by a signal). Injectable for testing.
 pub trait StepRunner {
+    /// Run attached to the terminal: the user sees the tool's own output and
+    /// answers its prompts directly (design §11).
     fn run(&self, argv: &[String]) -> anyhow::Result<Option<i32>>;
+
+    /// Run detached from the terminal, returning what it printed.
+    ///
+    /// Only for steps that declared `interactive: false`. Used by
+    /// [`execute_concurrent`], where several steps run at once and sharing one
+    /// terminal would shred all of their output.
+    fn run_captured(&self, argv: &[String]) -> anyhow::Result<(Option<i32>, String)>;
 }
 
 /// The production runner: spawns the command attached to the real terminal.
@@ -40,6 +49,24 @@ impl StepRunner for InteractiveRunner {
             .status()
             .with_context(|| format!("failed to launch `{program}`"))?;
         Ok(status.code())
+    }
+
+    /// stdin is `/dev/null` on purpose: a step that declared itself
+    /// non-interactive and then asks a question gets EOF and fails, rather
+    /// than hanging the run on a prompt nobody can see. stdout and stderr come
+    /// back concatenated in that order — `Command::output` collects them
+    /// separately, so their interleaving is lost; the exact ordering of a
+    /// background step's two streams has not been worth a pty for.
+    fn run_captured(&self, argv: &[String]) -> anyhow::Result<(Option<i32>, String)> {
+        let (program, args) = argv.split_first().context("empty command")?;
+        let out = std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .with_context(|| format!("failed to launch `{program}`"))?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        Ok((out.status.code(), text))
     }
 }
 
@@ -126,6 +153,25 @@ pub fn effective_command(step: &ActionStep, tool: Option<&str>) -> Vec<String> {
     }
 }
 
+/// Can this step run beside the others under `update --parallel`?
+///
+/// Three conditions, and all three are the step's own declaration rather than
+/// anything read out of its id:
+///
+/// - it asks the user nothing (`interactive`), so taking its terminal away
+///   costs only the live output;
+/// - it needs no privilege — design §11 is explicit that paclens never runs a
+///   privileged process in the background, and `sudo` reads its password from
+///   `/dev/tty` rather than stdin, so a backgrounded one would prompt into a
+///   terminal three other steps are writing to;
+/// - it is not being skipped for want of a privilege tool.
+///
+/// The CLI preview and the executor both call this, so what the plan promises
+/// and what runs cannot diverge (the same contract as [`effective_command`]).
+pub fn runs_in_background(step: &ActionStep, tool: Option<&str>) -> bool {
+    !step.interactive && !needs_privilege(step) && skip_reason(step, tool).is_none()
+}
+
 /// How many steps would actually run.
 pub fn executable_steps(plan: &ActionPlan, tool: Option<&str>) -> usize {
     plan.steps
@@ -149,16 +195,112 @@ pub fn target_noun(source_id: &SourceId, count: usize) -> String {
     format!("{count} {unit}")
 }
 
-/// Execute a pre-built plan, step by step, logging every command before and
-/// after. One step failing never blocks the next (roadmap behavior rules); a
-/// failed launch is reported, not raised. Infallible by design: every outcome
-/// lands in the report.
-pub fn execute(
-    plan: &ActionPlan,
+/// One step's outcome, plus everything still to be said about it: the log
+/// lines in plan order, and whatever a background step printed while the
+/// terminal belonged to someone else.
+struct StepOutcome {
+    status: StepStatus,
+    log_lines: Vec<String>,
+    output: Option<String>,
+}
+
+/// Run one step and classify the result — shared by both execution paths, so
+/// the status, the log wording and the tracing events cannot drift apart.
+///
+/// `capture` is the caller's answer to "does this step have the terminal?",
+/// never the step's: [`execute`] gives every step the terminal, while
+/// [`execute_concurrent`] only gives it to the ones that declared they need it.
+fn run_step(
+    step: &ActionStep,
+    argv: &[String],
     runner: &impl StepRunner,
-    log: &mut UpdateLog,
-    tool: Option<&str>,
-) -> ExecutionReport {
+    capture: bool,
+) -> StepOutcome {
+    let cmd = argv.join(" ");
+    let doing = match step.kind {
+        crate::model::ActionKind::Update => format!(
+            "running update ({})",
+            target_noun(&step.source_id, step.targets.len())
+        ),
+        crate::model::ActionKind::Migrate => format!("copying {}", step.targets.join(", ")),
+        crate::model::ActionKind::Remove => format!("removing {}", step.targets.join(", ")),
+    };
+    let mut log_lines = vec![format!("{}: {doing}", step.label)];
+    tracing::info!(source = %step.source_id, command = %cmd, "executing update step");
+
+    let (result, output) = if capture {
+        match runner.run_captured(argv) {
+            Ok((code, text)) => (Ok(code), Some(text)),
+            Err(err) => (Err(err), None),
+        }
+    } else {
+        (runner.run(argv), None)
+    };
+
+    let status = match result {
+        Ok(Some(0)) => {
+            log_lines.push(format!("{}: completed, exit 0", step.label));
+            StepStatus::Succeeded
+        }
+        Ok(Some(code)) => {
+            log_lines.push(format!("{}: failed, exit {code}", step.label));
+            tracing::error!(source = %step.source_id, code, "update step failed");
+            StepStatus::Failed {
+                detail: format!("exit {code}"),
+            }
+        }
+        Ok(None) => {
+            log_lines.push(format!("{}: terminated by signal", step.label));
+            tracing::error!(source = %step.source_id, "update step terminated by signal");
+            StepStatus::Failed {
+                detail: "terminated by signal".to_string(),
+            }
+        }
+        Err(err) => {
+            log_lines.push(format!("{}: failed to launch: {err:#}", step.label));
+            tracing::error!(source = %step.source_id, %err, "update step failed to launch");
+            StepStatus::Failed {
+                detail: format!("failed to launch: {err:#}"),
+            }
+        }
+    };
+    StepOutcome {
+        status,
+        log_lines,
+        output,
+    }
+}
+
+/// A step that never ran, with the reason recorded exactly as the report
+/// shows it.
+fn skipped_step(step: &ActionStep, reason: &str) -> StepOutcome {
+    tracing::info!(source = %step.source_id, reason, "update step skipped");
+    StepOutcome {
+        status: StepStatus::Skipped {
+            reason: reason.to_string(),
+        },
+        log_lines: vec![format!("{}: skipped — {reason}", step.label)],
+        output: None,
+    }
+}
+
+/// Run one step the ordinary way: announce it on the terminal it is about to
+/// take over (P1), then hand it over.
+fn foreground_step(step: &ActionStep, runner: &impl StepRunner, tool: Option<&str>) -> StepOutcome {
+    match skip_reason(step, tool) {
+        Some(reason) => skipped_step(step, reason),
+        None => {
+            let argv = effective_command(step, tool);
+            // The TUI is suspended (or we are in plain CLI mode): give the raw
+            // terminal a header so the user knows whose output follows (P1).
+            println!(":: {}", argv.join(" "));
+            run_step(step, &argv, runner, false)
+        }
+    }
+}
+
+/// The session header, identical for both paths.
+fn open_session(plan: &ActionPlan, log: &mut UpdateLog, tool: Option<&str>) {
     log.line("update session started");
     let run_ids: Vec<&str> = plan
         .steps
@@ -167,74 +309,31 @@ pub fn execute(
         .map(|s| s.label.as_str())
         .collect();
     log.line(&format!("sources: [{}]", run_ids.join(", ")));
+}
 
-    let mut steps = Vec::new();
-    for step in &plan.steps {
-        let targets = step.targets.len();
-
-        if let Some(reason) = skip_reason(step, tool) {
-            log.line(&format!("{}: skipped — {reason}", step.label));
-            tracing::info!(source = %step.source_id, reason, "update step skipped");
-            steps.push(StepReport {
+/// Drain the outcomes into a report, writing every log line in plan order —
+/// whatever order the steps actually finished in.
+fn close_session(
+    plan: &ActionPlan,
+    outcomes: Vec<StepOutcome>,
+    log: &mut UpdateLog,
+) -> ExecutionReport {
+    let steps = plan
+        .steps
+        .iter()
+        .zip(outcomes)
+        .map(|(step, outcome)| {
+            for line in &outcome.log_lines {
+                log.line(line);
+            }
+            StepReport {
                 source_id: step.source_id.clone(),
                 label: step.label.clone(),
-                targets,
-                status: StepStatus::Skipped {
-                    reason: reason.to_string(),
-                },
-            });
-            continue;
-        }
-
-        let argv = effective_command(step, tool);
-        let cmd = argv.join(" ");
-        let doing = match step.kind {
-            crate::model::ActionKind::Update => {
-                format!("running update ({})", target_noun(&step.source_id, targets))
+                targets: step.targets.len(),
+                status: outcome.status,
             }
-            crate::model::ActionKind::Migrate => format!("copying {}", step.targets.join(", ")),
-            crate::model::ActionKind::Remove => format!("removing {}", step.targets.join(", ")),
-        };
-        log.line(&format!("{}: {doing}", step.label));
-        tracing::info!(source = %step.source_id, command = %cmd, "executing update step");
-        // The TUI is suspended (or we are in plain CLI mode): give the raw
-        // terminal a header so the user knows whose output follows (P1).
-        println!(":: {cmd}");
-
-        let status = match runner.run(&argv) {
-            Ok(Some(0)) => {
-                log.line(&format!("{}: completed, exit 0", step.label));
-                StepStatus::Succeeded
-            }
-            Ok(Some(code)) => {
-                log.line(&format!("{}: failed, exit {code}", step.label));
-                tracing::error!(source = %step.source_id, code, "update step failed");
-                StepStatus::Failed {
-                    detail: format!("exit {code}"),
-                }
-            }
-            Ok(None) => {
-                log.line(&format!("{}: terminated by signal", step.label));
-                tracing::error!(source = %step.source_id, "update step terminated by signal");
-                StepStatus::Failed {
-                    detail: "terminated by signal".to_string(),
-                }
-            }
-            Err(err) => {
-                log.line(&format!("{}: failed to launch: {err:#}", step.label));
-                tracing::error!(source = %step.source_id, %err, "update step failed to launch");
-                StepStatus::Failed {
-                    detail: format!("failed to launch: {err:#}"),
-                }
-            }
-        };
-        steps.push(StepReport {
-            source_id: step.source_id.clone(),
-            label: step.label.clone(),
-            targets,
-            status,
-        });
-    }
+        })
+        .collect();
 
     let report = ExecutionReport {
         steps,
@@ -245,6 +344,111 @@ pub fn execute(
         session_summary(&report)
     ));
     report
+}
+
+/// Execute a pre-built plan, step by step, logging every command before and
+/// after. One step failing never blocks the next (roadmap behavior rules); a
+/// failed launch is reported, not raised. Infallible by design: every outcome
+/// lands in the report.
+pub fn execute(
+    plan: &ActionPlan,
+    runner: &impl StepRunner,
+    log: &mut UpdateLog,
+    tool: Option<&str>,
+) -> ExecutionReport {
+    open_session(plan, log, tool);
+    let outcomes = plan
+        .steps
+        .iter()
+        .map(|step| foreground_step(step, runner, tool))
+        .collect();
+    close_session(plan, outcomes, log)
+}
+
+/// Execute a plan with every step that declared `interactive: false` running
+/// at the same time, while the interactive ones take the terminal one after
+/// another in plan order (design §13, 2026-09-21).
+///
+/// The split is [`runs_in_background`] — the step's own declaration, never its
+/// source id (design §13, 2026-09-07). It has to be: `pacman -Syu` and an AUR
+/// helper both ask questions, and they also share pacman's database lock, so
+/// neither may run beside anything — while `flatpak update --noninteractive`
+/// and `cargo install-update -a` touch nothing pacman owns and answer nothing.
+/// A privileged step stays in the foreground whatever it declares (design
+/// §11).
+///
+/// Everything a caller can observe is unchanged from [`execute`]: the same
+/// statuses, the same log lines, in plan order. What differs is wall time, and
+/// that a background step's output is replayed after the fact instead of
+/// printed as it happens.
+///
+/// No runtime, no pool: one scoped thread per background step, exactly as the
+/// scanner runs its provider lanes (design §6). A plan has single-digit steps.
+pub fn execute_concurrent(
+    plan: &ActionPlan,
+    runner: &(impl StepRunner + Sync),
+    log: &mut UpdateLog,
+    tool: Option<&str>,
+) -> ExecutionReport {
+    open_session(plan, log, tool);
+
+    let in_background: Vec<bool> = plan
+        .steps
+        .iter()
+        .map(|s| runs_in_background(s, tool))
+        .collect();
+
+    let mut indexed: Vec<(usize, StepOutcome)> = std::thread::scope(|scope| {
+        let handles: Vec<(usize, _)> = plan
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| in_background[*i])
+            .map(|(i, step)| {
+                let argv = effective_command(step, tool);
+                // `&` because that is what it is: announced now, output later.
+                println!(":: {} &", argv.join(" "));
+                (i, scope.spawn(move || run_step(step, &argv, runner, true)))
+            })
+            .collect();
+
+        // The terminal belongs to these, one at a time, in plan order — this
+        // is where pacman asks its questions and sudo asks for a password.
+        let mut done: Vec<(usize, StepOutcome)> = plan
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !in_background[*i])
+            .map(|(i, step)| (i, foreground_step(step, runner, tool)))
+            .collect();
+
+        for (i, handle) in handles {
+            let outcome = handle.join().unwrap_or_else(|_| StepOutcome {
+                status: StepStatus::Failed {
+                    detail: "panicked".to_string(),
+                },
+                log_lines: vec![format!("{}: panicked", plan.steps[i].label)],
+                output: None,
+            });
+            done.push((i, outcome));
+        }
+        done
+    });
+
+    indexed.sort_by_key(|(i, _)| *i);
+    let outcomes: Vec<StepOutcome> = indexed.into_iter().map(|(_, o)| o).collect();
+
+    // Replay what ran behind the foreground, labelled, in plan order. Held
+    // back until now rather than printed on arrival: two steps writing to one
+    // terminal at once is how output becomes unreadable.
+    for (step, outcome) in plan.steps.iter().zip(&outcomes) {
+        if let Some(text) = &outcome.output {
+            println!("\n:: {} (ran in parallel)", step.label);
+            print!("{text}");
+        }
+    }
+
+    close_session(plan, outcomes, log)
 }
 
 fn session_summary(report: &ExecutionReport) -> String {
@@ -267,6 +471,9 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::path::Path;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     /// Returns scripted outcomes in order and records every argv it was given.
     struct ScriptedRunner {
@@ -291,6 +498,10 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(Some(0)))
         }
+
+        fn run_captured(&self, argv: &[String]) -> anyhow::Result<(Option<i32>, String)> {
+            Ok((self.run(argv)?, String::new()))
+        }
     }
 
     fn step(source: SourceId, targets: &[&str], command: &[&str]) -> ActionStep {
@@ -310,16 +521,21 @@ mod tests {
             targets: targets.iter().map(|t| t.to_string()).collect(),
             command: command.iter().map(|c| c.to_string()).collect(),
             privileged,
+            // The pacman-shaped default: asks questions, keeps the terminal.
+            interactive: true,
         }
     }
 
     fn flatpak_user_step() -> ActionStep {
-        privileged_step(
+        let mut step = privileged_step(
             SourceId::flatpak(),
             &["org.gimp.GIMP", "org.inkscape.Inkscape"],
             &["flatpak", "update", "--user", "--noninteractive"],
             false,
-        )
+        );
+        // `--noninteractive` is right there in the command.
+        step.interactive = false;
+        step
     }
 
     fn plan(steps: Vec<ActionStep>) -> ActionPlan {
@@ -610,6 +826,244 @@ mod tests {
             "{text}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- concurrent execution (`update --parallel`) ---
+
+    /// A runner for the concurrent path: `Sync`, records *how* each step ran,
+    /// and tracks how many were in flight at once — the only way to assert
+    /// that "parallel" means parallel rather than "sequential, eventually".
+    ///
+    /// Programs whose name starts with `slow` hold for `hold`; everything else
+    /// returns at once, so a test can make the last step finish first.
+    struct ParallelRunner {
+        live: AtomicUsize,
+        peak: AtomicUsize,
+        calls: Mutex<Vec<(&'static str, Vec<String>)>>,
+        /// Any step whose command contains this word exits 1. Empty = none.
+        fail: &'static str,
+        hold: Duration,
+    }
+
+    impl ParallelRunner {
+        fn new(hold: Duration, fail: &'static str) -> Self {
+            ParallelRunner {
+                live: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                calls: Mutex::new(Vec::new()),
+                fail,
+                hold,
+            }
+        }
+
+        fn code(&self, argv: &[String]) -> Option<i32> {
+            let cmd = argv.join(" ");
+            Some(if !self.fail.is_empty() && cmd.contains(self.fail) {
+                1
+            } else {
+                0
+            })
+        }
+
+        /// The programs run through one path, in the order they were called.
+        fn via(&self, how: &str) -> Vec<String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, _)| *m == how)
+                .filter_map(|(_, argv)| argv.first().cloned())
+                .collect()
+        }
+    }
+
+    impl StepRunner for ParallelRunner {
+        fn run(&self, argv: &[String]) -> anyhow::Result<Option<i32>> {
+            self.calls.lock().unwrap().push(("terminal", argv.to_vec()));
+            Ok(self.code(argv))
+        }
+
+        fn run_captured(&self, argv: &[String]) -> anyhow::Result<(Option<i32>, String)> {
+            self.calls.lock().unwrap().push(("captured", argv.to_vec()));
+            let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(live, Ordering::SeqCst);
+            if argv.first().is_some_and(|p| p.starts_with("slow")) {
+                std::thread::sleep(self.hold);
+            }
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            Ok((self.code(argv), format!("{} finished\n", argv.join(" "))))
+        }
+    }
+
+    /// A step that declared it needs nothing from the terminal.
+    fn background_step(program: &str) -> ActionStep {
+        let mut st = privileged_step(SourceId::flatpak(), &["x"], &[program, "update"], false);
+        st.label = program.to_string();
+        st.interactive = false;
+        st
+    }
+
+    #[test]
+    fn background_steps_really_do_run_at_the_same_time() {
+        let dir = sandbox("par-peak");
+        let mut log = UpdateLog::open_in(&dir).unwrap();
+        let runner = ParallelRunner::new(Duration::from_millis(150), "");
+
+        let p = plan(vec![
+            background_step("slow-a"),
+            background_step("slow-b"),
+            background_step("slow-c"),
+        ]);
+        let started = Instant::now();
+        let report = execute_concurrent(&p, &runner, &mut log, None);
+        let elapsed = started.elapsed();
+
+        assert_eq!(report.succeeded(), 3);
+        assert_eq!(
+            runner.peak.load(Ordering::SeqCst),
+            3,
+            "all three should have been in flight at once"
+        );
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "3 × 150ms sequentially is 450ms; took {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interactive_steps_keep_the_terminal_to_themselves() {
+        let dir = sandbox("par-terminal");
+        let mut log = UpdateLog::open_in(&dir).unwrap();
+        let runner = ParallelRunner::new(Duration::ZERO, "");
+
+        // pacman declares itself interactive; the other two do not.
+        let p = plan(vec![
+            step(SourceId::pacman(), &["linux"], &["pacman", "-Syu"]),
+            background_step("flatpak"),
+            background_step("cargo"),
+        ]);
+        let report = execute_concurrent(&p, &runner, &mut log, Some("sudo"));
+
+        assert_eq!(report.succeeded(), 3);
+        assert_eq!(
+            runner.via("terminal"),
+            vec!["sudo"],
+            "only pacman (behind sudo) got the real terminal"
+        );
+        assert_eq!(runner.via("captured"), vec!["flatpak", "cargo"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_report_and_the_log_stay_in_plan_order() {
+        let dir = sandbox("par-order");
+        let mut log = UpdateLog::open_in(&dir).unwrap();
+        let runner = ParallelRunner::new(Duration::from_millis(120), "");
+
+        // The first step finishes last. Nothing downstream may notice.
+        let p = plan(vec![background_step("slow-first"), background_step("fast")]);
+        let report = execute_concurrent(&p, &runner, &mut log, None);
+
+        let labels: Vec<&str> = report.steps.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, vec!["slow-first", "fast"]);
+
+        let text = log_text(&dir);
+        let first = text.find("slow-first: completed").expect("slow logged");
+        let second = text.find("fast: completed").expect("fast logged");
+        assert!(
+            first < second,
+            "log follows the plan, not the finish line:\n{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failing_background_step_does_not_take_the_others_with_it() {
+        let dir = sandbox("par-fail");
+        let mut log = UpdateLog::open_in(&dir).unwrap();
+        let runner = ParallelRunner::new(Duration::ZERO, "bad");
+
+        let p = plan(vec![
+            background_step("good"),
+            background_step("bad"),
+            background_step("also-good"),
+        ]);
+        let report = execute_concurrent(&p, &runner, &mut log, None);
+
+        assert_eq!(report.succeeded(), 2);
+        assert_eq!(
+            report.steps[1].status,
+            StepStatus::Failed {
+                detail: "exit 1".to_string()
+            }
+        );
+        assert_eq!(runner.via("captured").len(), 3, "all three still ran");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skipped_steps_stay_skipped_when_running_in_parallel() {
+        let dir = sandbox("par-skip");
+        let mut log = UpdateLog::open_in(&dir).unwrap();
+        let runner = ParallelRunner::new(Duration::ZERO, "");
+
+        // Privileged, no tool: skipped in both paths, and never handed to a
+        // thread just because it asks nothing of the terminal.
+        let mut privileged_background = background_step("flatpak-system");
+        privileged_background.privileged = true;
+
+        let p = plan(vec![privileged_background, background_step("cargo")]);
+        let report = execute_concurrent(&p, &runner, &mut log, None);
+
+        assert_eq!(report.skipped(), 1);
+        assert_eq!(report.succeeded(), 1);
+        assert_eq!(runner.via("captured"), vec!["cargo"]);
+        assert!(runner.via("terminal").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_privileged_step_stays_in_the_foreground_however_quiet_it_is() {
+        let dir = sandbox("par-priv");
+        let mut log = UpdateLog::open_in(&dir).unwrap();
+        let runner = ParallelRunner::new(Duration::ZERO, "");
+
+        // flatpak · system: answers its own prompts, but needs root. design
+        // §11 — no privileged process in the background, and sudo would ask
+        // for a password on a terminal three other steps are writing to.
+        let mut system_scope = background_step("flatpak-system");
+        system_scope.privileged = true;
+
+        let p = plan(vec![system_scope, background_step("cargo")]);
+        let report = execute_concurrent(&p, &runner, &mut log, Some("sudo"));
+
+        assert_eq!(report.succeeded(), 2);
+        assert_eq!(runner.via("terminal"), vec!["sudo"]);
+        assert_eq!(runner.via("captured"), vec!["cargo"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The production runner, on real processes: the mocks above cannot say
+    /// whether `Stdio::null()` and the two-stream capture actually behave.
+    #[test]
+    fn the_real_runner_captures_both_streams_and_hands_stdin_an_eof() {
+        let sh = |script: &str| vec!["sh".to_string(), "-c".to_string(), script.to_string()];
+
+        let (code, text) = InteractiveRunner
+            .run_captured(&sh("echo to-stdout; echo to-stderr >&2; exit 3"))
+            .unwrap();
+        assert_eq!(code, Some(3));
+        assert!(text.contains("to-stdout"), "{text}");
+        assert!(text.contains("to-stderr"), "{text}");
+
+        // A step that asks a question anyway gets EOF and finishes, rather
+        // than hanging a run with no terminal to answer on.
+        let (code, text) = InteractiveRunner
+            .run_captured(&sh("read answer || echo eof-not-a-hang"))
+            .unwrap();
+        assert_eq!(code, Some(0));
+        assert!(text.contains("eof-not-a-hang"), "{text}");
     }
 
     #[test]

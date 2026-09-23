@@ -43,6 +43,19 @@ enum Coverage {
     Everything,
 }
 
+/// One step as the planner decided it, before it becomes an `ActionStep`.
+///
+/// A named struct rather than a tuple because `privileged` and `interactive`
+/// are both bools: transposed, they would run an AUR build as root and hand
+/// pacman's conflict prompt to a thread nobody is watching.
+struct Built {
+    command: Vec<String>,
+    privileged: bool,
+    interactive: bool,
+    targets: Vec<String>,
+    label: String,
+}
+
 fn plan_for(
     scan: &ScanResult,
     is_enabled: impl Fn(&SourceId) -> bool,
@@ -71,13 +84,18 @@ fn plan_for(
         // tool, but its two installations are two commands with different
         // privilege — so a source contributes a *list* of steps (design §13,
         // 2026-09-07).
-        let built: Vec<(Vec<String>, bool, Vec<String>, String)> = match &source.kind {
-            SourceKind::Pacman => vec![(
-                pacman::update_command(),
-                true,
+        let built: Vec<Built> = match &source.kind {
+            SourceKind::Pacman => vec![Built {
+                command: pacman::update_command(),
+                privileged: true,
+                // `-Syu` asks which provider to keep, what to replace, how to
+                // resolve a conflict. Answering those is the entire reason
+                // `--noconfirm` is banned (design §3), so the step owns the
+                // terminal.
+                interactive: true,
                 targets,
-                source.id.to_string(),
-            )],
+                label: source.id.to_string(),
+            }],
             // An AUR helper is never run under sudo — it self-elevates for the
             // install step after building as the user.
             //
@@ -88,12 +106,16 @@ fn plan_for(
             // source unavailable and the loop already skipped it — but the
             // plan is what the user is asked to confirm, so it invents nothing.
             SourceKind::Aur => match scan.aur_helper.helper() {
-                Some(helper) => vec![(
-                    aur::update_command(helper),
-                    false,
+                Some(helper) => vec![Built {
+                    command: aur::update_command(helper),
+                    privileged: false,
+                    // A helper shows PKGBUILD diffs, asks whether to proceed,
+                    // and prompts for the password of the install step it
+                    // elevates for itself. It owns the terminal too.
+                    interactive: true,
                     targets,
-                    source.id.to_string(),
-                )],
+                    label: source.id.to_string(),
+                }],
                 None => continue,
             },
             // One tool, two installations, two commands with different
@@ -111,12 +133,15 @@ fn plan_for(
             // produces is ever privileged. `cargo-update` is what does the
             // updating; without it the source has no update path and the scan
             // records no updates, so this arm is not reached.
-            SourceKind::Cargo => vec![(
-                cargo::update_command(),
-                false,
+            SourceKind::Cargo => vec![Built {
+                command: cargo::update_command(),
+                privileged: false,
+                // `cargo install-update -a` asks nothing; it prints what it
+                // rebuilds and exits.
+                interactive: false,
                 targets,
-                source.id.to_string(),
-            )],
+                label: source.id.to_string(),
+            }],
             SourceKind::Flatpak => {
                 let scope_of = |name: &String| {
                     let scopes: Vec<FlatpakScope> = scan
@@ -144,26 +169,31 @@ fn plan_for(
                         // looked up. The system half asks for root, and the
                         // user sees that in the plan before confirming.
                         (!scoped.is_empty() || coverage == Coverage::Everything).then(|| {
-                            (
-                                flatpak::update_command(scope),
-                                scope.needs_privilege(),
-                                scoped,
-                                format!("{} · {}", source.id, scope.label()),
-                            )
+                            Built {
+                                command: flatpak::update_command(scope),
+                                privileged: scope.needs_privilege(),
+                                // `--noninteractive` is in the command itself:
+                                // flatpak answers its own prompts, so nothing
+                                // is lost by taking its output away.
+                                interactive: false,
+                                targets: scoped,
+                                label: format!("{} · {}", source.id, scope.label()),
+                            }
                         })
                     })
                     .collect()
             }
         };
-        for (command, needs_sudo, targets, label) in built {
-            requires_sudo |= needs_sudo;
+        for b in built {
+            requires_sudo |= b.privileged;
             steps.push(ActionStep {
                 source_id: source.id.clone(),
                 kind: ActionKind::Update,
-                targets,
-                command,
-                label,
-                privileged: needs_sudo,
+                targets: b.targets,
+                command: b.command,
+                label: b.label,
+                privileged: b.privileged,
+                interactive: b.interactive,
             });
         }
     }
@@ -222,6 +252,8 @@ pub fn plan_migration(
         command,
         // Profile data under `~` is user-owned even for a system-scope app.
         privileged: false,
+        // `mkdir -p` and `cp -aT` ask nothing.
+        interactive: false,
     };
     let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
 
@@ -332,6 +364,9 @@ pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> O
             targets,
             command,
             privileged: requires_sudo,
+            // `pacman -Rns` and `flatpak uninstall` both ask first — neither
+            // command carries a "yes to everything" flag, deliberately.
+            interactive: true,
         }],
         requires_sudo,
     })
@@ -928,6 +963,32 @@ mod tests {
         assert!(plan_removal(&r, &c).is_none());
     }
 
+    /// The split `--parallel` runs on, declared per step and never read out
+    /// of the source id — the same rule as `privileged` (design §13,
+    /// 2026-09-07), with the same failure mode if it breaks: a pacman prompt
+    /// handed to a thread with no terminal hangs the whole run.
+    #[test]
+    fn only_the_sources_that_ask_questions_own_the_terminal() {
+        let mut s = scan();
+        s.sources
+            .push(source(SourceId::aur(), SourceKind::Aur, true));
+        s.sources
+            .push(source(SourceId::cargo(), SourceKind::Cargo, true));
+        let plan = plan_full_upgrade(&s, enable_all);
+
+        let owns = |label: &str| {
+            plan.steps
+                .iter()
+                .find(|st| st.label == label)
+                .map(|st| st.interactive)
+        };
+        assert_eq!(owns("pacman"), Some(true), "-Syu asks about conflicts");
+        assert_eq!(owns("aur"), Some(true), "a helper shows diffs and asks");
+        assert_eq!(owns("cargo"), Some(false));
+        assert_eq!(owns("flatpak · user"), Some(false));
+        assert_eq!(owns("flatpak · system"), Some(false));
+    }
+
     #[test]
     fn migrate_steps_never_ask_for_privilege() {
         // Even with a pacman source id, a Migrate step stays unprivileged.
@@ -938,6 +999,7 @@ mod tests {
             targets: vec!["~/.config/x".to_string()],
             command: vec!["cp".to_string()],
             privileged: false,
+            interactive: false,
         };
         assert!(!crate::executor::needs_privilege(&step));
         assert_eq!(crate::executor::skip_reason(&step, None), None);

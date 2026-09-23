@@ -1918,6 +1918,44 @@ YYYY-MM-DD | no --noconfirm for pacman
            | PATH probe still looks for the binary, because that is what says
            | the subcommand exists. Nothing caught this because until the gate
            | fix two commits earlier, `update` executed nothing at all.
+
+2026-09-21 | `update --parallel`: the quiet sources run at once, behind a flag
+           | A run is as long as its slowest source plus every other source.
+           | flatpak and cargo spend that time on network and CPU that pacman
+           | is not using, and neither of them asks the user anything —
+           | `flatpak update` carries `--noninteractive` and
+           | `cargo install-update -a` has nothing to ask. Waiting for them in
+           | sequence buys nothing.
+           | Which steps may share the run is **declared per step**
+           | (`ActionStep::interactive`), never read from the source id — the
+           | same rule `privileged` already follows (2026-09-07, #10), and for
+           | the same reason: the next source added is quiet by accident, not
+           | by anyone's decision, and a forgotten flag must fail toward the
+           | old behaviour. Forgetting `interactive` leaves a step in the
+           | foreground, which is exactly where every step was before this.
+           | Three things stay in the foreground, one at a time, in plan order:
+           | anything interactive (`pacman -Syu` and the AUR helper both ask
+           | about conflicts and PKGBUILDs), anything **privileged** — design
+           | §11 says paclens never runs a privileged process in the
+           | background, and `sudo` reads its password from `/dev/tty` rather
+           | than stdin, so a backgrounded `flatpak update --system` would
+           | prompt into a terminal three other steps are writing to — and
+           | pacman and the helper regardless, because they share
+           | `/var/lib/pacman/db.lck` and would simply block each other.
+           | So `--parallel` overlaps exactly the steps that are quiet *and*
+           | unprivileged, which today means flatpak · user and cargo.
+           | Background output is captured and replayed after the fact,
+           | labelled, in plan order; the report and the session log are in
+           | plan order too, whatever order things finished in. Their stdin is
+           | `/dev/null`, so a step that lied about being quiet fails on EOF
+           | instead of hanging a run nobody is watching.
+           | Opt-in, and CLI-only for now. The TUI executes on a single pty
+           | (2026-08-12) and has one console to show; giving it a second one
+           | is a screen question, not an executor question, and this landed
+           | without answering it.
+           | No runtime and no pool: one scoped thread per background step,
+           | exactly as the scanner runs its provider lanes. tokio stays out
+           | (2026-08-23, "tokio dropped — it was never used").
            |
 ```
 
