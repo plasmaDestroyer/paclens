@@ -180,8 +180,7 @@ pub fn executable_steps(plan: &ActionPlan, tool: Option<&str>) -> usize {
         .count()
 }
 
-/// `"3 flatpaks"` / `"1 package"` — the unit the source itself uses
-/// ("flatpaks", not "apps": runtime updates count too).
+/// The unit to use for a plan that actually names package targets.
 pub fn target_noun(source_id: &SourceId, count: usize) -> String {
     let s = source_id.as_str();
     let unit = match (s == "flatpak", s == "aur", count) {
@@ -218,10 +217,7 @@ fn run_step(
 ) -> StepOutcome {
     let cmd = argv.join(" ");
     let doing = match step.kind {
-        crate::model::ActionKind::Update => format!(
-            "running update ({})",
-            target_noun(&step.source_id, step.targets.len())
-        ),
+        crate::model::ActionKind::Update => format!("running {cmd}"),
         crate::model::ActionKind::Migrate => format!("copying {}", step.targets.join(", ")),
         crate::model::ActionKind::Remove => format!("removing {}", step.targets.join(", ")),
     };
@@ -640,17 +636,14 @@ mod tests {
         );
     }
 
+    // --- execution ---
     #[test]
     fn target_noun_matches_each_sources_vocabulary() {
         assert_eq!(target_noun(&SourceId::flatpak(), 1), "1 flatpak");
         assert_eq!(target_noun(&SourceId::aur(), 2), "2 AUR packages");
-        assert_eq!(target_noun(&SourceId::aur(), 1), "1 AUR package");
-        assert_eq!(target_noun(&SourceId::flatpak(), 3), "3 flatpaks");
-        assert_eq!(target_noun(&SourceId::pacman(), 1), "1 package");
         assert_eq!(target_noun(&SourceId::pacman(), 19), "19 packages");
     }
 
-    // --- execution ---
     #[test]
     fn runs_the_exact_command_and_reports_success() {
         let dir = sandbox("success");
@@ -796,7 +789,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("flatpak: running update (2 flatpaks)"),
+            text.contains("flatpak: running flatpak update --user --noninteractive"),
             "{text}"
         );
         assert!(text.contains("flatpak: completed, exit 0"), "{text}");

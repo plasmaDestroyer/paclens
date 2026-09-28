@@ -15,9 +15,7 @@ use std::sync::mpsc;
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use crate::executor::{
-    self, ExecutionReport, StepReport, StepStatus, UpdateLog, skip_reason, target_noun,
-};
+use crate::executor::{self, ExecutionReport, StepReport, StepStatus, UpdateLog, skip_reason};
 use crate::model::ActionPlan;
 
 /// What the worker streams back to the event loop.
@@ -151,11 +149,7 @@ fn run_session(
 
         let argv = executor::effective_command(step, tool);
         let cmd = argv.join(" ");
-        log.line(&format!(
-            "{}: running update ({})",
-            step.label,
-            target_noun(&step.source_id, targets)
-        ));
+        log.line(&format!("{}: running {cmd}", step.label));
         tracing::info!(source = %step.source_id, command = %cmd, "executing update step (pty)");
         let _ = events.send(ExecEvent::Bytes(
             format!("\x1b[1m:: {cmd}\x1b[0m\r\n").into_bytes(),
@@ -398,6 +392,9 @@ mod tests {
         assert!(text.contains("hello"), "{text:?}");
         assert!(text.contains("got:world"), "{text:?}");
         assert_eq!(report.succeeded(), 1);
+        let log = std::fs::read_to_string(&report.log_path).unwrap();
+        assert!(log.contains("running sh -c"), "{log}");
+        assert!(!log.contains("(0 packages)"), "{log}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
