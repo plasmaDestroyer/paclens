@@ -261,9 +261,9 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let cols =
-        Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).split(inner);
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(inner);
     let left = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(cols[0]);
-    let right = Layout::vertical([Constraint::Min(5), Constraint::Length(5)]).split(cols[1]);
+    let right = Layout::vertical([Constraint::Min(5), Constraint::Length(6)]).split(cols[1]);
 
     let sources_focused = app.dash_focus() == crate::tui::app::DashPane::Sources;
     let sources_pane = subpane(theme, " sources ").border_style(if sources_focused {
@@ -611,20 +611,59 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
 
     // The full list — ↑/↓ (j/k) scroll it while the pane has focus.
     let mut lines: Vec<Line> = Vec::new();
-    let name_w = ups.iter().map(|u| u.package_name.len()).max().unwrap_or(0);
+    let max_name = ups
+        .iter()
+        .map(|u| u.package_name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let max_old = ups
+        .iter()
+        .map(|u| u.current_version.chars().count())
+        .max()
+        .unwrap_or(0);
+    let max_new = ups
+        .iter()
+        .map(|u| u.available_version.chars().count().max(1))
+        .max()
+        .unwrap_or(1);
+    let width = inner.width as usize;
+    let show_old = max_name + 2 + max_old + 3 + max_new <= width;
+    let name_w = if show_old {
+        max_name
+    } else {
+        max_name.min(width.saturating_sub(max_new + 4)).max(1)
+    };
     for u in &ups {
+        let name = if u.package_name.chars().count() > name_w {
+            format!(
+                "{}…",
+                u.package_name.chars().take(name_w - 1).collect::<String>()
+            )
+        } else {
+            u.package_name.clone()
+        };
         let new_version = if u.available_version.is_empty() {
             Span::styled("?", theme.dim)
         } else {
             Span::styled(u.available_version.clone(), theme.accent)
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:name_w$}", u.package_name), theme.primary),
+        let mut spans = vec![
+            Span::styled(format!("{name:name_w$}"), theme.primary),
             Span::raw("  "),
-            Span::styled(u.current_version.clone(), theme.dim),
-            Span::styled(format!(" {} ", theme.glyphs.arrow), theme.dim),
-            new_version,
-        ]));
+        ];
+        if show_old {
+            spans.push(Span::styled(u.current_version.clone(), theme.dim));
+        }
+        spans.push(Span::styled(
+            if show_old {
+                format!(" {} ", theme.glyphs.arrow)
+            } else {
+                format!("{} ", theme.glyphs.arrow)
+            },
+            theme.dim,
+        ));
+        spans.push(new_version);
+        lines.push(Line::from(spans));
     }
     let below = lines
         .len()
@@ -720,6 +759,24 @@ fn scanned_line(app: &App) -> Line<'static> {
 fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let rows = app.rows();
+    let installed_w = rows
+        .iter()
+        .filter_map(|r| r.installed)
+        .map(|n| n.to_string().len())
+        .max()
+        .unwrap_or(4)
+        .max(4) as u16;
+    let updates_w = rows
+        .iter()
+        .filter_map(|r| r.updates)
+        .map(|n| n.to_string().len())
+        .max()
+        .unwrap_or(3)
+        .max(3) as u16;
+    // Four gaps and the pointer use six columns in the full table. Switch
+    // before ratatui can squeeze a number into a misleading partial value.
+    let full_width = 3 + 13 + installed_w.max(5) + updates_w.max(4) + 13 + 6;
+    let compact = area.width < full_width;
 
     if rows.is_empty() {
         frame.render_widget(
@@ -731,13 +788,21 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let header = Row::new(vec![
-        Cell::from(""),
-        Cell::from("SOURCE"),
-        Cell::from(Line::from("INST").alignment(Alignment::Right)),
-        Cell::from(Line::from("UPD").alignment(Alignment::Right)),
-        Cell::from("STATUS"),
-    ])
+    let header = if compact {
+        Row::new(vec![
+            Cell::from("SOURCE"),
+            Cell::from(Line::from("INST").alignment(Alignment::Right)),
+            Cell::from(Line::from("UPD").alignment(Alignment::Right)),
+        ])
+    } else {
+        Row::new(vec![
+            Cell::from(""),
+            Cell::from("SOURCE"),
+            Cell::from(Line::from("INST").alignment(Alignment::Right)),
+            Cell::from(Line::from("UPD").alignment(Alignment::Right)),
+            Cell::from("STATUS"),
+        ])
+    }
     .style(theme.header);
 
     let body: Vec<Row> = rows
@@ -887,24 +952,66 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                     span
                 }
             };
-            let name = mark(Span::styled(r.id.clone(), theme.primary));
-            Row::new(vec![
-                Cell::from(mark(toggle)),
-                Cell::from(name),
-                Cell::from(Line::from(mark(installed)).alignment(Alignment::Right)),
-                Cell::from(Line::from(mark(updates)).alignment(Alignment::Right)),
-                Cell::from(status),
-            ])
+            let name_style = if r.enabled == Some(false) {
+                theme.dim
+            } else {
+                theme.primary
+            };
+            if compact {
+                let marker = if failed || (!app.is_scanning() && unfinished) {
+                    theme.glyphs.warning.to_string()
+                } else if r.enabled == Some(true) {
+                    format!("[{}]", theme.glyphs.check)
+                } else if r.enabled == Some(false) {
+                    "[ ]".to_string()
+                } else if r.available {
+                    theme.glyphs.available.to_string()
+                } else {
+                    theme.glyphs.unavailable.to_string()
+                };
+                Row::new(vec![
+                    Cell::from(mark(Span::styled(format!("{marker} {}", r.id), name_style))),
+                    Cell::from(Line::from(mark(installed)).alignment(Alignment::Right)),
+                    Cell::from(Line::from(mark(updates)).alignment(Alignment::Right)),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(mark(toggle)),
+                    Cell::from(mark(Span::styled(r.id.clone(), name_style))),
+                    Cell::from(Line::from(mark(installed)).alignment(Alignment::Right)),
+                    Cell::from(Line::from(mark(updates)).alignment(Alignment::Right)),
+                    Cell::from(status),
+                ])
+            }
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Min(13),
-        Constraint::Length(5),
-        Constraint::Length(4),
-        Constraint::Length(12),
-    ];
+    if area.width < installed_w + updates_w + 5 {
+        frame.render_widget(Paragraph::new("Widen terminal for counts"), area);
+        return;
+    }
+    let widths = if compact {
+        let name_w = rows
+            .iter()
+            .map(|r| r.id.chars().count() + 4)
+            .max()
+            .unwrap_or(8)
+            .max(8) as u16;
+        let name_w = name_w.min(area.width.saturating_sub(installed_w + updates_w + 4));
+        vec![
+            Constraint::Length(name_w),
+            Constraint::Length(installed_w),
+            Constraint::Length(updates_w),
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),
+            Constraint::Min(13),
+            Constraint::Length(installed_w.max(5)),
+            Constraint::Length(updates_w.max(4)),
+            Constraint::Length(13),
+        ]
+    };
 
     let table = Table::new(body, widths)
         .header(header)
@@ -2749,7 +2856,7 @@ mod tests {
 
         // Focus the pane and scroll: later rows come into view.
         app.focus_updates();
-        for _ in 0..15 {
+        for _ in 0..30 {
             app.on_next();
         }
         let text = render(&app, 96, 24);
@@ -4060,6 +4167,40 @@ mod tests {
         assert!(!text.contains("no yay, using paru"), "{text}");
         // And a healthy source is untouched.
         assert!(source_row(&text, "pacman").contains("* ok"));
+    }
+
+    #[test]
+    fn dashboard_at_80_columns_keeps_counts_and_new_versions_whole() {
+        let mut scan = scan_with(vec![upd(
+            "alsa-card-profiles",
+            "1:1.6.8-1",
+            "1:1.6.9-1",
+            SourceId::pacman(),
+        )]);
+        scan.packages = (0..1950)
+            .map(|i| pkg(&format!("pkg{i}"), SourceId::pacman()))
+            .collect();
+        let mut app = App::new(scan, Theme::none(), AppOptions::test());
+        let text = render(&app, 80, 24);
+        let row = source_row(&text, "pacman");
+        assert!(row.contains("[x] pacman"), "toggle lost:\n{text}");
+        assert!(row.contains("1950"), "installed count clipped:\n{text}");
+        assert!(row.contains(" 1 "), "update count clipped:\n{text}");
+        assert!(
+            text.contains("alsa-card-profiles"),
+            "package name clipped:\n{text}"
+        );
+        assert!(text.contains("1:1.6.9-1"), "new version clipped:\n{text}");
+        assert!(
+            !text.contains("1:1.6.8-1"),
+            "old version took the new one's space:\n{text}"
+        );
+        app.toggle_selected();
+        let text = render(&app, 80, 24);
+        assert!(
+            source_row(&text, "pacman").contains("[ ] pacman"),
+            "off state lost:\n{text}"
+        );
     }
 
     /// The dashboard table row for `name`.
