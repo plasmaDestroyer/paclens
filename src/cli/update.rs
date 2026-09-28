@@ -5,9 +5,9 @@
 //! The plan is built by the shared `crate::planner` and executed by the shared
 //! `crate::executor`, so the CLI and the TUI can never disagree (P5). The
 //! pipeline is intact (P4): the full plan prints before the prompt, nothing
-//! runs without an explicit `y`, and the per-source report hides nothing.
+//! runs without confirmation, and the per-source report hides nothing.
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 
 use crate::cli::style::Styles;
 use crate::config::Config;
@@ -107,9 +107,7 @@ fn execute_flow(plan: &ActionPlan, parallel: bool, styles: &Styles) -> anyhow::R
         styles.dim("[Y/n]")
     );
     std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    if !accepts(&answer) {
+    if !confirmed(&mut std::io::stdin().lock())? {
         println!("{}", styles.dim("cancelled — nothing executed"));
         return Ok(());
     }
@@ -231,6 +229,12 @@ fn accepts(answer: &str) -> bool {
         answer.trim().to_ascii_lowercase().as_str(),
         "" | "y" | "yes"
     )
+}
+
+/// EOF is not an empty Enter: a closed terminal must cancel the plan.
+fn confirmed(input: &mut impl BufRead) -> std::io::Result<bool> {
+    let mut answer = String::new();
+    Ok(input.read_line(&mut answer)? != 0 && accepts(&answer))
 }
 
 /// Render the whole plan block. Pure (no IO) so the no-color output is
@@ -579,6 +583,12 @@ mod tests {
         for no in ["n", "N", "no", "q", "yep", "sure"] {
             assert!(!accepts(no), "{no:?} should refuse");
         }
+    }
+
+    #[test]
+    fn eof_cancels_while_enter_confirms() {
+        assert!(matches!(confirmed(&mut &b""[..]), Ok(false)));
+        assert!(matches!(confirmed(&mut &b"\n"[..]), Ok(true)));
     }
 
     // --- the post-execution report ---
