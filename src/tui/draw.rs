@@ -1693,13 +1693,19 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     // not that anything is broken (#4).
     if !stale.is_empty() {
         for u in stale.iter().take(4) {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", u.restart_command()),
-                theme.primary,
-            )));
-            if u.session_critical {
+            if let Some(command) = u.restart_command() {
                 lines.push(Line::from(Span::styled(
-                    "  (this ends your session)".to_string(),
+                    format!("  {command}"),
+                    theme.primary,
+                )));
+            } else if u.unit.ends_with(".scope") {
+                lines.push(Line::from(Span::styled(
+                    "  log out and back in to refresh this session",
+                    theme.accent,
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {} — restart ends your session", u.unit),
                     theme.accent,
                 )));
             }
@@ -3351,7 +3357,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cleanup_screen_warns_before_it_suggests_a_session_ending_restart() {
+    fn the_cleanup_screen_never_suggests_restarting_a_session_scope() {
         use crate::analyzer::services::{StaleProcess, UnitScope};
         let mut s = scan_with(Vec::new());
         s.stale_processes = vec![
@@ -3369,6 +3375,13 @@ mod tests {
                 scope: Some(UnitScope::User),
                 file: "/usr/lib/libc.so.6".to_string(),
             },
+            StaleProcess {
+                pid: 3,
+                comm: "dbus-broker".to_string(),
+                unit: Some("dbus-broker.service".to_string()),
+                scope: Some(UnitScope::User),
+                file: "/usr/lib/libc.so.6".to_string(),
+            },
         ];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.open_cleanup();
@@ -3380,8 +3393,16 @@ mod tests {
             "command missing:\n{text}"
         );
         assert!(
-            text.contains("ends your session"),
-            "the session-critical warning must be next to its command:\n{text}"
+            text.contains("log out and back in"),
+            "scope advice missing:\n{text}"
+        );
+        assert!(
+            !text.contains("restart session-9.scope"),
+            "invalid command:\n{text}"
+        );
+        assert!(
+            !text.contains("restart dbus-broker.service"),
+            "session-ending command:\n{text}"
         );
     }
 

@@ -227,7 +227,9 @@ fn render_cleanup_with(
         out.push('\n');
         for u in &stale {
             let procs = u.processes.join(", ");
-            let warning = if u.session_critical {
+            let warning = if u.unit.ends_with(".scope") {
+                " - log out and back in to refresh this session"
+            } else if u.session_critical {
                 " - restarting this ends your session"
             } else {
                 ""
@@ -263,10 +265,12 @@ fn render_cleanup_with(
     if !pacfiles.is_empty() {
         suggestions.push(pacfiles::review_all_command(&diff));
     }
-    // Session-critical units are listed above but never suggested: a command
-    // that logs you out does not belong in a list headed "run yourself".
-    for u in stale.iter().filter(|u| !u.session_critical) {
-        suggestions.push(u.restart_command());
+    // A scope cannot be restarted, and a session-critical service must not
+    // become a casual command in a list headed "run yourself".
+    for u in &stale {
+        if let Some(command) = u.restart_command() {
+            suggestions.push(command);
+        }
     }
     if !suggestions.is_empty() {
         out.push('\n');
@@ -472,8 +476,8 @@ mod tests {
         // The one that would log you out is listed, warned about, and left
         // out of the commands.
         assert!(
-            out.contains("restarting this ends your session"),
-            "warning missing:\n{out}"
+            out.contains("log out and back in"),
+            "advice missing:\n{out}"
         );
         assert!(
             out.contains("systemctl --user restart pipewire.service"),

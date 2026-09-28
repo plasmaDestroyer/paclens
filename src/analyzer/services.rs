@@ -54,13 +54,15 @@ pub struct StaleUnit {
 }
 
 impl StaleUnit {
-    /// The command that restarts it. A user unit needs no privilege; a system
-    /// one does, and saying so is part of the suggestion.
-    pub fn restart_command(&self) -> String {
-        match self.scope {
+    /// A restart command only for a service safe to suggest restarting.
+    pub fn restart_command(&self) -> Option<String> {
+        if self.session_critical || !self.unit.ends_with(".service") {
+            return None;
+        }
+        Some(match self.scope {
             UnitScope::User => format!("systemctl --user restart {}", self.unit),
             UnitScope::System => format!("sudo systemctl restart {}", self.unit),
-        }
+        })
     }
 }
 
@@ -92,16 +94,19 @@ fn is_session_critical(unit: &str) -> bool {
 /// The unit and scope named by a cgroup v2 line, e.g.
 /// `0::/user.slice/user-1000.slice/user@1000.service/app.slice/foo.service`.
 ///
-/// Only `.service` and `.scope` leaves name something restartable; a process
-/// sitting directly in a slice does not.
+/// Only `.service` and `.scope` leaves name a unit; a process sitting directly
+/// in a slice does not. A scope is a finding, never a restart command.
 pub fn unit_from_cgroup(cgroup: &str) -> Option<(String, UnitScope)> {
     let path = cgroup.lines().find_map(|l| l.strip_prefix("0::"))?;
-    let scope = if path.contains("/user.slice/") {
+    let (parent, leaf) = path.rsplit_once('/')?;
+    let scope = if parent
+        .split('/')
+        .any(|part| part.starts_with("user@") && part.ends_with(".service"))
+    {
         UnitScope::User
     } else {
         UnitScope::System
     };
-    let leaf = path.rsplit('/').find(|s| !s.is_empty())?;
     if !(leaf.ends_with(".service") || leaf.ends_with(".scope")) {
         return None;
     }
@@ -204,7 +209,11 @@ mod tests {
         );
         assert_eq!(
             unit_from_cgroup("0::/user.slice/user-1000.slice/session-9.scope"),
-            Some(("session-9.scope".to_string(), UnitScope::User))
+            Some(("session-9.scope".to_string(), UnitScope::System))
+        );
+        assert_eq!(
+            unit_from_cgroup("0::/user.slice/user-1000.slice/user@1000.service"),
+            Some(("user@1000.service".to_string(), UnitScope::System))
         );
         // A process sitting in a bare slice names nothing restartable.
         assert_eq!(unit_from_cgroup("0::/user.slice/user-1000.slice"), None);
@@ -250,11 +259,11 @@ mod tests {
         assert_eq!(units[0].scope, UnitScope::User);
         assert_eq!(
             units[0].restart_command(),
-            "systemctl --user restart pipewire.service"
+            Some("systemctl --user restart pipewire.service".to_string())
         );
         assert_eq!(
             units[1].restart_command(),
-            "sudo systemctl restart nginx.service"
+            Some("sudo systemctl restart nginx.service".to_string())
         );
     }
 
@@ -281,6 +290,7 @@ mod tests {
         assert_eq!(units[0].unit, "nginx.service", "safe ones first");
         assert!(!units[0].session_critical);
         assert_eq!(units[1].unit, "session-9.scope");
+        assert_eq!(units[1].restart_command(), None);
         assert!(
             units[1].session_critical,
             "restarting the session scope ends the session"
