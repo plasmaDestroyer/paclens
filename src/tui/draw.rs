@@ -196,8 +196,11 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::Lo
         .map(|l| Line::from(Span::styled(l.clone(), theme.primary)))
         .collect();
     let total = lines.len();
+    let top = total
+        .saturating_sub(chunks[0].height as usize)
+        .saturating_sub(view.scroll);
     frame.render_widget(
-        Paragraph::new(lines).scroll((view.scroll as u16, 0)),
+        Paragraph::new(lines).scroll((top.min(u16::MAX as usize) as u16, 0)),
         chunks[0],
     );
 
@@ -212,7 +215,7 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::Lo
         ],
     )
     .spans;
-    let below = total.saturating_sub(view.scroll + chunks[0].height as usize);
+    let below = total.saturating_sub(top + chunks[0].height as usize);
     if below > 0 {
         spans.push(Span::styled(
             format!("   {} {below} more", g.down),
@@ -4847,13 +4850,22 @@ mod tests {
         app.open_log(text);
         let rendered = render(&app, 90, 20);
         assert!(rendered.contains("update log"), "{rendered}");
-        assert!(rendered.contains("line 0"), "{rendered}");
-        assert!(rendered.contains("more"), "position missing:\n{rendered}");
+        assert!(
+            rendered.contains("line 59"),
+            "latest line missing:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("line 0 "),
+            "opened at oldest line:\n{rendered}"
+        );
 
-        app.log_scroll(30);
+        app.log_scroll(-30);
         let rendered = render(&app, 90, 20);
-        assert!(!rendered.contains("line 0\n"), "did not scroll");
-        assert!(rendered.contains("line 30"), "{rendered}");
+        assert!(
+            rendered.contains("line 20"),
+            "did not scroll up:\n{rendered}"
+        );
+        assert!(rendered.contains("more"), "position missing:\n{rendered}");
     }
 
     // --- startup splash ---

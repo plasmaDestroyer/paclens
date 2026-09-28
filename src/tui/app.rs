@@ -159,7 +159,7 @@ pub enum InputMode {
     Exec,
 }
 
-/// The inline log viewer: file contents + scroll offset.
+/// The inline log viewer: file contents + lines scrolled up from the end.
 pub struct LogView {
     pub lines: Vec<String>,
     pub scroll: usize,
@@ -1150,7 +1150,7 @@ impl App {
     pub fn log_scroll(&mut self, delta: i64) {
         if let Some(view) = &mut self.log_view {
             let max = view.lines.len().saturating_sub(1) as i64;
-            view.scroll = (view.scroll as i64 + delta).clamp(0, max) as usize;
+            view.scroll = (view.scroll as i64 - delta).clamp(0, max) as usize;
         }
     }
 
@@ -1198,11 +1198,11 @@ impl App {
             "nothing was executed".to_string()
         } else if failed == 0 {
             format!(
-                "update finished — {executed} source{} succeeded (l for the log)",
+                "update finished — {executed} source{} succeeded (L for the log)",
                 if executed == 1 { "" } else { "s" }
             )
         } else {
-            format!("update finished — {failed} of {executed} sources FAILED (l for the log)")
+            format!("update finished — {failed} of {executed} sources FAILED (L for the log)")
         });
     }
 
@@ -1995,6 +1995,7 @@ mod tests {
         assert_eq!(app.screen(), Screen::Dashboard);
         let flash = app.flash().expect("summary flash");
         assert!(flash.contains("1 source succeeded"), "{flash}");
+        assert!(flash.contains("L for the log"), "{flash}");
     }
 
     #[test]
@@ -2023,6 +2024,7 @@ mod tests {
         app.finish_update(&report);
         let flash = app.flash().expect("summary flash");
         assert!(flash.contains("1 of 2 sources FAILED"), "{flash}");
+        assert!(flash.contains("L for the log"), "{flash}");
     }
 
     // --- package list ---
@@ -2956,9 +2958,9 @@ mod tests {
         let mut app = app();
         app.open_log("a\nb\nc".to_string());
         assert_eq!(app.input_mode(), InputMode::LogView);
-        app.log_scroll(5);
+        app.log_scroll(-5);
         assert_eq!(app.log_view().unwrap().scroll, 2); // clamped to last line
-        app.log_scroll(-10);
+        app.log_scroll(10);
         assert_eq!(app.log_view().unwrap().scroll, 0);
         app.close_log();
         assert_eq!(app.input_mode(), InputMode::Dashboard);
