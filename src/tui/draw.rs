@@ -593,7 +593,11 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
         let name = source.map(|s| s.id.to_string()).unwrap_or_default();
         // A source whose update check has not come back is not up to date;
         // it is unchecked, and the pane says which.
-        let msg = if source.is_none_or(|s| app.source_counted(&s.id)) {
+        let msg = if source.is_some_and(|s| s.scan_error.is_some()) {
+            format!("{name} scan failed")
+        } else if source.is_some_and(|s| s.updates_unknown()) {
+            format!("{name} update check unavailable")
+        } else if source.is_none_or(|s| app.source_counted(&s.id)) {
             format!("{name} is up to date")
         } else {
             format!("checking {name} for updates…")
@@ -4238,12 +4242,16 @@ mod tests {
 
     #[test]
     fn failed_scan_is_not_a_green_zero_on_dashboard() {
-        let mut scan = scan_with(Vec::new());
+        let mut scan = scan_with(vec![upd("app", "1", "2", SourceId::flatpak())]);
         scan.sources[0].scan_error = Some("checkupdates exited with code 1".to_string());
         let app = App::new(scan, Theme::none(), AppOptions::test());
         let text = render(&app, 100, 24);
-        assert!(text.contains("1 scan failed"), "headline:\n{text}");
         assert!(text.contains("scan failed") && text.contains('—'), "{text}");
+        assert!(text.contains("pacman scan failed"), "pending pane:\n{text}");
+        assert!(
+            !text.contains("pacman is up to date"),
+            "false zero:\n{text}"
+        );
     }
 
     /// A scan in flight with a *previous* scan behind it, so the estimate has
