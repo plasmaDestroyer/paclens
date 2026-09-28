@@ -380,7 +380,7 @@ impl App {
         };
         let enabled = default_toggles(&scan);
         let graph = DepGraph::build(&scan);
-        let orphans = derive_orphans(&graph, &scan, &opts);
+        let orphans = graph.orphans_ignoring(&scan, &opts.orphan_ignore);
         let overlaps = derive_overlaps(&scan, &opts);
         App {
             scan,
@@ -572,7 +572,7 @@ impl App {
 
     pub fn replace_scan(&mut self, scan: ScanResult) {
         self.graph = DepGraph::build(&scan);
-        self.orphans = derive_orphans(&self.graph, &scan, &self.opts);
+        self.orphans = self.graph.orphans_ignoring(&scan, &self.opts.orphan_ignore);
         self.cleanup_cursor = self
             .cleanup_cursor
             .min(self.orphans.len().saturating_sub(1));
@@ -1692,15 +1692,6 @@ fn scrolloff(offset: usize, cursor: usize, len: usize, viewport: usize) -> usize
     let min = (cursor + margin + 1).saturating_sub(viewport); // cursor ≥ margin from the bottom
     let max = cursor.saturating_sub(margin); // cursor ≥ margin from the top
     offset.clamp(min, max).min(len - viewport)
-}
-
-/// Orphan candidates minus the configured ignore list.
-fn derive_orphans(graph: &DepGraph, scan: &ScanResult, opts: &AppOptions) -> Vec<String> {
-    graph
-        .orphans(scan)
-        .into_iter()
-        .filter(|name| !opts.orphan_ignore.iter().any(|i| i == name))
-        .collect()
 }
 
 /// Detected overlaps at or above the configured confidence floor.

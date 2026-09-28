@@ -29,7 +29,13 @@ pub fn run(
     let graph = DepGraph::build(&scan);
     print!(
         "{}",
-        render_cleanup_with(&scan, &graph, styles, &config.cleanup.diff_prog)
+        render_cleanup_with(
+            &scan,
+            &graph,
+            styles,
+            &config.cleanup.diff_prog,
+            &config.cleanup.orphan_ignore
+        )
     );
     Ok(())
 }
@@ -38,13 +44,19 @@ pub fn run(
 /// and unit-testable, matching `status::render_status`.
 /// The diff program is the one part of the report that comes from config
 /// rather than from the scan.
-fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_prog: &str) -> String {
+fn render_cleanup_with(
+    scan: &ScanResult,
+    graph: &DepGraph,
+    s: &Styles,
+    diff_prog: &str,
+    orphan_ignore: &[String],
+) -> String {
     use crate::analyzer::pacfiles;
     let pacfiles = pacfiles::review_order(&scan.pacfiles);
     let stale = crate::analyzer::stale_units(&scan.stale_processes);
     let unowned = crate::analyzer::provenance::unowned(&scan.packages);
     let diff = pacfiles::diff_program(diff_prog, std::env::var("DIFFPROG").ok().as_deref());
-    let orphans = graph.orphans(scan);
+    let orphans = graph.orphans_ignoring(scan, orphan_ignore);
     let unused: Vec<_> = graph.unused_runtimes(scan);
     let unused_bytes: u64 = unused.iter().filter_map(|p| p.size_bytes).sum();
     let orphan_bytes: u64 = orphans
@@ -256,9 +268,6 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
     for u in stale.iter().filter(|u| !u.session_critical) {
         suggestions.push(u.restart_command());
     }
-    if !orphans.is_empty() {
-        suggestions.push(format!("sudo pacman -Rns {}", orphans.join(" ")));
-    }
     if !suggestions.is_empty() {
         out.push('\n');
         out.push_str(&s.dim("suggested - review, then run yourself:"));
@@ -266,10 +275,10 @@ fn render_cleanup_with(scan: &ScanResult, graph: &DepGraph, s: &Styles, diff_pro
         for c in &suggestions {
             out.push_str(&format!("  {c}\n"));
         }
-        if !orphans.is_empty() {
-            out.push_str(&s.dim("  (check each orphan first: paclens why <name>)"));
-            out.push('\n');
-        }
+    }
+    if !orphans.is_empty() {
+        out.push_str(&s.dim("  review each orphan: paclens why <name>"));
+        out.push('\n');
     }
     out
 }
@@ -360,7 +369,7 @@ mod tests {
 
     fn render(scan: &ScanResult) -> String {
         let graph = DepGraph::build(scan);
-        render_cleanup_with(scan, &graph, &ascii(), "")
+        render_cleanup_with(scan, &graph, &ascii(), "", &[])
     }
 
     #[test]
@@ -388,8 +397,7 @@ mod tests {
     }
 
     /// An orphan is a package installed as a dependency that nothing now
-    /// requires. It is listed with its size and a removal command, but the
-    /// command is text — and it points at `why` first.
+    /// requires. It is listed with its size and points at `why` for review.
     #[test]
     fn packages_with_no_repository_are_named_with_who_shipped_them() {
         let mut scan = scan(Vec::new(), CacheSizes::default());
@@ -496,7 +504,7 @@ mod tests {
             },
         ];
         let graph = DepGraph::build(&scan);
-        let out = render_cleanup_with(&scan, &graph, &ascii(), "meld");
+        let out = render_cleanup_with(&scan, &graph, &ascii(), "meld", &[]);
         assert!(out.contains("config leftovers"), "row missing:\n{out}");
         // Listed by the config they sit next to, not by the leftover's name.
         assert!(out.contains("/etc/pacman.conf "), "base missing:\n{out}");
@@ -543,8 +551,28 @@ mod tests {
         assert!(out.contains("1 item worth reviewing"), "{out}");
         assert!(out.contains("leftover"), "{out}");
         assert!(out.contains("2.00 KiB"), "size missing:\n{out}");
-        assert!(out.contains("sudo pacman -Rns leftover"), "{out}");
+        assert!(!out.contains("sudo pacman -Rns"), "{out}");
         assert!(out.contains("paclens why"), "why hint missing:\n{out}");
+    }
+
+    #[test]
+    fn orphan_ignore_applies_to_cli_count_and_advice() {
+        let scan = scan(
+            vec![pkg(
+                "keep-me",
+                SourceId::pacman(),
+                InstallReason::Dependency,
+                Some(2048),
+            )],
+            CacheSizes::default(),
+        );
+        let graph = DepGraph::build(&scan);
+        let out = render_cleanup_with(&scan, &graph, &ascii(), "", &["keep-me".to_string()]);
+        assert!(out.contains("orphans"), "{out}");
+        assert!(
+            !out.contains("keep-me") && !out.contains("paclens why"),
+            "{out}"
+        );
     }
 
     /// The build-cache row and its clean command follow the detected helper,

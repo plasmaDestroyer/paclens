@@ -232,6 +232,14 @@ impl DepGraph {
         out.sort();
         out
     }
+
+    /// The orphan candidates this user has not chosen to ignore.
+    pub fn orphans_ignoring(&self, scan: &ScanResult, ignore: &[String]) -> Vec<String> {
+        self.orphans(scan)
+            .into_iter()
+            .filter(|name| !ignore.contains(name))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -436,6 +444,10 @@ mod tests {
         // nothing requires it either → also an orphan candidate. Flatpak
         // packages never appear (pacman-only concept).
         assert_eq!(g.orphans(&s), vec!["leafdep", "scripter"]);
+        assert_eq!(
+            g.orphans_ignoring(&s, &["leafdep".to_string()]),
+            vec!["scripter"]
+        );
     }
 
     #[test]

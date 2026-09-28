@@ -1666,10 +1666,12 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     if sizes.pacman_cache_reclaimable_bytes != Some(0) {
         lines.push(Line::from(Span::styled("  paccache -rk3", theme.primary)));
     }
-    lines.push(Line::from(Span::styled(
-        "  flatpak uninstall --unused",
-        theme.primary,
-    )));
+    if unused_count > 0 {
+        lines.push(Line::from(Span::styled(
+            "  flatpak uninstall --unused",
+            theme.primary,
+        )));
+    }
     if let (Some(_), Some(helper)) = (sizes.aur_cache_bytes, aur_helper) {
         lines.push(Line::from(Span::styled(
             format!("  {}", helper.clean_command().join(" ")),
@@ -1736,11 +1738,7 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
     }
     if !app.cleanup_orphans().is_empty() {
         lines.push(Line::from(Span::styled(
-            format!("  sudo pacman -Rns {}", app.cleanup_orphans().join(" ")),
-            theme.primary,
-        )));
-        lines.push(Line::from(Span::styled(
-            "  (check each orphan's why first — enter on the list)",
+            "  review each orphan — enter on the list",
             theme.dim,
         )));
     }
@@ -4159,8 +4157,12 @@ mod tests {
         assert!(text.contains("paccache -rk3"), "{text}");
         assert!(text.contains("flatpak uninstall --unused"), "{text}");
         assert!(
-            text.contains("sudo pacman -Rns leafdep"),
-            "orphan command missing:\n{text}"
+            !text.contains("sudo pacman -Rns"),
+            "bulk removal suggestion:\n{text}"
+        );
+        assert!(
+            text.contains("review each orphan"),
+            "review hint missing:\n{text}"
         );
         assert!(text.contains("advisory only"), "{text}");
 
