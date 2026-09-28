@@ -83,20 +83,17 @@ fn render_detail(
     history: Option<&str>,
     s: &Styles,
 ) -> String {
-    // The report says what its source can answer; nothing here recognises an
-    // id (design §13, 2026-09-07).
-    let is_alpm = p.caps.install_reason;
     let mut out = String::new();
     out.push_str(&format!("{}\n", s.title(&p.package)));
     out.push_str(&field(s, "source", &p.source_id.to_string()));
 
-    let reason = if !is_alpm {
+    let reason = if p.source_id == crate::model::SourceId::flatpak() {
         if p.runtime {
             "flatpak runtime — shared by the apps that depend on it".to_string()
         } else {
             "flatpak app (self-contained)".to_string()
         }
-    } else {
+    } else if p.caps.install_reason {
         match p.reason {
             InstallReason::Explicit => "explicitly installed".to_string(),
             InstallReason::Dependency => match p.depth_from_explicit {
@@ -108,6 +105,8 @@ fn render_detail(
             },
             InstallReason::Unknown => "unknown".to_string(),
         }
+    } else {
+        "install reason not recorded".to_string()
     };
     out.push_str(&field(s, "reason", &reason));
     if let Some(history) = history {
@@ -148,11 +147,26 @@ fn render_detail(
             ));
         }
     }
-    out.push_str(&field(
-        s,
-        "would also remove",
-        &name_list(&p.would_remove, s),
-    ));
+    if p.source_id == crate::model::SourceId::flatpak() {
+        out.push_str(&field(
+            s,
+            "would leave unused",
+            &name_list(&p.would_remove, s),
+        ));
+        if !p.would_remove.is_empty() {
+            out.push_str(&field(
+                s,
+                "cleanup",
+                "flatpak uninstall --unused after removal",
+            ));
+        }
+    } else {
+        out.push_str(&field(
+            s,
+            "would also remove",
+            &name_list(&p.would_remove, s),
+        ));
+    }
     if !p.required_by.is_empty() {
         out.push_str(&field(s, "would break", &name_list(&p.required_by, s)));
     }
@@ -387,6 +401,19 @@ mod tests {
     }
 
     #[test]
+    fn unknown_source_does_not_inherit_flatpak_reason() {
+        let p = WhyDetail {
+            package: "tool".to_string(),
+            source_id: SourceId("other".to_string()),
+            caps: crate::model::SourceCapabilities::UNKNOWN,
+            ..base()
+        };
+        let text = render_report(&WhyReport::Found(p), false, None, &plain());
+        assert!(text.contains("install reason not recorded"), "{text}");
+        assert!(!text.contains("flatpak app"), "{text}");
+    }
+
+    #[test]
     fn flatpak_app_report_says_self_contained_with_uninstall_hint() {
         let p = WhyDetail {
             package: "org.gnome.Calculator".to_string(),
@@ -404,6 +431,9 @@ mod tests {
         );
         assert!(text.contains("flatpak"), "{text}");
         assert!(text.contains("org.gnome.Platform"), "{text}");
+        assert!(text.contains("would leave unused"), "{text}");
+        assert!(text.contains("flatpak uninstall --unused"), "{text}");
+        assert!(!text.contains("would also remove"), "{text}");
         assert!(!text.contains("unknown"), "no unclear leak: {text}");
     }
 

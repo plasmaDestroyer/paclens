@@ -2252,14 +2252,13 @@ fn why_pane_lines(
             } else {
                 Vec::new()
             };
-            let is_alpm = p.caps.install_reason;
-            let reason = if !is_alpm {
+            let reason = if p.source_id == crate::model::SourceId::flatpak() {
                 if p.runtime {
                     "flatpak runtime".to_string()
                 } else {
                     "flatpak app · self-contained".to_string()
                 }
-            } else {
+            } else if p.caps.install_reason {
                 match p.reason {
                     InstallReason::Explicit => "explicit".to_string(),
                     InstallReason::Dependency => match p.depth_from_explicit {
@@ -2268,6 +2267,8 @@ fn why_pane_lines(
                     },
                     InstallReason::Unknown => "unknown".to_string(),
                 }
+            } else {
+                "install reason not recorded".to_string()
             };
             lines.push(kv("reason", reason, theme.primary));
             // When the package arrived and how often it has moved (#8). Absent
@@ -2285,7 +2286,15 @@ fn why_pane_lines(
             // "needed by" doubles as the breakage list — removing this
             // package breaks exactly what requires it.
             lines.push(kv("needed by", names(&p.required_by), theme.primary));
-            lines.push(kv("orphans", names(&p.would_remove), theme.primary));
+            lines.push(kv(
+                if p.source_id == crate::model::SourceId::flatpak() {
+                    "unused"
+                } else {
+                    "orphans"
+                },
+                names(&p.would_remove),
+                theme.primary,
+            ));
             if !p.tree.is_empty() {
                 lines.push(Line::default());
                 lines.push(Line::from(Span::styled("chain".to_string(), theme.dim)));
@@ -3689,16 +3698,22 @@ mod tests {
     #[test]
     fn why_pane_calls_a_flatpak_app_self_contained() {
         let mut s = scan_with(Vec::new());
-        s.packages = vec![pkg("org.x.App", SourceId::flatpak())];
+        let mut app_pkg = pkg("org.x.App", SourceId::flatpak());
+        app_pkg.depends_on = vec!["org.gnome.Platform".to_string()];
+        let mut runtime = pkg("org.gnome.Platform", SourceId::flatpak());
+        runtime.runtime = true;
+        s.packages = vec![app_pkg, runtime];
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         app.on_next(); // select the flatpak-user source
         app.open_packages();
+        app.pkg_move(1); // app follows the runtime in name order
         let text = render(&app, 100, 22);
         assert!(
             text.contains("org.x.App  1"),
             "pane header missing:\n{text}"
         );
         assert!(text.contains("self-contained"), "{text}");
+        assert!(text.contains("| unused"), "{text}");
         assert!(text.contains("likely safe"), "{text}");
         assert!(text.contains("[confirmed]"), "{text}");
     }
