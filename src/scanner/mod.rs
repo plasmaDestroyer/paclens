@@ -341,6 +341,7 @@ type FlatpakLane = (
 );
 
 enum LaneResult {
+    Error(SourceId, String),
     Pacman(Vec<Package>, Vec<PendingUpdate>),
     /// What every configured repo offers — `pacman -Sl`, local and cheap.
     RepoOffers(Vec<pacman::RepoOffer>),
@@ -358,6 +359,7 @@ enum LaneResult {
 /// What the lanes have reported so far. `None` means still out.
 #[derive(Default)]
 struct Parts {
+    errors: std::collections::HashMap<SourceId, String>,
     pacman: Option<(Vec<Package>, Vec<PendingUpdate>)>,
     flatpak: Option<FlatpakLane>,
     cargo: Option<(Vec<Package>, Vec<PendingUpdate>)>,
@@ -466,7 +468,10 @@ fn assemble(
                 return;
             }
             let provider = PacmanProvider::with_checkupdates(runner, checkupdates_available);
-            let (pkgs, ups) = collect_provider(&provider, "pacman");
+            let (pkgs, ups, error) = collect_provider(&provider, "pacman");
+            if let Some(error) = error {
+                let _ = pacman_tx.send(LaneResult::Error(SourceId::pacman(), error));
+            }
             let _ = pacman_tx.send(LaneResult::Pacman(pkgs, ups));
         });
 
@@ -475,7 +480,10 @@ fn assemble(
             if !lanes.flatpak {
                 return;
             }
-            let (pkgs, ups) = collect_provider(&FlatpakProvider::new(runner), "flatpak");
+            let (pkgs, ups, error) = collect_provider(&FlatpakProvider::new(runner), "flatpak");
+            if let Some(error) = error {
+                let _ = flatpak_tx.send(LaneResult::Error(SourceId::flatpak(), error));
+            }
             let sizes = gather_profile_sizes(runner, flatpak_profile_dir, &pkgs);
             let _ = flatpak_tx.send(LaneResult::Flatpak((pkgs, ups, sizes)));
         });
@@ -492,6 +500,7 @@ fn assemble(
                 Ok(offers) => offers,
                 Err(err) => {
                     tracing::error!(error = %err, "pacman -Sl failed; no repo versions");
+                    let _ = offers_tx.send(LaneResult::Error(SourceId::pacman(), err.to_string()));
                     Vec::new()
                 }
             };
@@ -510,6 +519,8 @@ fn assemble(
                     Ok(pkgs) => pkgs,
                     Err(err) => {
                         tracing::error!(error = %err, "could not parse cargo's record");
+                        let _ =
+                            cargo_tx.send(LaneResult::Error(SourceId::cargo(), err.to_string()));
                         Vec::new()
                     }
                 },
@@ -521,6 +532,7 @@ fn assemble(
                 Ok(ups) => ups,
                 Err(err) => {
                     tracing::error!(error = %err, "cargo update check failed; no cargo updates");
+                    let _ = cargo_tx.send(LaneResult::Error(SourceId::cargo(), err.to_string()));
                     Vec::new()
                 }
             };
@@ -547,6 +559,8 @@ fn assemble(
                 Ok(names) => names,
                 Err(err) => {
                     tracing::error!(error = %err, "pacman -Qm failed; no aur source");
+                    let _ = aur_tx.send(LaneResult::Error(SourceId::pacman(), err.to_string()));
+                    let _ = aur_tx.send(LaneResult::Error(SourceId::aur(), err.to_string()));
                     Default::default()
                 }
             };
@@ -561,6 +575,7 @@ fn assemble(
                             helper = %helper.bin(),
                             "AUR update check failed; no aur updates"
                         );
+                        let _ = aur_tx.send(LaneResult::Error(SourceId::aur(), err.to_string()));
                         Vec::new()
                     }
                 }
@@ -575,6 +590,9 @@ fn assemble(
 
         for message in rx {
             match message {
+                LaneResult::Error(id, error) => {
+                    parts.errors.insert(id, error);
+                }
                 LaneResult::Pacman(pkgs, ups) => parts.pacman = Some((pkgs, ups)),
                 LaneResult::Flatpak(lane) => parts.flatpak = Some(lane),
                 LaneResult::Cargo(pkgs, ups) => parts.cargo = Some((pkgs, ups)),
@@ -678,6 +696,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             available: pacman_available,
             last_scanned: (lanes.pacman && parts.pacman_done(lanes)).then_some(now),
             accurate_updates: checkupdates_available,
+            scan_error: parts.errors.get(&SourceId::pacman()).cloned(),
         });
     }
     if config.sources.aur {
@@ -689,6 +708,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             available: aur_helper.helper().is_some() && pacman_available,
             last_scanned: (lanes.aur && parts.aur_done(lanes)).then_some(now),
             accurate_updates: true,
+            scan_error: parts.errors.get(&SourceId::aur()).cloned(),
         });
     }
     if config.sources.flatpak {
@@ -701,6 +721,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             available: flatpak_available,
             last_scanned: (lanes.flatpak && parts.flatpak_done(lanes)).then_some(now),
             accurate_updates: true,
+            scan_error: parts.errors.get(&SourceId::flatpak()).cloned(),
         });
     }
 
@@ -720,6 +741,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             available: cargo_available && can_update,
             last_scanned: (lanes.cargo && parts.cargo_done(lanes)).then_some(now),
             accurate_updates: can_update,
+            scan_error: parts.errors.get(&SourceId::cargo()).cloned(),
         });
     }
 
@@ -956,11 +978,16 @@ fn gather_profile_sizes(
 }
 
 /// Run one provider's scans, logging any failure and returning what survived.
-fn collect_provider<P: Provider>(provider: &P, label: &str) -> (Vec<Package>, Vec<PendingUpdate>) {
+fn collect_provider<P: Provider>(
+    provider: &P,
+    label: &str,
+) -> (Vec<Package>, Vec<PendingUpdate>, Option<String>) {
+    let mut error = None;
     let packages = match provider.scan_installed() {
         Ok(pkgs) => pkgs,
         Err(err) => {
             tracing::error!(source = label, error = %err, "scan_installed failed");
+            error = Some(err.to_string());
             Vec::new()
         }
     };
@@ -968,10 +995,11 @@ fn collect_provider<P: Provider>(provider: &P, label: &str) -> (Vec<Package>, Ve
         Ok(ups) => ups,
         Err(err) => {
             tracing::error!(source = label, error = %err, "scan_updates failed");
+            error = Some(err.to_string());
             Vec::new()
         }
     };
-    (packages, updates)
+    (packages, updates, error)
 }
 
 /// Fill in the current version for flatpak updates by matching app ids
@@ -1673,6 +1701,20 @@ mod tests {
             HC::None,
             None,
             &|_| {},
+        );
+        assert!(
+            scan.sources
+                .iter()
+                .find(|s| s.id == SourceId::pacman())
+                .is_some_and(|s| s.scan_error.is_some()),
+            "a failed pacman lane must not be a clean zero"
+        );
+        assert!(
+            scan.sources
+                .iter()
+                .find(|s| s.id == SourceId::flatpak())
+                .is_some_and(|s| s.scan_error.is_none()),
+            "flatpak's healthy result survives"
         );
         assert!(
             scan.packages

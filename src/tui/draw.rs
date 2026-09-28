@@ -656,9 +656,37 @@ fn scanned_span(app: &App) -> Span<'static> {
 fn summary_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let updates = app.total_updates();
+    let failed = app
+        .scan()
+        .sources
+        .iter()
+        .filter(|s| s.scan_error.is_some())
+        .count();
+    let unchecked: Vec<_> = app
+        .scan()
+        .sources
+        .iter()
+        .filter(|s| s.updates_unknown() && s.scan_error.is_none())
+        .map(|s| s.id.as_str())
+        .collect();
+    let update_word = if updates == 1 { "update" } else { "updates" };
     if !app.scan_settled() {
         Line::from(Span::styled(
             "checking for updates…".to_string(),
+            theme.accent,
+        ))
+    } else if failed > 0 {
+        let scan_word = if failed == 1 { "scan" } else { "scans" };
+        Line::from(Span::styled(
+            format!("{updates} {update_word} found · {failed} {scan_word} failed"),
+            theme.accent,
+        ))
+    } else if !unchecked.is_empty() {
+        Line::from(Span::styled(
+            format!(
+                "{updates} {update_word} found · {} unchecked",
+                unchecked.join(", ")
+            ),
             theme.accent,
         ))
     } else if updates == 0 {
@@ -720,6 +748,11 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             let warned = app
                 .scan()
                 .source_warning(&crate::model::SourceId(r.id.clone()));
+            let failed = app
+                .scan()
+                .sources
+                .iter()
+                .any(|s| s.id.as_str() == r.id && s.scan_error.is_some());
             // "no helper" rather than the generic "not found", but only when
             // the helper is actually the reason — a missing pacman takes the
             // aur source down too, and that is a different sentence.
@@ -770,16 +803,24 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             // An estimate is drawn plainly: it is moving, and the row's
             // breathing "scanning" status is what says it is not settled.
             let approx = |n: usize, theme: &Theme| Span::styled(n.to_string(), theme.dim);
-            let updates = match (r.updates, r.stale) {
-                (Some(n), true) => approx(n, theme),
-                (Some(n), false) if n > 0 => Span::styled(n.to_string(), theme.accent),
-                (Some(n), false) => Span::styled(n.to_string(), theme.dim),
-                (None, _) => waiting(theme),
+            let updates = if failed {
+                Span::styled("—", theme.dim)
+            } else {
+                match (r.updates, r.stale) {
+                    (Some(n), true) => approx(n, theme),
+                    (Some(n), false) if n > 0 => Span::styled(n.to_string(), theme.accent),
+                    (Some(n), false) => Span::styled(n.to_string(), theme.dim),
+                    (None, _) => waiting(theme),
+                }
             };
-            let installed = match (r.installed, r.stale) {
-                (Some(n), true) => approx(n, theme),
-                (Some(n), false) => Span::styled(n.to_string(), theme.primary),
-                (None, _) => waiting(theme),
+            let installed = if failed {
+                Span::styled("—", theme.dim)
+            } else {
+                match (r.installed, r.stale) {
+                    (Some(n), true) => approx(n, theme),
+                    (Some(n), false) => Span::styled(n.to_string(), theme.primary),
+                    (None, _) => waiting(theme),
+                }
             };
             // A row still being counted keeps its own dot and turns yellow —
             // the colour carries "pending", the same as it does for a pending
@@ -793,25 +834,32 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             // numbers are the previous run's, which it has to say, or a dead
             // scan would leave stale counts wearing a green ok.
             let unfinished = r.updates.is_none() || r.stale;
-            let status: Line<'static> = match (r.available, app.is_scanning(), unfinished) {
-                (true, true, true) => {
-                    // Dot and word breathe together — one glowing cell, not a
-                    // glowing dot beside a static label. Nothing moves across
-                    // the screen, which is what the spinners did wrong.
-                    let glow = pulse_style(theme, app.pulse());
-                    Line::from(Span::styled(
-                        format!("{} scanning", theme.glyphs.available),
-                        glow,
-                    ))
-                }
-                // The scan gave up before this source answered. `unchecked`
-                // rather than `last scan`: what is wrong is that this run
-                // never looked, not that the old numbers are bad.
-                (true, false, true) => Line::from(Span::styled(
-                    format!("{} unchecked", theme.glyphs.warning),
+            let status: Line<'static> = if failed {
+                Line::from(Span::styled(
+                    format!("{} scan failed", theme.glyphs.warning),
                     theme.accent,
-                )),
-                _ => Line::from(status),
+                ))
+            } else {
+                match (r.available, app.is_scanning(), unfinished) {
+                    (true, true, true) => {
+                        // Dot and word breathe together — one glowing cell, not a
+                        // glowing dot beside a static label. Nothing moves across
+                        // the screen, which is what the spinners did wrong.
+                        let glow = pulse_style(theme, app.pulse());
+                        Line::from(Span::styled(
+                            format!("{} scanning", theme.glyphs.available),
+                            glow,
+                        ))
+                    }
+                    // The scan gave up before this source answered. `unchecked`
+                    // rather than `last scan`: what is wrong is that this run
+                    // never looked, not that the old numbers are bad.
+                    (true, false, true) => Line::from(Span::styled(
+                        format!("{} unchecked", theme.glyphs.warning),
+                        theme.accent,
+                    )),
+                    _ => Line::from(status),
+                }
             };
             // Space toggles the source in/out of the plan; a clean source
             // has nothing to toggle and shows a dim dash.
@@ -2391,6 +2439,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
                 Source {
                     id: SourceId::flatpak(),
@@ -2398,6 +2447,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
                 // A configured source that cannot run: no helper on PATH.
                 Source {
@@ -2406,6 +2456,7 @@ mod tests {
                     available: false,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
             ],
             packages: vec![pkg("a", SourceId::pacman())],
@@ -3888,6 +3939,7 @@ mod tests {
             available: false,
             last_scanned: None,
             accurate_updates: false,
+            scan_error: None,
         });
         let app = App::new(s, Theme::none(), AppOptions::test());
         let text = render(&app, 110, 30);
@@ -3929,6 +3981,7 @@ mod tests {
             available: false,
             last_scanned: None,
             accurate_updates: false,
+            scan_error: None,
         });
         let mut app = App::new(s, Theme::none(), AppOptions::test());
         // Move the cursor onto the cargo row.
@@ -4136,6 +4189,16 @@ mod tests {
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         let text = render(&app, 96, 24);
         assert!(text.contains("c cleanup"), "hint missing:\n{text}");
+    }
+
+    #[test]
+    fn failed_scan_is_not_a_green_zero_on_dashboard() {
+        let mut scan = scan_with(Vec::new());
+        scan.sources[0].scan_error = Some("checkupdates exited with code 1".to_string());
+        let app = App::new(scan, Theme::none(), AppOptions::test());
+        let text = render(&app, 100, 24);
+        assert!(text.contains("1 scan failed"), "headline:\n{text}");
+        assert!(text.contains("scan failed") && text.contains('—'), "{text}");
     }
 
     /// A scan in flight with a *previous* scan behind it, so the estimate has

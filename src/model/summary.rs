@@ -79,6 +79,7 @@ mod tests {
             available,
             last_scanned: None,
             accurate_updates: true,
+            scan_error: None,
         }
     }
 

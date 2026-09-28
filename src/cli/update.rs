@@ -448,6 +448,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
                 Source {
                     id: SourceId::flatpak(),
@@ -455,6 +456,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
             ],
             packages: Vec::new(),
@@ -555,6 +557,7 @@ mod tests {
             available: true,
             last_scanned: None,
             accurate_updates: true,
+            scan_error: None,
         });
         let plan = planner::plan_full_upgrade(&s, |id| id.as_str() == "aur");
 

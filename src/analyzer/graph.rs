@@ -285,6 +285,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
                 crate::model::Source {
                     id: SourceId::aur(),
@@ -292,6 +293,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
                 crate::model::Source {
                     id: SourceId::flatpak(),
@@ -299,6 +301,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
             ],
             packages: vec![

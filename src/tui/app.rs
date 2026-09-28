@@ -807,14 +807,16 @@ impl App {
                 // as the screen says which it is.
                 let stale = !counted && self.carried.contains(&s.id);
                 let known = counted || stale;
+                let failed = s.scan_error.is_some();
                 let climb = self.climbing_count(&s.id, summary.installed);
-                let installed = known.then(|| climb.unwrap_or(summary.installed));
+                let installed = (known && !failed).then(|| climb.unwrap_or(summary.installed));
                 // A source with no update path checked nothing: it has no
                 // count to show, and "0" there reads as "none pending"
                 // (design §3). What it *has* installed is still known.
-                let updates = (known && s.available).then_some(summary.updates);
-                let enabled =
-                    (s.available && summary.updates > 0 && counted).then(|| self.is_enabled(&s.id));
+                let updates =
+                    (known && s.available && !s.updates_unknown()).then_some(summary.updates);
+                let enabled = (s.available && !failed && summary.updates > 0 && counted)
+                    .then(|| self.is_enabled(&s.id));
                 SourceRow {
                     id: s.id.to_string(),
                     installed,
@@ -1761,6 +1763,7 @@ mod tests {
                 available: true,
                 last_scanned: None,
                 accurate_updates: true,
+                scan_error: None,
             },
             Source {
                 id: SourceId::flatpak(),
@@ -1768,6 +1771,7 @@ mod tests {
                 available: true,
                 last_scanned: None,
                 accurate_updates: true,
+                scan_error: None,
             },
             // Third row: a source that is configured but cannot run — no
             // helper on PATH. It used to be flatpak-system, back when a
@@ -1778,6 +1782,7 @@ mod tests {
                 available: false,
                 last_scanned: None,
                 accurate_updates: true,
+                scan_error: None,
             },
         ]
     }
@@ -2995,6 +3000,7 @@ mod tests {
             available: true,
             last_scanned: None,
             accurate_updates: true,
+            scan_error: None,
         }]));
         assert!(app.is_enabled(&SourceId::pacman())); // toggles reset to on
     }

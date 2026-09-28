@@ -125,6 +125,17 @@ pub struct Source {
     /// in design §13.
     #[serde(default = "default_true")]
     pub accurate_updates: bool,
+    /// A command failed during this source's scan. Counts from that lane are
+    /// incomplete and must not be presented as zero.
+    #[serde(default)]
+    pub scan_error: Option<String>,
+}
+
+impl Source {
+    /// No trustworthy update count came back from this source.
+    pub fn updates_unknown(&self) -> bool {
+        self.scan_error.is_some() || (self.last_scanned.is_some() && !self.available)
+    }
 }
 
 fn default_true() -> bool {

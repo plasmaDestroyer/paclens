@@ -33,7 +33,8 @@ use super::{Package, PendingUpdate, Source};
 /// installation a flatpak lives in (design §13, 2026-09-07). A v14 cache holds
 /// `flatpak-user` / `flatpak-system` ids that nothing matches any more, so it
 /// must be discarded rather than read.
-pub const SCHEMA_VERSION: u32 = 16;
+/// v17: source scan failures are retained, so an empty failed check is not a zero.
+pub const SCHEMA_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -115,6 +116,15 @@ impl ScanResult {
     /// source cannot update, in the width a table cell allows, and this says
     /// *why* and what fixes it.
     pub fn source_note(&self, id: &super::SourceId) -> Option<String> {
+        if let Some(error) = self
+            .sources
+            .iter()
+            .find(|s| &s.id == id)?
+            .scan_error
+            .as_ref()
+        {
+            return Some(format!("{id}: scan failed - {error}"));
+        }
         if id == &super::SourceId::aur() {
             return self.aur_helper.note();
         }
@@ -128,6 +138,13 @@ impl ScanResult {
     /// row, 44 columns, the width the aur helper's own compact note is
     /// written to.
     pub fn source_note_compact(&self, id: &super::SourceId) -> Option<String> {
+        if self
+            .sources
+            .iter()
+            .any(|s| &s.id == id && s.scan_error.is_some())
+        {
+            return Some(format!("{id}: scan failed (see log)"));
+        }
         if id == &super::SourceId::aur() {
             return self.aur_helper.compact_note();
         }

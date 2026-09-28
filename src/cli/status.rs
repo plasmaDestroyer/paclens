@@ -49,7 +49,29 @@ fn is_flatpak(id: &SourceId) -> bool {
 /// deterministic and unit-testable.
 fn render_status(scan: &ScanResult, s: &Styles) -> String {
     let total = scan.updates.len();
-    let summary = if total == 0 {
+    let failed = scan
+        .sources
+        .iter()
+        .filter(|s| s.scan_error.is_some())
+        .count();
+    let unchecked: Vec<_> = scan
+        .sources
+        .iter()
+        .filter(|s| s.updates_unknown() && s.scan_error.is_none())
+        .map(|s| s.id.as_str())
+        .collect();
+    let update_word = if total == 1 { "update" } else { "updates" };
+    let summary = if failed > 0 {
+        let scan_word = if failed == 1 { "scan" } else { "scans" };
+        s.summary_updates(&format!(
+            "{total} {update_word} found · {failed} {scan_word} failed"
+        ))
+    } else if !unchecked.is_empty() {
+        s.summary_updates(&format!(
+            "{total} {update_word} found · {} unchecked",
+            unchecked.join(", ")
+        ))
+    } else if total == 0 {
         s.summary_ok("up to date")
     } else {
         let plural = if total == 1 { "" } else { "s" };
@@ -84,12 +106,13 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
         // stale pin leaves the aur source fine, and the note alone is easy to
         // read past.
         let warned = scan.source_warning(&source.id);
-        if reason.is_some() || warned {
+        if reason.is_some() || warned || source.scan_error.is_some() {
             out.push_str(&render_row_because(
                 source.id.as_str(),
                 &summary,
                 reason,
                 warned,
+                source.scan_error.is_some(),
                 s,
             ));
         } else {
@@ -141,7 +164,7 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
 /// padded to the column width *before* styling so ANSI codes never break the
 /// alignment.
 fn render_row(name: &str, summary: &SourceSummary, s: &Styles) -> String {
-    render_row_because(name, summary, None, false, s)
+    render_row_because(name, summary, None, false, false, s)
 }
 
 /// [`render_row`], with an optional reason replacing the generic "not found"
@@ -151,25 +174,34 @@ fn render_row_because(
     summary: &SourceSummary,
     reason: Option<&str>,
     warned: bool,
+    failed: bool,
     s: &Styles,
 ) -> String {
-    let installed = format!("{:>9}", summary.installed);
+    let installed = if failed {
+        s.dim(&format!("{:>9}", "—"))
+    } else {
+        format!("{:>9}", summary.installed)
+    };
     // A source with no update path checked nothing, so it has no count to
     // show — "0" there would read as "none pending" (design §3).
-    let updates = if summary.available {
+    let updates = if summary.available && !failed {
         s.updates_count(&format!("{:>7}", summary.updates), summary.updates)
     } else {
         s.dim(&format!("{:>7}", "—"))
     };
-    let status = match (summary.available, warned, reason) {
-        (true, false, _) => s.available(),
-        (true, true, _) => s.warned("ok"),
-        (false, true, reason) => s.warned(reason.unwrap_or("not found")),
-        // An explained limitation — the source lists fine, it just cannot
-        // check for updates. Grey "ok", with the `—` in the updates column
-        // and the note carrying the rest.
-        (false, false, Some(_)) => s.inactive(),
-        (false, false, None) => s.unavailable(),
+    let status = if failed {
+        s.warned("scan failed")
+    } else {
+        match (summary.available, warned, reason) {
+            (true, false, _) => s.available(),
+            (true, true, _) => s.warned("ok"),
+            (false, true, reason) => s.warned(reason.unwrap_or("not found")),
+            // An explained limitation — the source lists fine, it just cannot
+            // check for updates. Grey "ok", with the `—` in the updates column
+            // and the note carrying the rest.
+            (false, false, Some(_)) => s.inactive(),
+            (false, false, None) => s.unavailable(),
+        }
     };
     format!("  {name:<8} {installed}  {updates}  {status}")
 }
@@ -239,6 +271,7 @@ mod tests {
                     available: true,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
                 Source {
                     id: SourceId::flatpak(),
@@ -246,6 +279,7 @@ mod tests {
                     available: flatpak_ok,
                     last_scanned: None,
                     accurate_updates: true,
+                    scan_error: None,
                 },
             ],
             packages,
@@ -365,6 +399,53 @@ mod tests {
     }
 
     #[test]
+    fn failed_check_is_unknown_beside_a_healthy_source() {
+        let mut scan = scan_with(
+            vec![pkg("app", SourceId::flatpak())],
+            vec![upd("app", SourceId::flatpak())],
+            true,
+        );
+        scan.sources[0].scan_error = Some("checkupdates exited with code 1".to_string());
+        let text = render_status(&scan, &plain_styles());
+        assert!(
+            text.starts_with("paclens · 1 update found · 1 scan failed"),
+            "{text}"
+        );
+        let pacman = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("pacman "))
+            .unwrap();
+        let flatpak = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("flatpak "))
+            .unwrap();
+        assert!(
+            pacman.contains("scan failed") && pacman.contains('—'),
+            "{pacman}"
+        );
+        assert!(flatpak.contains("1") && flatpak.contains("ok"), "{flatpak}");
+        assert!(text.contains("checkupdates exited with code 1"), "{text}");
+    }
+
+    #[test]
+    fn listed_only_source_does_not_make_zero_mean_up_to_date() {
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        scan.sources.push(Source {
+            id: SourceId::cargo(),
+            kind: SourceKind::Cargo,
+            available: false,
+            last_scanned: Some(scan.scanned_at),
+            accurate_updates: false,
+            scan_error: None,
+        });
+        let text = render_status(&scan, &plain_styles());
+        assert!(
+            text.starts_with("paclens · 0 updates found · cargo unchecked"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn render_status_has_no_ansi_in_no_color_mode() {
         let s = plain_styles();
         let scan = scan_with(vec![pkg("a", SourceId::pacman())], Vec::new(), true);
@@ -384,6 +465,7 @@ mod tests {
             available: false,
             last_scanned: None,
             accurate_updates: true,
+            scan_error: None,
         });
         scan.aur_helper = HelperChoice::None;
         let out = render_status(&scan, &ascii_styles());
@@ -454,6 +536,7 @@ mod tests {
             available: false,
             last_scanned: None,
             accurate_updates: false,
+            scan_error: None,
         });
         let text = render_status(&scan, &plain_styles());
         assert!(text.contains("cargo"), "no cargo row:\n{text}");
@@ -487,6 +570,7 @@ mod tests {
             available: true,
             last_scanned: None,
             accurate_updates: true,
+            scan_error: None,
         });
         scan.aur_helper = HelperChoice::FellBack {
             configured: "yay".to_string(),
@@ -540,6 +624,7 @@ mod tests {
             available: true,
             last_scanned: None,
             accurate_updates: true,
+            scan_error: None,
         });
         scan.aur_helper = HelperChoice::Detected(AurHelper::Paru);
         let out = render_status(&scan, &ascii_styles());
@@ -571,6 +656,7 @@ mod tests {
             available: true,
             last_scanned: None,
             accurate_updates: true,
+            scan_error: None,
         });
         scan.aur_helper = HelperChoice::FellBack {
             configured: "yay".to_string(),
@@ -632,6 +718,7 @@ mod tests {
                 available,
                 last_scanned: None,
                 accurate_updates: true,
+                scan_error: None,
             });
             scan.aur_helper = choice.clone();
             let out = render_status(&scan, &ascii_styles());

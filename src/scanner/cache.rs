@@ -157,6 +157,7 @@ mod tests {
                     available: true,
                     last_scanned: Some(scanned_at),
                     accurate_updates: true,
+                    scan_error: None,
                 },
                 Source {
                     id: SourceId::flatpak(),
@@ -164,6 +165,7 @@ mod tests {
                     available: true,
                     last_scanned: Some(scanned_at),
                     accurate_updates: true,
+                    scan_error: None,
                 },
             ],
             packages: Vec::new(),
@@ -185,7 +187,8 @@ mod tests {
 
     #[test]
     fn toml_round_trip_preserves_scan_including_flatpak_scope() {
-        let scan = sample_scan(Utc::now(), SCHEMA_VERSION);
+        let mut scan = sample_scan(Utc::now(), SCHEMA_VERSION);
+        scan.sources[0].scan_error = Some("checkupdates exited with code 1".to_string());
         let text = toml::to_string(&scan).expect("serialize");
         let back: ScanResult = toml::from_str(&text).expect("deserialize");
         assert_eq!(scan, back);
