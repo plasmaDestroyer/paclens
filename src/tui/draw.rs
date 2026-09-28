@@ -1266,7 +1266,7 @@ fn render_overlaps_footer(
 // History screen (#8) — what past upgrades actually changed
 // ---------------------------------------------------------------------------
 
-/// Transactions on the left, the selected one's packages on the right. The
+/// Runs on the left, the selected one's packages on the right. The
 /// panes follow the cursor rather than a mode: moving down the list changes
 /// what the right pane shows, and ←/→ (or Enter) hands j/k to the other pane
 /// so a 300-package upgrade can be scrolled.
@@ -1276,7 +1276,11 @@ fn draw_history(frame: &mut Frame, area: Rect, app: &App) {
     let title = if transactions.is_empty() {
         " paclens · history ".to_string()
     } else {
-        format!(" paclens · history ({} transactions) ", transactions.len())
+        let count = app.history_runs().len();
+        format!(
+            " paclens · history ({count} run{}) ",
+            if count == 1 { "" } else { "s" }
+        )
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1329,7 +1333,7 @@ fn draw_history(frame: &mut Frame, area: Rect, app: &App) {
 fn render_transaction_pane(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let focused = app.history_focus() == crate::tui::app::HistoryPane::Transactions;
-    let pane = subpane(theme, " transactions ").border_style(if focused {
+    let pane = subpane(theme, " runs ").border_style(if focused {
         theme.selected
     } else {
         theme.border
@@ -1342,7 +1346,7 @@ fn render_transaction_pane(frame: &mut Frame, area: Rect, app: &App) {
         .into_iter()
         .map(|run| {
             use crate::analyzer::history;
-            let summary = history::run_summary(run);
+            let summary = history::run_summary_compact(run);
             // The marker leads: a narrow pane truncates the tail, and
             // "did not complete" is the half of the row that matters.
             let incomplete = run.iter().any(|tx| tx.completed.is_none());
@@ -4699,16 +4703,30 @@ mod tests {
     fn history_lists_transactions_newest_first_with_their_counts() {
         let app = history_app();
         let text = render(&app, 130, 20);
-        assert!(text.contains("2 transactions"), "title count:\n{text}");
+        assert!(text.contains("2 runs"), "title count:\n{text}");
         assert!(text.contains("2026-09-03 22:01"), "{text}");
         assert!(text.contains("2026-09-01 18:30"), "{text}");
-        // The column truncates at this width; the counts lead, so what
-        // survives is the part that answers "how much moved".
-        assert!(text.contains("9 upgraded, 1 installed"), "{text}");
+        assert!(text.contains("↑9 +1 −1"), "removals must fit:\n{text}");
         assert!(
             text.contains("pacman only"),
             "the flatpak caveat belongs on screen:\n{text}"
         );
+    }
+
+    #[test]
+    fn history_title_counts_runs_when_one_run_has_two_transactions() {
+        let log = "[2026-09-07T19:57:50+0530] [ALPM] transaction started\n\
+[2026-09-07T19:57:51+0530] [ALPM] upgraded vlc (1 -> 2)\n\
+[2026-09-07T19:57:52+0530] [ALPM] transaction completed\n\
+[2026-09-07T19:58:48+0530] [ALPM] transaction started\n\
+[2026-09-07T19:58:49+0530] [ALPM] installed helper (1)\n\
+[2026-09-07T19:58:50+0530] [ALPM] transaction completed\n";
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.set_history(log);
+        app.open_history();
+        let text = render(&app, 110, 24);
+        assert!(text.contains("history (1 run)"), "{text}");
+        assert!(text.contains("↑1 +1"), "{text}");
     }
 
     #[test]
@@ -4771,7 +4789,7 @@ mod tests {
         );
         app.open_history();
         let text = render(&app, 110, 20);
-        assert!(text.contains("3 upgraded"), "one row for the run:\n{text}");
+        assert!(text.contains("↑3"), "one row for the run:\n{text}");
         assert!(
             text.contains("3 transactions, ending 20:03"),
             "the grouping must say what it grouped:\n{text}"

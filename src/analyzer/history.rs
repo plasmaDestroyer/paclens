@@ -165,11 +165,34 @@ pub fn run_events(run: Run<'_>) -> Vec<&PackageEvent> {
 
 /// The run's counts as one line, over every transaction it holds.
 pub fn run_summary(run: Run<'_>) -> String {
-    let counts = run.iter().fold((0, 0, 0), |acc, tx| {
+    summarize_counts(run_counts(run))
+}
+
+fn run_counts(run: Run<'_>) -> (usize, usize, usize) {
+    run.iter().fold((0, 0, 0), |acc, tx| {
         let c = tx.counts();
         (acc.0 + c.0, acc.1 + c.1, acc.2 + c.2)
-    });
-    summarize_counts(counts)
+    })
+}
+
+/// Counts compact enough for a narrow TUI row: upgrades, installs, removals.
+pub fn run_summary_compact(run: Run<'_>) -> String {
+    let (installed, upgraded, removed) = run_counts(run);
+    let mut parts = Vec::new();
+    if upgraded > 0 {
+        parts.push(format!("↑{upgraded}"));
+    }
+    if installed > 0 {
+        parts.push(format!("+{installed}"));
+    }
+    if removed > 0 {
+        parts.push(format!("−{removed}"));
+    }
+    if parts.is_empty() {
+        "no package changes".to_string()
+    } else {
+        parts.join(" ")
+    }
 }
 
 /// The timestamp and the rest of a log line: `[2026-09-04T17:12:34+0530] …`.
@@ -400,6 +423,7 @@ mod tests {
         assert_eq!(runs.len(), 1, "the user did this once");
         let run = runs[0];
         assert_eq!(run_summary(run), "3 upgraded, 1 installed");
+        assert_eq!(run_summary_compact(run), "↑3 +1");
         assert_eq!(
             run_started(run).expect("start").format("%H:%M").to_string(),
             "19:57"
