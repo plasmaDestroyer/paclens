@@ -1,7 +1,7 @@
 //! flatpak provider (design §10).
 //!
 //! Scans installed apps across both user and system scope in one call; each
-//! package is tagged with its scoped source id from the `installation` column.
+//! package is tagged with its installation scope from the `installation` column.
 //! Columns are always requested explicitly — flatpak's default column order is
 //! not stable across versions (design §10).
 
@@ -45,17 +45,21 @@ impl Provider for FlatpakProvider<'_> {
     /// Apps *and* runtimes: `flatpak update` updates both, so both belong in
     /// the scan (the user's pending updates are often runtimes — GNOME
     /// Platform, GL drivers, themes). Runtimes can repeat rows (branches /
-    /// arches share an ID); dedup on (name, version, source).
+    /// arches share an ID); dedup on (name, version, scope).
     fn scan_installed(&self) -> Result<Vec<Package>, ProviderError> {
         let apps = self.list(&["list", "--app", LIST_COLUMNS], false)?;
         let mut runtimes = self.list(&["list", "--runtime", LIST_COLUMNS], true)?;
 
         let mut packages = apps;
         packages.append(&mut runtimes);
-        packages.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
-        packages.dedup_by(|a, b| {
-            a.name == b.name && a.version == b.version && a.source_id == b.source_id
+        packages.sort_by(|a, b| {
+            (&a.name, &a.version, a.scope.map(FlatpakScope::label)).cmp(&(
+                &b.name,
+                &b.version,
+                b.scope.map(FlatpakScope::label),
+            ))
         });
+        packages.dedup_by(|a, b| a.name == b.name && a.version == b.version && a.scope == b.scope);
         Ok(packages)
     }
 
@@ -263,6 +267,24 @@ mod tests {
         assert_eq!(pkgs.len(), 3);
         assert!(pkgs.iter().all(|p| !p.runtime));
         assert!(pkgs.iter().any(|p| p.name == "org.mozilla.firefox"));
+    }
+
+    #[test]
+    fn same_app_in_both_installations_is_two_packages() {
+        let firefox = LIST_FIXTURE.lines().next().unwrap();
+        let apps = format!(
+            "{LIST_FIXTURE}{}\n",
+            firefox.replace("\tsystem\t", "\tuser\t")
+        );
+        let runner = runner_with_lists(&apps, "");
+        let packages = FlatpakProvider::new(&runner).scan_installed().unwrap();
+        let copies: Vec<_> = packages
+            .iter()
+            .filter(|p| p.name == "org.mozilla.firefox")
+            .collect();
+        assert_eq!(copies.len(), 2);
+        assert!(copies.iter().any(|p| p.scope == Some(FlatpakScope::User)));
+        assert!(copies.iter().any(|p| p.scope == Some(FlatpakScope::System)));
     }
 
     #[test]
