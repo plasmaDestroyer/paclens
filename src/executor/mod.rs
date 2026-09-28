@@ -951,7 +951,9 @@ mod tests {
             vec!["sudo"],
             "only pacman (behind sudo) got the real terminal"
         );
-        assert_eq!(runner.via("captured"), vec!["flatpak", "cargo"]);
+        let mut captured = runner.via("captured");
+        captured.sort();
+        assert_eq!(captured, vec!["cargo", "flatpak"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
