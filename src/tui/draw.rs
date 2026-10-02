@@ -853,8 +853,8 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                         // hollow one so the state reads without relying on
                         // the grey. The `—` in the updates column and the
                         // pane's note carry the rest.
-                        (false, Some(_)) => Span::styled(
-                            format!("{} ok", theme.glyphs.unavailable),
+                        (false, Some(reason)) => Span::styled(
+                            format!("{} {reason}", theme.glyphs.unavailable),
                             theme.unavailable,
                         ),
                         (false, None) => Span::styled(
@@ -4020,7 +4020,7 @@ mod tests {
         // missing, and the fix, is the note — which waits for the cursor.
         let text = render(&app, 110, 30);
         let row = source_row(&text, "aur");
-        assert!(row.contains("ok"), "row: {row:?}");
+        assert!(row.contains("no helper"), "row: {row:?}");
         assert!(
             !row.contains("not found"),
             "the source is not missing: {row:?}"
@@ -4097,12 +4097,12 @@ mod tests {
         let text = render(&app, 110, 30);
         let row = source_row(&text, "cargo");
         // Inactive, not broken: it lists crates, it just cannot check them.
-        assert!(row.contains("ok"), "row: {row:?}");
+        assert!(!row.contains(" ok"), "row: {row:?}");
         // The hollow glyph, not the filled one — the state has to read in a
         // terminal where grey and green look alike.
         let theme = Theme::none();
         assert!(
-            row.contains(&format!("{} ok", theme.glyphs.unavailable)),
+            row.contains(&format!("{} inventory", theme.glyphs.unavailable)),
             "inactive should wear the hollow glyph: {row:?}"
         );
         assert!(

@@ -197,9 +197,9 @@ fn render_row_because(
             (true, true, _) => s.warned("ok"),
             (false, true, reason) => s.warned(reason.unwrap_or("not found")),
             // An explained limitation — the source lists fine, it just cannot
-            // check for updates. Grey "ok", with the `—` in the updates column
-            // and the note carrying the rest.
-            (false, false, Some(_)) => s.inactive(),
+            // check for updates. The cell names what is missing; the note
+            // below says what restores it.
+            (false, false, Some(reason)) => s.unavailable_because(reason),
             (false, false, None) => s.unavailable(),
         }
     };
@@ -475,7 +475,7 @@ mod tests {
             .lines()
             .find(|l| l.trim_start().starts_with("aur "))
             .expect("aur row");
-        assert!(row.contains("ok"), "row: {row:?}");
+        assert!(row.contains("no helper"), "row: {row:?}");
         assert!(
             !row.contains("not found"),
             "the source is not missing: {row:?}"
@@ -541,12 +541,12 @@ mod tests {
         let text = render_status(&scan, &plain_styles());
         assert!(text.contains("cargo"), "no cargo row:\n{text}");
         // The row says why it cannot update, in the width a table cell has…
-        // Inactive, not broken: grey "ok" with no count, and no marker.
+        // Inactive, not broken: "inventory" with no count, and no marker.
         let row = text
             .lines()
             .find(|l| l.trim_start().starts_with("cargo "))
             .expect("cargo row");
-        assert!(row.contains("ok"), "row: {row:?}");
+        assert!(row.contains("inventory"), "row: {row:?}");
         assert!(!row.contains("! "), "marked as a problem: {row:?}");
         assert!(
             !row.contains("not found"),

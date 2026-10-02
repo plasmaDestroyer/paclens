@@ -101,10 +101,9 @@ impl ScanResult {
         }
         if id == &super::SourceId::cargo() && !source.accurate_updates {
             // Not an alarm: a machine with no `cargo-update` is not broken,
-            // it just has no update path for crates. The word says what
-            // paclens did with them — listed, nothing more — and sits beside
-            // "ok" and "not found" at the same length.
-            return Some("listed");
+            // it just has no update path. "inventory" says paclens knows what
+            // is installed and checked nothing else.
+            return Some("inventory");
         }
         None
     }
@@ -149,7 +148,7 @@ impl ScanResult {
             return self.aur_helper.compact_note();
         }
         if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
-            return Some("cargo: listed only - install cargo-update".to_string());
+            return Some("cargo: inventory only - install cargo-update".to_string());
         }
         None
     }
