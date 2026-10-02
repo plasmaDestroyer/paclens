@@ -122,13 +122,12 @@ fn reverse_tree(graph: &DepGraph, name: &str, depth: u32, path: &mut Vec<String>
 }
 
 /// One renderable tree row: the drawing prefix (built from the caller's
-/// glyphs), the package name, the edge confidence, and how many siblings were
-/// hidden after this node ("… n more").
+/// glyphs), the package name, and the edge confidence. Siblings hidden by the
+/// branch cap get a row of their own, "… n more", with no confidence.
 pub struct TreeLine {
     pub prefix: String,
     pub name: String,
-    pub confidence: Confidence,
-    pub truncated: usize,
+    pub confidence: Option<Confidence>,
 }
 
 /// Flatten a reverse-dep tree into drawable rows. `glyphs` = (branch, last,
@@ -143,15 +142,22 @@ pub fn tree_lines(nodes: &[TreeNode], glyphs: (&str, &str, &str, &str)) -> Vec<T
 fn flatten(nodes: &[TreeNode], indent: &str, g: (&str, &str, &str, &str), out: &mut Vec<TreeLine>) {
     let (branch, last, pipe, blank) = g;
     for (i, node) in nodes.iter().enumerate() {
-        let is_last = i + 1 == nodes.len();
+        // A node followed by a "… n more" row is not the last row drawn.
+        let is_last = i + 1 == nodes.len() && node.truncated == 0;
         out.push(TreeLine {
             prefix: format!("{indent}{}", if is_last { last } else { branch }),
             name: node.name.clone(),
-            confidence: node.confidence,
-            truncated: node.truncated,
+            confidence: Some(node.confidence),
         });
         let child_indent = format!("{indent}{}", if is_last { blank } else { pipe });
         flatten(&node.children, &child_indent, g, out);
+        if node.truncated > 0 {
+            out.push(TreeLine {
+                prefix: format!("{indent}{last}"),
+                name: format!("… {} more", node.truncated),
+                confidence: None,
+            });
+        }
     }
 }
 
@@ -174,7 +180,8 @@ fn caveats_for(pkg: &crate::model::Package) -> Vec<String> {
     if pkg.source_id != SourceId::aur() {
         return out;
     }
-    out.push("AUR package — review PKGBUILD changes before updating".to_string());
+    // No generic "review the PKGBUILD" line: the helper shows the diff itself
+    // during the update, and a caveat on every AUR package is furniture.
     const VCS: [&str; 5] = ["-git", "-svn", "-hg", "-bzr", "-cvs"];
     if VCS.iter().any(|s| pkg.name.ends_with(s)) {
         out.push(
@@ -509,7 +516,7 @@ mod tests {
 
     // --- AUR caveats (v0.3) ---
     #[test]
-    fn aur_packages_carry_the_pkgbuild_caveat_and_alpm_rules() {
+    fn aur_packages_follow_alpm_rules_without_a_generic_caveat() {
         let mut s = scan();
         let mut foreign = pkg("timr-bin", InstallReason::Explicit, &[], &[]);
         foreign.source_id = SourceId::aur();
@@ -518,8 +525,8 @@ mod tests {
         let WhyReport::Found(d) = why(&s, &g, "timr-bin", 20) else {
             panic!("expected found")
         };
-        assert_eq!(d.caveats.len(), 1);
-        assert!(d.caveats[0].contains("review PKGBUILD"), "{:?}", d.caveats);
+        // The helper shows the PKGBUILD diff itself; no caveat repeats that.
+        assert!(d.caveats.is_empty(), "{:?}", d.caveats);
         assert_eq!(d.verdict, Verdict::LikelySafe); // alpm leaf rules apply
     }
 
@@ -533,8 +540,8 @@ mod tests {
         let WhyReport::Found(d) = why(&s, &g, "paclens-git", 20) else {
             panic!("expected found")
         };
-        assert_eq!(d.caveats.len(), 2);
-        assert!(d.caveats[1].contains("build snapshot"), "{:?}", d.caveats);
+        assert_eq!(d.caveats.len(), 1);
+        assert!(d.caveats[0].contains("build snapshot"), "{:?}", d.caveats);
     }
 
     #[test]
@@ -613,6 +620,25 @@ mod tests {
         let hidden: usize = p.tree.iter().map(|n| n.truncated).sum();
         // 10 requirers total (firefox, readline + 8 users) → 5 hidden.
         assert_eq!(hidden, 5);
+    }
+
+    #[test]
+    fn hidden_siblings_get_a_row_of_their_own() {
+        // "… n more" sat at the end of the last shown name and read as that
+        // package's own count. It is the siblings' row, drawn as one.
+        let tree = vec![TreeNode {
+            name: "a".to_string(),
+            confidence: Confidence::Confirmed,
+            children: Vec::new(),
+            truncated: 3,
+        }];
+        let rows = tree_lines(&tree, ("|- ", "`- ", "|  ", "   "));
+        let drawn: Vec<String> = rows
+            .iter()
+            .map(|r| format!("{}{}", r.prefix, r.name))
+            .collect();
+        assert_eq!(drawn, vec!["|- a", "`- … 3 more"]);
+        assert!(rows[1].confidence.is_none(), "a count is not a link");
     }
 
     #[test]

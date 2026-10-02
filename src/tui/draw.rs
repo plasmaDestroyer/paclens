@@ -2417,17 +2417,18 @@ fn why_pane_lines(
                     (g.tree_branch, g.tree_last, g.tree_pipe, g.tree_blank),
                 );
                 let total = rows.len();
+                // Only a link weaker than confirmed is marked: the verdict
+                // carries the weakest label, so unmarked means confirmed.
                 for row in rows.into_iter().take(TREE_ROWS) {
-                    let mut spans = vec![
-                        Span::styled(row.prefix, theme.dim),
-                        Span::styled(row.name, theme.primary),
-                        Span::styled(format!(" [{}]", row.confidence), theme.dim),
-                    ];
-                    if row.truncated > 0 {
-                        spans.push(Span::styled(
-                            format!("  … {} more", row.truncated),
-                            theme.dim,
-                        ));
+                    let mut spans = vec![Span::styled(row.prefix, theme.dim)];
+                    match row.confidence {
+                        Some(c) => {
+                            spans.push(Span::styled(row.name, theme.primary));
+                            if c != crate::model::Confidence::Confirmed {
+                                spans.push(Span::styled(format!(" [{c}]"), theme.dim));
+                            }
+                        }
+                        None => spans.push(Span::styled(row.name, theme.dim)),
                     }
                     lines.push(Line::from(spans));
                 }
@@ -3775,14 +3776,10 @@ mod tests {
         let text = render(&app, 100, 22);
         assert!(text.contains("glibc  1"), "pane header missing:\n{text}");
         assert!(text.contains("chain"), "chain section missing:\n{text}");
-        assert!(
-            text.contains("`- readline [confirmed]"),
-            "labeled edge missing:\n{text}"
-        );
-        assert!(
-            text.contains("`- bash [confirmed]"),
-            "nested edge missing:\n{text}"
-        );
+        // Confirmed links go unmarked; the verdict carries the label.
+        assert!(text.contains("`- readline"), "edge missing:\n{text}");
+        assert!(text.contains("`- bash"), "nested edge missing:\n{text}");
+        assert!(!text.contains("readline [confirmed]"), "{text}");
     }
 
     #[test]

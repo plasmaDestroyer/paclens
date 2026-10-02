@@ -83,114 +83,120 @@ fn render_detail(
     history: Option<&str>,
     s: &Styles,
 ) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("{}\n", s.title(&p.package)));
-    out.push_str(&field(s, "source", &p.source_id.to_string()));
+    let flatpak = p.source_id == crate::model::SourceId::flatpak();
+    // The answer first: the verdict, wearing the weakest link's label (P3).
+    // That label is also why tree edges below go unmarked when confirmed —
+    // a confirmed verdict means every link in it is confirmed.
+    let verdict = match p.verdict {
+        Verdict::LikelySafe => s.summary_ok(&p.verdict.to_string()),
+        Verdict::IsADependency => s.summary_updates(&p.verdict.to_string()),
+        Verdict::Unclear => s.error(&p.verdict.to_string()),
+    };
+    let mut out = format!(
+        "{} {} {verdict} {}\n",
+        s.title(&p.package),
+        s.dim(s.bullet()),
+        s.dim(&format!("[{}]", p.confidence))
+    );
 
-    let reason = if p.source_id == crate::model::SourceId::flatpak() {
+    let reason = if flatpak {
         if p.runtime {
-            "flatpak runtime — shared by the apps that depend on it".to_string()
+            "runtime, shared by the apps that depend on it".to_string()
         } else {
-            "flatpak app (self-contained)".to_string()
+            "app (self-contained)".to_string()
         }
     } else if p.caps.install_reason {
         match p.reason {
             InstallReason::Explicit => "explicitly installed".to_string(),
             InstallReason::Dependency => match p.depth_from_explicit {
                 Some(d) => format!(
-                    "installed as a dependency ({d} hop{} from an explicit install)",
+                    "dependency, {d} hop{} from an explicit install",
                     if d == 1 { "" } else { "s" }
                 ),
-                None => "installed as a dependency (nothing explicit reaches it)".to_string(),
+                None => "dependency, nothing explicit reaches it".to_string(),
             },
-            InstallReason::Unknown => "unknown".to_string(),
+            InstallReason::Unknown => "install reason unknown".to_string(),
         }
     } else {
         "install reason not recorded".to_string()
     };
-    out.push_str(&field(s, "reason", &reason));
+    out.push_str(&format!(
+        "  {} {} {reason}\n",
+        p.source_id,
+        s.dim(s.bullet())
+    ));
     if let Some(history) = history {
         out.push_str(&field(s, "history", &s.dim(history)));
-    }
-    // A removal hint only where the source has a one-liner worth printing,
-    // and never for a runtime — removing one breaks whatever shares it.
-    if let (Some(hint), false) = (p.caps.removal_hint, p.runtime) {
-        out.push_str(&field(s, "removal", &format!("{hint} {}", p.package)));
     }
     for caveat in &p.caveats {
         out.push_str(&field(s, "caveat", &s.summary_updates(caveat)));
     }
 
-    out.push_str(&field(s, "required by", &name_list(&p.required_by, s)));
-    if show_transitive && !p.tree.is_empty() {
-        out.push_str(&field(s, "chain", ""));
-        for line in tree_lines(&p.tree, s.tree_glyphs()) {
-            let more = if line.truncated > 0 {
-                s.dim(&format!("  … {} more", line.truncated))
-            } else {
-                String::new()
-            };
-            out.push_str(&format!(
-                "    {}{} {}{more}\n",
-                s.dim(&line.prefix),
-                line.name,
-                s.dim(&format!("[{}]", line.confidence)),
-            ));
-        }
-        if p.transitive_required_by.len() > p.required_by.len() {
-            out.push_str(&format!(
-                "    {}\n",
-                s.dim(&format!(
-                    "{} packages depend on this in total",
-                    p.transitive_required_by.len()
-                ))
-            ));
-        }
-    }
-    if p.source_id == crate::model::SourceId::flatpak() {
-        out.push_str(&field(
-            s,
-            "would leave unused",
-            &name_list(&p.would_remove, s),
-        ));
-        if !p.would_remove.is_empty() {
-            out.push_str(&field(
-                s,
-                "cleanup",
-                "flatpak uninstall --unused after removal",
-            ));
+    let tree = show_transitive && !p.tree.is_empty();
+    let needed = if p.required_by.is_empty() {
+        "nothing".to_string()
+    } else if tree {
+        let direct = p.required_by.len();
+        let total = p.transitive_required_by.len();
+        if total > direct {
+            format!("{direct} directly {} {total} in total", s.bullet())
+        } else {
+            format!("{direct} directly")
         }
     } else {
-        out.push_str(&field(
-            s,
-            "would also remove",
-            &name_list(&p.would_remove, s),
-        ));
-    }
-    if !p.required_by.is_empty() {
-        out.push_str(&field(s, "would break", &name_list(&p.required_by, s)));
+        name_list(&p.required_by, s)
+    };
+    out.push_str(&field(s, "needed by", &needed));
+    if tree {
+        for line in tree_lines(&p.tree, s.tree_glyphs()) {
+            let label = match line.confidence {
+                Some(c) if c != crate::model::Confidence::Confirmed => {
+                    format!(" {}", s.dim(&format!("[{c}]")))
+                }
+                _ => String::new(),
+            };
+            let name = if line.confidence.is_some() {
+                line.name
+            } else {
+                s.dim(&line.name)
+            };
+            out.push_str(&format!("    {}{name}{label}\n", s.dim(&line.prefix)));
+        }
     }
 
-    let verdict = match p.verdict {
-        Verdict::LikelySafe => s.summary_ok(&p.verdict.to_string()),
-        Verdict::IsADependency => s.summary_updates(&p.verdict.to_string()),
-        Verdict::Unclear => s.error(&p.verdict.to_string()),
+    let removing = if flatpak {
+        if p.would_remove.is_empty() {
+            "leaves nothing unused".to_string()
+        } else {
+            format!(
+                "leaves {} unused {} then flatpak uninstall --unused",
+                name_list(&p.would_remove, s),
+                s.bullet()
+            )
+        }
+    } else {
+        let breaks = match p.required_by.len() {
+            0 => "breaks nothing".to_string(),
+            n => format!("breaks {n}"),
+        };
+        format!(
+            "{breaks} {} orphans {}",
+            s.bullet(),
+            name_list(&p.would_remove, s)
+        )
     };
-    out.push_str(&format!(
-        "  {}   {} {}\n",
-        s.dim(&format!("{:18}", "verdict:")),
-        verdict,
-        s.dim(&format!("[{}]", p.confidence))
-    ));
+    out.push_str(&field(s, "removing", &removing));
+    // A removal hint only where the source has a one-liner worth printing,
+    // and never for a runtime — removing one breaks whatever shares it.
+    if let (Some(hint), false) = (p.caps.removal_hint, p.runtime) {
+        out.push_str(&field(s, "removal", &format!("{hint} {}", p.package)));
+    }
     out
 }
 
-/// `  label:   value` with the label dimmed and aligned.
+/// `  label      value`, the label dimmed and padded to one column.
 fn field(s: &Styles, label: &str, value: &str) -> String {
-    format!(
-        "  {}   {value}\n",
-        s.dim(&format!("{:18}", format!("{label}:")))
-    )
+    format!("  {} {value}\n", s.dim(&format!("{label:10}")))
 }
 
 /// Comma list, capped at 8 names with a dim "… n more"; "nothing" when empty.
@@ -238,12 +244,13 @@ mod tests {
     #[test]
     fn explicit_safe_report_matches_the_spec_shape() {
         let text = render_report(&WhyReport::Found(base()), true, None, &plain());
-        assert!(text.starts_with("firefox\n"), "{text}");
-        assert!(text.contains("source:"), "{text}");
-        assert!(text.contains("explicitly installed"), "{text}");
-        assert!(text.contains("required by"), "{text}");
-        assert!(text.contains("nothing"), "{text}");
-        assert!(text.contains("likely safe [confirmed]"), "{text}");
+        // The verdict leads; the facts behind it follow.
+        assert!(
+            text.starts_with("firefox · likely safe [confirmed]\n"),
+            "{text}"
+        );
+        assert!(text.contains("pacman · explicitly installed"), "{text}");
+        assert!(text.contains("needed by  nothing"), "{text}");
         assert!(!text.contains('\u{1b}'));
     }
 
@@ -285,22 +292,27 @@ mod tests {
         };
         let text = render_report(&WhyReport::Found(p), true, None, &plain());
         assert!(
-            text.contains("installed as a dependency (1 hop from an explicit install)"),
+            text.contains("dependency, 1 hop from an explicit install"),
             "{text}"
         );
-        assert!(text.contains("firefox, readline"), "{text}");
-        assert!(text.contains("chain:"), "{text}");
-        assert!(text.contains("├─ firefox [confirmed]"), "{text}");
-        assert!(text.contains("└─ readline [confirmed]"), "{text}");
         assert!(
-            text.contains("   └─ bash [confirmed]"),
+            text.contains("needed by  2 directly · 3 in total"),
+            "{text}"
+        );
+        // Confirmed links go unmarked: the verdict's label covers them.
+        assert!(text.contains("├─ firefox\n"), "{text}");
+        assert!(text.contains("└─ readline\n"), "{text}");
+        assert!(
+            text.contains("   └─ bash\n"),
             "nested indent missing:\n{text}"
         );
         assert!(
-            text.contains("3 packages depend on this in total"),
+            !text.contains("] \n") && !text.contains("firefox ["),
             "{text}"
         );
-        assert!(text.contains("would break"), "{text}");
+        assert!(text.contains("removing   breaks 2"), "{text}");
+        // Each fact once: the dependents are not listed a second time.
+        assert_eq!(text.matches("firefox").count(), 1, "{text}");
         assert!(text.contains("is a dependency [confirmed]"), "{text}");
     }
 
@@ -320,8 +332,8 @@ mod tests {
         };
         let on = render_report(&WhyReport::Found(p.clone()), true, None, &plain());
         let off = render_report(&WhyReport::Found(p), false, None, &plain());
-        assert!(on.contains("chain:"), "{on}");
-        assert!(!off.contains("chain:"), "{off}");
+        assert!(on.contains("─ "), "{on}");
+        assert!(!off.contains("─ "), "{off}");
     }
 
     #[test]
@@ -343,10 +355,10 @@ mod tests {
     fn history_renders_as_a_field_and_is_omitted_when_the_log_is_silent() {
         let summary = "installed 2026-05-29, upgraded once, last 2026-09-03";
         let with = render_report(&WhyReport::Found(base()), true, Some(summary), &plain());
-        assert!(with.contains("history:"), "{with}");
+        assert!(with.contains("history "), "{with}");
         assert!(with.contains(summary), "{with}");
         let without = render_report(&WhyReport::Found(base()), true, None, &plain());
-        assert!(!without.contains("history:"), "{without}");
+        assert!(!without.contains("history "), "{without}");
     }
 
     #[test]
@@ -363,13 +375,12 @@ mod tests {
         let p = WhyDetail {
             package: "timr-bin".to_string(),
             source_id: SourceId::aur(),
-            caveats: vec!["AUR package — review PKGBUILD changes before updating".to_string()],
+            caveats: vec!["VCS package — the version is a build snapshot".to_string()],
             ..base()
         };
         let text = render_report(&WhyReport::Found(p), true, None, &plain());
         assert!(text.contains("aur"), "{text}");
-        assert!(text.contains("caveat:"), "{text}");
-        assert!(text.contains("review PKGBUILD"), "{text}");
+        assert!(text.contains("caveat     VCS package"), "{text}");
         assert!(
             text.contains("explicitly installed"),
             "aur must use the alpm reason wording:\n{text}"
@@ -424,16 +435,17 @@ mod tests {
             ..base()
         };
         let text = render_report(&WhyReport::Found(p), true, None, &plain());
-        assert!(text.contains("flatpak app (self-contained)"), "{text}");
+        assert!(text.contains("flatpak · app (self-contained)"), "{text}");
         assert!(
             text.contains("flatpak uninstall org.gnome.Calculator"),
             "{text}"
         );
         assert!(text.contains("flatpak"), "{text}");
         assert!(text.contains("org.gnome.Platform"), "{text}");
-        assert!(text.contains("would leave unused"), "{text}");
+        // `flatpak uninstall` leaves the runtime installed; it only goes unused.
+        assert!(text.contains("leaves org.gnome.Platform unused"), "{text}");
         assert!(text.contains("flatpak uninstall --unused"), "{text}");
-        assert!(!text.contains("would also remove"), "{text}");
+        assert!(!text.contains("orphans"), "{text}");
         assert!(!text.contains("unknown"), "no unclear leak: {text}");
     }
 
@@ -457,7 +469,7 @@ mod tests {
             ..base()
         };
         let text = render_report(&WhyReport::Found(p), true, None, &plain());
-        assert!(text.contains("flatpak runtime"), "{text}");
+        assert!(text.contains("flatpak · runtime"), "{text}");
         assert!(
             text.contains("org.gnome.Calculator [inferred]"),
             "tree edge label missing: {text}"
