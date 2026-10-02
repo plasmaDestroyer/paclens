@@ -56,7 +56,7 @@ pub fn run(
     };
     let report =
         analyzer::migrate::report(&scan, candidate, &config.overlap.extra_mappings, direction);
-    print!("{}", render_report(&report, candidate, styles));
+    print!("{}", render_report(&report, candidate, execute, styles));
     if !execute {
         return Ok(());
     }
@@ -214,7 +214,15 @@ fn find<'a>(overlaps: &'a [OverlapCandidate], name: &str) -> Option<&'a OverlapC
     })
 }
 
-fn render_report(r: &MigrationReport, candidate: &OverlapCandidate, s: &Styles) -> String {
+/// The report. Under `--run` the execution plan follows with the exact,
+/// backed-up commands, so the manual steps — the same copy without the
+/// backup — are left out rather than shown twice with different safety.
+fn render_report(
+    r: &MigrationReport,
+    candidate: &OverlapCandidate,
+    run: bool,
+    s: &Styles,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "{} {} {} {}\n",
@@ -259,6 +267,13 @@ fn render_report(r: &MigrationReport, candidate: &OverlapCandidate, s: &Styles) 
         out.push_str(&field(s, "", &format!("{} {to_part}", s.arrow())));
     }
 
+    out.push('\n');
+    for w in &r.warnings {
+        out.push_str(&format!("  {} {w}\n", s.warn("!")));
+    }
+    if run {
+        return out;
+    }
     out.push_str(&format!("\n{}\n", s.title("manual steps")));
     let mut n = 1;
     let mut step = |text: &str, out: &mut String| {
@@ -281,13 +296,9 @@ fn render_report(r: &MigrationReport, candidate: &OverlapCandidate, s: &Styles) 
     );
     step(&removal_hint(r.direction, candidate), &mut out);
 
-    out.push('\n');
-    for w in &r.warnings {
-        out.push_str(&format!("  {} {w}\n", s.warn("!")));
-    }
     out.push_str(&format!(
         "\n{}\n",
-        s.dim("advisory only — paclens copies and removes nothing")
+        s.dim("--run copies these with a backup first, then offers the removal")
     ));
     out
 }
@@ -409,7 +420,7 @@ mod tests {
                 Confidence::Inferred,
             ),
         ]);
-        let text = render_report(&r, &candidate(), &plain());
+        let text = render_report(&r, &candidate(), false, &plain());
         assert!(text.contains("migrate Firefox → flatpak"), "{text}");
         assert!(text.contains("[confirmed]"), "{text}");
         assert!(text.contains("~/.mozilla  1.12 GiB"), "{text}");
@@ -424,7 +435,16 @@ mod tests {
         assert!(text.contains("3. launch the flatpak side"), "{text}");
         assert!(text.contains("paclens why firefox"), "{text}");
         assert!(text.contains("! close Firefox"), "{text}");
-        assert!(text.contains("advisory only"), "{text}");
+        // The report never claims paclens copies nothing: --run does.
+        assert!(!text.contains("advisory only"), "{text}");
+        assert!(text.contains("--run copies these with a backup"), "{text}");
+
+        // Under --run the backed-up plan follows, so the manual copy is not
+        // shown a second time — but the warnings still are.
+        let run = render_report(&r, &candidate(), true, &plain());
+        assert!(!run.contains("manual steps"), "{run}");
+        assert!(!run.contains("cp -aT"), "{run}");
+        assert!(run.contains("! close Firefox"), "{run}");
     }
 
     #[test]
@@ -437,7 +457,7 @@ mod tests {
             Some(300_000_000),
             Confidence::Confirmed,
         )]);
-        let text = render_report(&r, &candidate(), &plain());
+        let text = render_report(&r, &candidate(), false, &plain());
         assert!(text.contains("(exists, 286.10 MiB)"), "{text}");
     }
 
@@ -452,7 +472,7 @@ mod tests {
             Confidence::Inferred,
         )]);
         r.direction = Direction::ToNative;
-        let text = render_report(&r, &candidate(), &plain());
+        let text = render_report(&r, &candidate(), false, &plain());
         assert!(
             text.contains("cp -aT ~/.var/app/org.videolan.VLC/config/vlc ~/.config/vlc"),
             "{text}"
@@ -465,7 +485,7 @@ mod tests {
 
     #[test]
     fn empty_mappings_short_circuit() {
-        let text = render_report(&report(Vec::new()), &candidate(), &plain());
+        let text = render_report(&report(Vec::new()), &candidate(), false, &plain());
         assert!(text.contains("nothing to migrate"), "{text}");
         assert!(!text.contains("manual steps"), "{text}");
     }

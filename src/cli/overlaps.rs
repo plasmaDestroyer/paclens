@@ -68,7 +68,7 @@ fn render_overlaps(
     if !shown.is_empty() {
         out.push_str(&format!(
             "\n{}\n",
-            s.dim("advisory only — paclens never removes anything")
+            s.dim("paclens migrate <name> shows where each side keeps its data")
         ));
     }
     out
@@ -253,7 +253,7 @@ mod tests {
         assert!(text.contains("known map [confirmed]"), "{text}");
         assert!(text.contains("native (explicit install)"), "{text}");
         assert!(text.contains("sandboxing"), "{text}");
-        assert!(text.contains("advisory only"), "{text}");
+        assert!(!text.contains("never removes"), "{text}");
         assert!(!text.contains('\u{1b}'));
     }
 

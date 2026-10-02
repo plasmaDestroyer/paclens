@@ -1363,7 +1363,7 @@ fn render_overlaps_footer(
                     ("q", "quit"),
                 ],
             ),
-            "   advisory only — decide, then act yourself",
+            "   enter shows the migration report",
         )
     };
     line.spans.push(Span::styled(note, theme.dim));
@@ -3879,7 +3879,7 @@ mod tests {
             text.contains("native — explicitly installed"),
             "primary heuristic missing:\n{text}"
         );
-        assert!(text.contains("advisory only"), "{text}");
+        assert!(text.contains("enter shows the migration report"), "{text}");
         assert!(text.contains("esc back"), "{text}");
     }
 
@@ -3903,7 +3903,10 @@ mod tests {
             "target annotation missing:\n{text}"
         );
         assert!(text.contains("! close Firefox everywhere"), "{text}");
-        assert!(text.contains("! backup both sides"), "{text}");
+        assert!(
+            text.contains("! copying by hand? back up both sides"),
+            "{text}"
+        );
         assert!(
             !text.contains("sandboxing"),
             "tradeoff must be gone:\n{text}"

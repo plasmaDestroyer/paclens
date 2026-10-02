@@ -158,8 +158,10 @@ pub fn report(
         "close {} everywhere before copying anything",
         candidate.display_name
     ));
-    warnings
-        .push("backup both sides first — this report is advisory, nothing is verified".to_string());
+    warnings.push(
+        "copying by hand? back up both sides first — a paclens run stages its own backup"
+            .to_string(),
+    );
     if let (Some(n), Some(f)) = (
         &candidate.tradeoff.native_version,
         &candidate.tradeoff.flatpak_version,
