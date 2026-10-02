@@ -70,30 +70,18 @@ pub struct Theme {
 
 impl Theme {
     /// Pick a theme from the config value and the `--no-color` flag. `--no-color`
-    /// always wins, as does `color_theme = "none"`.
+    /// always wins, as does `color_theme = "none"`. `dark` and `light` are one
+    /// palette: ANSI named colours, resolved by the terminal's own scheme.
     pub fn resolve(theme: ColorTheme, no_color: bool) -> Self {
         if no_color || theme == ColorTheme::None {
             Self::none()
-        } else if theme == ColorTheme::Light {
-            Self::light()
         } else {
             Self::dark()
         }
     }
 
-    /// Dark and light currently share one adaptive palette: ANSI named colors and
-    /// modifiers, resolved by the terminal's own scheme. This keeps the look
-    /// minimal and the variants honest rather than hard-coded RGB; they can
-    /// diverge later if a real need appears.
+    /// The colour palette.
     pub fn dark() -> Self {
-        Self::colored()
-    }
-
-    pub fn light() -> Self {
-        Self::colored()
-    }
-
-    fn colored() -> Self {
         Theme {
             border_set: border::ROUNDED,
             glyphs: UNICODE,

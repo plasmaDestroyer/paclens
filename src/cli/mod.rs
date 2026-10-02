@@ -128,7 +128,8 @@ impl From<MigrateTarget> for crate::model::Direction {
 
 /// Parse args, load config, initialize logging, and dispatch.
 pub fn run() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.no_color |= no_color_requested(std::env::var_os("NO_COLOR"));
     let stderr_tty = std::io::stderr().is_terminal();
 
     // Until the config is loaded we don't know the theme, so assume the default
@@ -286,6 +287,11 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// The `NO_COLOR` convention (no-color.org): set and non-empty means no colour.
+fn no_color_requested(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
 /// Map a fallible handler to an exit code, printing the error chain on failure.
 fn report(result: anyhow::Result<()>, styles: &Styles) -> ExitCode {
     match result {
@@ -306,6 +312,13 @@ mod tests {
     fn cli_definition_is_valid() {
         // Catches conflicting args, bad defaults, etc. at test time.
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn no_color_env_needs_a_non_empty_value() {
+        assert!(no_color_requested(Some("1".into())));
+        assert!(!no_color_requested(Some("".into())), "empty means unset");
+        assert!(!no_color_requested(None));
     }
 
     #[test]

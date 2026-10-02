@@ -28,7 +28,9 @@ log_level = "info"
 aur_helper = ""
 
 # Color theme: "dark", "light", "none"
-# "none" disables colors and uses ASCII box drawing.
+# "dark" and "light" are the same palette — it follows your terminal's colors.
+# "none" disables colors and uses ASCII box drawing, as do --no-color and a
+# non-empty NO_COLOR environment variable.
 color_theme = "dark"
 
 
