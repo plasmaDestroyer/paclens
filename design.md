@@ -1957,6 +1957,16 @@ YYYY-MM-DD | no --noconfirm for pacman
            | exactly as the scanner runs its provider lanes. tokio stays out
            | (2026-08-23, "tokio dropped — it was never used").
            |
+2026-10-02 | the TUI's `u` runs the same full upgrade as `update`
+           | The dashboard planned from the cached pending list while the
+           | CLI ran every present source unchecked (2026-09-17). A cache
+           | up to an hour old let `u` skip a source that had gained
+           | updates since. Both now build `plan_full_upgrade`; space still
+           | toggles a source out, and every source with an update path
+           | toggles, clean or not. One exception to "unchecked means both":
+           | once a scan has listed flatpak, a scope with nothing installed
+           | gets no step, since its only effect was a root prompt.
+
 ```
 
 ---

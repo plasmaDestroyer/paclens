@@ -68,11 +68,6 @@ pub enum ActionKind {
 }
 
 impl ActionPlan {
-    /// Total number of target packages across all steps.
-    pub fn total_targets(&self) -> usize {
-        self.steps.iter().map(|s| s.targets.len()).sum()
-    }
-
     /// Number of distinct sources in the plan.
     ///
     /// Not the step count: flatpak is one source whose two installations are

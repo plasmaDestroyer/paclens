@@ -13,11 +13,17 @@ use crate::model::{
 };
 use crate::providers::{aur, cargo, flatpak, pacman};
 
-/// Build the update plan from a scan, including only **available** sources that
-/// have at least one pending update and pass `is_enabled` (the per-source
-/// toggle / `--source` filter). Predicate-based, mirroring `model::summarize`.
-pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -> ActionPlan {
-    plan_for(scan, is_enabled, Coverage::Pending)
+/// One step as the planner decided it, before it becomes an `ActionStep`.
+///
+/// A named struct rather than a tuple because `privileged` and `interactive`
+/// are both bools: transposed, they would run an AUR build as root and hand
+/// pacman's conflict prompt to a thread nobody is watching.
+struct Built {
+    command: Vec<String>,
+    privileged: bool,
+    interactive: bool,
+    targets: Vec<String>,
+    label: String,
 }
 
 /// Build a plan that runs every available, enabled source's update command
@@ -32,35 +38,10 @@ pub fn plan_updates(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -
 /// P1 is untouched: the exact commands still print before anything runs, and
 /// the confirmation still gates them. What is gone is the package list, which
 /// was never what P1 asked for — "not a summary of it, the commands".
-pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -> ActionPlan {
-    plan_for(scan, is_enabled, Coverage::Everything)
-}
-
-/// Whether a plan covers what is known to be pending, or simply everything.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Coverage {
-    Pending,
-    Everything,
-}
-
-/// One step as the planner decided it, before it becomes an `ActionStep`.
 ///
-/// A named struct rather than a tuple because `privileged` and `interactive`
-/// are both bools: transposed, they would run an AUR build as root and hand
-/// pacman's conflict prompt to a thread nobody is watching.
-struct Built {
-    command: Vec<String>,
-    privileged: bool,
-    interactive: bool,
-    targets: Vec<String>,
-    label: String,
-}
-
-fn plan_for(
-    scan: &ScanResult,
-    is_enabled: impl Fn(&SourceId) -> bool,
-    coverage: Coverage,
-) -> ActionPlan {
+/// The TUI's `u` builds the same plan: a cached pending list can be an hour
+/// old, and planning from it skipped sources that had gained updates since.
+pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -> ActionPlan {
     let mut steps = Vec::new();
     let mut requires_sudo = false;
 
@@ -74,12 +55,8 @@ fn plan_for(
             .filter(|u| u.source_id == source.id)
             .map(|u| u.package_name.clone())
             .collect();
-        // With nothing checked there is nothing to skip for: a source with no
-        // known updates still gets its command, and the tool says "nothing to
-        // do" far faster than paclens could have found that out.
-        if targets.is_empty() && coverage == Coverage::Pending {
-            continue;
-        }
+        // A source with no known updates still gets its command: the tool
+        // checks for itself, and says "nothing to do" faster than a scan.
         // Most sources are one step. Flatpak is one source updated by one
         // tool, but its two installations are two commands with different
         // privilege — so a source contributes a *list* of steps (design §13,
@@ -166,9 +143,15 @@ fn plan_for(
                             .collect();
                         // Unchecked, both installations get a command: which
                         // one holds an out-of-date app is exactly what was not
-                        // looked up. The system half asks for root, and the
-                        // user sees that in the plan before confirming.
-                        (!scoped.is_empty() || coverage == Coverage::Everything).then(|| {
+                        // looked up. Once a scan has listed flatpak, a scope
+                        // with nothing installed has nothing to update — and
+                        // the system half would ask for root to do nothing.
+                        let listed = source.last_scanned.is_some() && source.scan_error.is_none();
+                        let occupied = scan
+                            .packages
+                            .iter()
+                            .any(|p| p.source_id == source.id && p.scope == Some(scope));
+                        (!scoped.is_empty() || !listed || occupied).then(|| {
                             Built {
                                 command: flatpak::update_command(scope),
                                 privileged: scope.needs_privilege(),
@@ -414,10 +397,29 @@ mod tests {
             id,
             kind,
             available,
-            last_scanned: None,
+            // A scanned source: what is installed in each scope is known.
+            last_scanned: Some(Utc::now()),
             accurate_updates: true,
             scan_error: None,
         }
+    }
+
+    #[test]
+    fn an_unscanned_flatpak_updates_both_installations() {
+        // `paclens update` looked nothing up, so neither scope can be ruled out.
+        let mut s = scan();
+        s.sources[1].last_scanned = None;
+        let plan = plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.requires_sudo, "the system half asks for root");
+    }
+
+    #[test]
+    fn a_scanned_empty_system_installation_gets_no_step() {
+        // Listed, and nothing lives in the system installation: asking for
+        // root to update it would be a password prompt for nothing.
+        let plan = plan_full_upgrade(&scan(), |id| id == &SourceId::flatpak());
+        assert!(plan.steps.iter().all(|s| !s.privileged), "{plan:?}");
     }
 
     fn flatpak_pkg(name: &str, scope: FlatpakScope) -> crate::model::Package {
@@ -502,7 +504,7 @@ mod tests {
             (AurHelper::Yay, "yay"),
             (AurHelper::Pikaur, "pikaur"),
         ] {
-            let plan = plan_updates(&aur_scan(Some(helper)), enable_all);
+            let plan = plan_full_upgrade(&aur_scan(Some(helper)), enable_all);
             let step = aur_step(&plan).expect("aur step");
             assert_eq!(step.command, vec![bin, "-Sua"], "helper {bin}");
             assert_eq!(step.targets, vec!["timr-bin"]);
@@ -513,7 +515,7 @@ mod tests {
     fn no_recorded_helper_means_no_aur_step_rather_than_a_guess() {
         // The scan found no helper. Defaulting to paru here would put a
         // command in front of the user for a binary they do not have.
-        let plan = plan_updates(&aur_scan(None), enable_all);
+        let plan = plan_full_upgrade(&aur_scan(None), enable_all);
         assert!(aur_step(&plan).is_none());
         // The other sources are unaffected — one bad source never aborts the rest.
         assert_eq!(plan.source_count(), 2);
@@ -523,7 +525,7 @@ mod tests {
     fn the_aur_step_is_never_privileged() {
         use crate::providers::aur::AurHelper;
         for helper in AurHelper::ALL {
-            let plan = plan_updates(&aur_scan(Some(helper)), |id| id == &SourceId::aur());
+            let plan = plan_full_upgrade(&aur_scan(Some(helper)), |id| id == &SourceId::aur());
             assert_eq!(plan.source_count(), 1);
             assert!(
                 !plan.requires_sudo,
@@ -535,10 +537,10 @@ mod tests {
 
     #[test]
     fn one_step_per_enabled_source_with_updates() {
-        let plan = plan_updates(&scan(), enable_all);
+        let plan = plan_full_upgrade(&scan(), enable_all);
         // pacman + flatpak-user have updates; flatpak-system has none → 2 steps.
         assert_eq!(plan.source_count(), 2);
-        assert_eq!(plan.total_targets(), 3);
+        assert_eq!(plan.steps.iter().map(|s| s.targets.len()).sum::<usize>(), 3);
         assert_eq!(plan.steps[0].source_id, SourceId::pacman());
         assert_eq!(plan.steps[0].targets, vec!["linux", "firefox"]);
         assert_eq!(plan.steps[0].command, vec!["pacman", "-Syu"]);
@@ -561,7 +563,7 @@ mod tests {
         s.sources
             .push(source(SourceId::cargo(), SourceKind::Cargo, true));
         s.updates.push(upd("ripgrep", SourceId::cargo()));
-        let plan = plan_updates(&s, |id| id == &SourceId::cargo());
+        let plan = plan_full_upgrade(&s, |id| id == &SourceId::cargo());
         assert_eq!(plan.steps.len(), 1);
         let step = &plan.steps[0];
         assert!(!step.privileged, "cargo must never run under sudo");
@@ -574,7 +576,7 @@ mod tests {
         // The planner is where privilege is decided now (design §13,
         // 2026-09-07). Each step says so on its own, rather than the executor
         // recognising an id and guessing.
-        let plan = plan_updates(&scan(), enable_all);
+        let plan = plan_full_upgrade(&scan(), enable_all);
         for step in &plan.steps {
             let expected = match (step.source_id.as_str(), step.command.get(2)) {
                 ("pacman", _) => true,
@@ -599,12 +601,12 @@ mod tests {
 
     #[test]
     fn pacman_in_the_plan_requires_sudo() {
-        assert!(plan_updates(&scan(), enable_all).requires_sudo);
+        assert!(plan_full_upgrade(&scan(), enable_all).requires_sudo);
     }
 
     #[test]
     fn flatpak_user_only_does_not_require_sudo() {
-        let plan = plan_updates(&scan(), |id| id == &SourceId::flatpak());
+        let plan = plan_full_upgrade(&scan(), |id| id == &SourceId::flatpak());
         assert_eq!(plan.source_count(), 1);
         assert!(!plan.requires_sudo);
     }
@@ -617,7 +619,7 @@ mod tests {
         s.packages
             .push(flatpak_pkg("org.sys.App", FlatpakScope::System));
         s.updates.push(upd("org.sys.App", SourceId::flatpak()));
-        let plan = plan_updates(&s, |id| id == &SourceId::flatpak());
+        let plan = plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
         assert_eq!(plan.source_count(), 1, "still one source");
         assert_eq!(plan.steps.len(), 2, "one step per installation with work");
         assert!(plan.requires_sudo);
@@ -646,7 +648,7 @@ mod tests {
         // dashboard counted; it falls to the unprivileged half instead.
         let mut s = scan();
         s.updates.push(upd("org.ghost.App", SourceId::flatpak()));
-        let plan = plan_updates(&s, |id| id == &SourceId::flatpak());
+        let plan = plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
         assert_eq!(plan.steps.len(), 1);
         assert!(!plan.steps[0].privileged);
         assert!(plan.steps[0].targets.contains(&"org.ghost.App".to_string()));
@@ -657,14 +659,14 @@ mod tests {
         let mut s = scan();
         s.packages
             .push(flatpak_pkg("org.gimp.GIMP", FlatpakScope::System));
-        let plan = plan_updates(&s, |id| id == &SourceId::flatpak());
+        let plan = plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
         assert_eq!(plan.steps.len(), 2, "both installations hold it");
         assert!(plan.steps.iter().all(|s| s.targets == ["org.gimp.GIMP"]));
     }
 
     #[test]
     fn predicate_excludes_a_source() {
-        let plan = plan_updates(&scan(), |id| id != &SourceId::pacman());
+        let plan = plan_full_upgrade(&scan(), |id| id != &SourceId::pacman());
         assert_eq!(plan.source_count(), 1);
         assert_eq!(plan.steps[0].source_id, SourceId::flatpak());
         assert!(!plan.requires_sudo);
@@ -674,7 +676,7 @@ mod tests {
     fn unavailable_source_is_skipped_even_with_updates() {
         let mut s = scan();
         s.sources[0].available = false; // pacman unavailable
-        let plan = plan_updates(&s, enable_all);
+        let plan = plan_full_upgrade(&s, enable_all);
         assert_eq!(plan.source_count(), 1);
         assert_eq!(plan.steps[0].source_id, SourceId::flatpak());
     }
@@ -697,10 +699,10 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
         };
-        let plan = plan_updates(&empty, enable_all);
+        let plan = plan_full_upgrade(&empty, enable_all);
         assert!(plan.is_empty());
         assert!(!plan.requires_sudo);
-        assert_eq!(plan.total_targets(), 0);
+        assert!(plan.steps.iter().all(|s| s.targets.is_empty()));
     }
 
     // --- migration plans (v0.5) ---
@@ -975,6 +977,7 @@ mod tests {
             .push(source(SourceId::aur(), SourceKind::Aur, true));
         s.sources
             .push(source(SourceId::cargo(), SourceKind::Cargo, true));
+        s.sources[1].last_scanned = None; // both flatpak scopes
         let plan = plan_full_upgrade(&s, enable_all);
 
         let owns = |label: &str| {

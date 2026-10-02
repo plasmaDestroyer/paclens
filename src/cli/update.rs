@@ -512,10 +512,6 @@ mod tests {
         // The whole point: paclens did not check, so it cannot skip a source
         // for having nothing to do. The tool says that itself, faster.
         let s = scan(Vec::new());
-        assert!(
-            planner::plan_updates(&s, |_| true).is_empty(),
-            "the checked plan has nothing to run"
-        );
         let plan = planner::plan_full_upgrade(&s, |_| true);
         assert!(!plan.is_empty(), "the unchecked plan runs anyway");
     }

@@ -815,8 +815,7 @@ impl App {
                 // (design §3). What it *has* installed is still known.
                 let updates =
                     (known && s.available && !s.updates_unknown()).then_some(summary.updates);
-                let enabled = (s.available && !failed && summary.updates > 0 && counted)
-                    .then(|| self.is_enabled(&s.id));
+                let enabled = (s.available && !failed && counted).then(|| self.is_enabled(&s.id));
                 SourceRow {
                     id: s.id.to_string(),
                     installed,
@@ -1052,9 +1051,10 @@ impl App {
             .collect()
     }
 
-    /// The plan for the currently enabled sources (shared with the CLI via P5).
+    /// The plan for the currently enabled sources — the same full upgrade
+    /// `paclens update` runs (P5).
     pub fn update_plan(&self) -> ActionPlan {
-        planner::plan_updates(&self.scan, |id| self.is_enabled(id))
+        planner::plan_full_upgrade(&self.scan, |id| self.is_enabled(id))
     }
 
     pub fn privilege_tool(&self) -> Option<&'static str> {
@@ -1120,14 +1120,15 @@ impl App {
     }
 
     /// Space on the dashboard: toggle the selected source in/out of the
-    /// update plan. Only sources with something to update toggle.
+    /// update plan. Any source with an update path toggles: its tool checks
+    /// for itself when the plan runs.
     pub fn toggle_selected(&mut self) {
         let Some(source) = self.dash_source() else {
             return;
         };
         let id = source.id.clone();
-        if !source.available || self.updates_for(&id).is_empty() {
-            self.set_flash(format!("{id} has nothing to update"));
+        if !source.available {
+            self.set_flash(format!("{id} has no update path"));
             return;
         }
         let now = !self.is_enabled(&id);
@@ -1841,11 +1842,11 @@ mod tests {
     // --- dashboard update toggles ---
     #[test]
     fn source_rows_carry_the_toggle_state() {
-        // pacman has the one update → toggled on; flatpak is clean and
-        // aur is unavailable → nothing to toggle (None).
+        // Every source with an update path toggles, clean or not — its tool
+        // checks for itself. aur is unavailable → nothing to toggle (None).
         let rows = app().rows();
         assert_eq!(rows[0].enabled, Some(true));
-        assert_eq!(rows[1].enabled, None);
+        assert_eq!(rows[1].enabled, Some(true));
         assert_eq!(rows[2].enabled, None);
     }
 
@@ -1854,7 +1855,8 @@ mod tests {
         let app = app();
         assert!(app.is_enabled(&SourceId::pacman()));
         let plan = app.update_plan();
-        assert_eq!(plan.source_count(), 1); // pacman has the one update
+        // The same full upgrade the CLI runs: clean sources are included.
+        assert_eq!(plan.source_count(), 2);
         assert_eq!(plan.steps[0].source_id, SourceId::pacman());
     }
 
@@ -1864,20 +1866,22 @@ mod tests {
         // Dashboard cursor row 0 = pacman (the source with updates).
         app.toggle_selected();
         assert!(!app.is_enabled(&SourceId::pacman()));
-        assert!(app.update_plan().is_empty()); // flatpak has no updates
+        let plan = app.update_plan();
+        assert!(plan.steps.iter().all(|s| s.source_id != SourceId::pacman()));
         app.toggle_selected();
         assert!(app.is_enabled(&SourceId::pacman()));
-        assert_eq!(app.update_plan().source_count(), 1);
+        assert_eq!(app.update_plan().source_count(), 2);
     }
 
     #[test]
-    fn toggling_a_clean_source_flashes_instead() {
+    fn toggling_an_unavailable_source_flashes_instead() {
         let mut app = app();
-        app.on_next(); // row 1 = flatpak, no updates
+        app.on_next();
+        app.on_next(); // row 2 = aur, unavailable
         app.toggle_selected();
-        assert!(app.is_enabled(&SourceId::flatpak()), "toggle must not flip");
+        assert!(app.is_enabled(&SourceId::aur()), "toggle must not flip");
         let flash = app.flash().expect("explanatory flash");
-        assert!(flash.contains("flatpak has nothing to update"), "{flash}");
+        assert!(flash.contains("aur has no update path"), "{flash}");
     }
 
     #[test]

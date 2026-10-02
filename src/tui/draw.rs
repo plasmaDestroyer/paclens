@@ -489,12 +489,9 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     } else if plan.is_empty() {
         Span::styled("nothing to run".to_string(), theme.dim)
     } else {
+        let n = plan.source_count();
         Span::styled(
-            format!(
-                "{} packages / {} sources",
-                plan.total_targets(),
-                plan.source_count()
-            ),
+            format!("{n} source{}", if n == 1 { "" } else { "s" }),
             theme.accent,
         )
     };
@@ -3049,10 +3046,9 @@ mod tests {
             AppOptions::test(),
         );
         let text = render(&app, 96, 24);
-        // pacman has updates → toggled on; the clean/unavailable sources
-        // have nothing to toggle and show a dash.
+        // Every source with an update path toggles, clean or not.
         assert!(text.contains("[x] pacman"), "toggle missing:\n{text}");
-        assert!(text.contains("-  flatpak"), "dash missing:\n{text}");
+        assert!(text.contains("[x] flatpak"), "toggle missing:\n{text}");
         assert!(text.contains("space toggle"), "footer missing:\n{text}");
         assert!(text.contains("u update"), "{text}");
         assert!(text.contains("enter packages"), "{text}");
@@ -3077,12 +3073,18 @@ mod tests {
         );
         let text = render(&app, 96, 24);
         assert!(
-            text.contains("2 packages / 1 sources"),
+            text.contains("plan         2 sources"),
             "plan line missing:\n{text}"
         );
 
-        let clean = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        let text = render(&clean, 96, 24);
+        // A clean machine still runs its tools; only toggling every source
+        // off empties the plan.
+        let mut off = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        assert!(!off.update_plan().is_empty(), "clean sources still run");
+        off.toggle_selected();
+        off.on_next();
+        off.toggle_selected();
+        let text = render(&off, 96, 24);
         assert!(text.contains("nothing to run"), "{text}");
     }
 

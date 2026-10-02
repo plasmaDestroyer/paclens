@@ -285,11 +285,7 @@ fn run_loop(
                     // a confident wrong answer (design §3).
                     app.set_flash("still checking for updates — the plan is not complete yet");
                 } else if plan.is_empty() {
-                    app.set_flash(if app.total_updates() == 0 {
-                        "you're up to date"
-                    } else {
-                        "nothing selected to update"
-                    });
+                    app.set_flash("nothing selected to update");
                 } else if executor::executable_steps(&plan, tool) == 0 {
                     app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot update");
                 } else {
