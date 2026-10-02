@@ -12,7 +12,7 @@ use std::io::{BufRead, Write};
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::executor::{self, ExecutionReport, InteractiveRunner, StepStatus, UpdateLog};
-use crate::model::{ActionPlan, ActionStep};
+use crate::model::ActionPlan;
 use crate::providers::SystemCommandRunner;
 use crate::{planner, scanner};
 
@@ -53,15 +53,10 @@ pub fn run(
         None => true,
     });
 
-    print!("{}", render_plan(&plan, styles));
+    let tool = executor::sudo::detect();
+    print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
 
     if dry_run || plan.is_empty() {
-        if dry_run && parallel {
-            println!(
-                "  {}",
-                styles.dim(&parallel_note(&plan, executor::sudo::detect()))
-            );
-        }
         return Ok(());
     }
     execute_flow(&plan, parallel, config.update.loop_interval(), styles)
@@ -77,38 +72,17 @@ fn execute_flow(
 ) -> anyhow::Result<()> {
     let tool = executor::sudo::detect();
 
-    for step in &plan.steps {
-        match executor::skip_reason(step, tool) {
-            Some(reason) => println!(
-                "  {}",
-                styles.dim(&format!(
-                    "{} will be skipped — {reason}",
-                    step.source_id.as_str()
-                ))
-            ),
-            None => println!(
-                "  {} {}",
-                styles.dim(will_run_label(parallel, step, tool)),
-                executor::effective_command(step, tool).join(" ")
-            ),
-        }
-    }
-
     // Counted in commands, not packages: nothing was looked up, so there is no
     // package count to offer. Commands rather than sources, because flatpak
     // contributes two steps and the prompt must match what runs (2026-09-17).
-    let sources = executor::executable_steps(plan, tool);
-    if sources == 0 {
+    if executor::executable_steps(plan, tool) == 0 {
         println!("\n{}", styles.dim("nothing to execute"));
         return Ok(());
     }
 
     print!(
         "\n{} {} ",
-        styles.summary_updates(&format!(
-            "Run {sources} command{}?",
-            if sources == 1 { "" } else { "s" },
-        )),
+        styles.summary_updates("Run?"),
         styles.dim("[Y/n]")
     );
     std::io::stdout().flush()?;
@@ -180,39 +154,6 @@ fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) -> bool {
     ok
 }
 
-/// What `--dry-run --parallel` owes the reader: which steps would not wait for
-/// each other. Pure, so the wording is pinned by a test.
-///
-/// A plan where nothing qualifies says so rather than printing nothing —
-/// `--parallel` on a pacman-only plan changes exactly nothing, and silence
-/// would leave that to be guessed at.
-fn parallel_note(plan: &ActionPlan, tool: Option<&str>) -> String {
-    let labels: Vec<&str> = plan
-        .steps
-        .iter()
-        .filter(|s| executor::runs_in_background(s, tool))
-        .map(|s| s.label.as_str())
-        .collect();
-    if labels.is_empty() {
-        "nothing in this plan can run in parallel".to_string()
-    } else {
-        format!("in parallel: {}", labels.join(", "))
-    }
-}
-
-/// What the preview line calls a step.
-///
-/// `--parallel` changes *when* a step runs, so it has to change what the plan
-/// says will happen — P1 is "show exactly what will happen", and "these four
-/// start at once while pacman has the terminal" is part of that.
-fn will_run_label(parallel: bool, step: &ActionStep, tool: Option<&str>) -> &'static str {
-    if parallel && executor::runs_in_background(step, tool) {
-        "will run (in parallel):"
-    } else {
-        "will run:"
-    }
-}
-
 /// Does this answer to `[Y/n]` mean yes?
 ///
 /// Enter means yes (user decision 2026-09-21): the plan is on screen above
@@ -232,20 +173,27 @@ fn confirmed(input: &mut impl BufRead) -> std::io::Result<bool> {
     Ok(input.read_line(&mut answer)? != 0 && accepts(&answer))
 }
 
-/// Render the whole plan block. Pure (no IO) so the no-color output is
-/// deterministic and unit-testable.
-/// The plan: which sources will run and the exact command for each.
-///
-/// No package list, because none was looked up — the tools report what they
-/// change as they change it. P1 asks for the commands, and they are here
-/// (user decision 2026-09-17).
-fn render_plan(plan: &ActionPlan, s: &Styles) -> String {
-    let srcs = plan.source_count();
+/// The plan, once: each step's label and the exact command that will run,
+/// privilege prefix included, so the preview and the run cannot disagree
+/// (P1). No package list, because none was looked up (2026-09-17). Under
+/// `--parallel` a step that runs beside the others ends in `&`.
+fn render_plan(
+    plan: &ActionPlan,
+    tool: Option<&str>,
+    parallel: bool,
+    dry_run: bool,
+    s: &Styles,
+) -> String {
+    let n = executor::executable_steps(plan, tool);
     let summary = if plan.is_empty() {
         s.summary_ok("no source can be updated")
     } else {
-        let src_word = if srcs == 1 { "source" } else { "sources" };
-        s.summary_updates(&format!("updating {srcs} {src_word}"))
+        let commands = format!("{n} command{}", if n == 1 { "" } else { "s" });
+        s.summary_updates(&if dry_run {
+            format!("would run {commands}")
+        } else {
+            format!("update {} {commands}", s.bullet())
+        })
     };
 
     let mut out = format!(
@@ -261,15 +209,18 @@ fn render_plan(plan: &ActionPlan, s: &Styles) -> String {
         .max()
         .unwrap_or(0);
     for step in &plan.steps {
-        out.push_str(&format!(
-            "  {}  {}\n",
-            s.title(&format!("{:label_w$}", step.label)),
-            s.dim(&step.command.join(" "))
-        ));
-    }
-
-    if plan.requires_sudo {
-        out.push_str(&format!("\n  {}\n", s.dim("requires sudo")));
+        let label = s.title(&format!("{:label_w$}", step.label));
+        let line = match executor::skip_reason(step, tool) {
+            Some(reason) => s.dim(&format!("skipped — {reason}")),
+            None => {
+                let mut cmd = executor::effective_command(step, tool).join(" ");
+                if parallel && executor::runs_in_background(step, tool) {
+                    cmd.push_str(" &");
+                }
+                cmd
+            }
+        };
+        out.push_str(&format!("  {label}  {line}\n"));
     }
     out
 }
@@ -278,6 +229,16 @@ fn render_plan(plan: &ActionPlan, s: &Styles) -> String {
 /// (✓ succeeded / ✗ failed / · skipped), and the log path. Pure for the same
 /// reason as `render_plan`.
 fn render_report(report: &ExecutionReport, s: &Styles) -> String {
+    let log = s.dim(&format!("log {}", report.log_path.display()));
+    if report.failed() == 0 && report.skipped() == 0 && report.executed() > 0 {
+        return format!(
+            "{} {} {} {}\n",
+            s.success(s.check()),
+            s.summary_ok(&format!("{} done", report.executed())),
+            s.dim(s.bullet()),
+            log
+        );
+    }
     let executed = report.executed();
     let src_word = if executed == 1 { "source" } else { "sources" };
     let counts = format!(
@@ -373,54 +334,34 @@ mod tests {
     /// The preview promises when a step runs, not just what it runs (P1), and
     /// it promises it by asking the executor — not by repeating the rule.
     #[test]
-    fn the_preview_says_which_steps_run_at_once() {
-        let quiet = plan_step("cargo", false, false);
-        let asks = plan_step("pacman", true, true);
-        let rooted = plan_step("flatpak · system", false, true);
-
-        assert_eq!(will_run_label(false, &quiet, Some("sudo")), "will run:");
-        assert_eq!(
-            will_run_label(true, &quiet, Some("sudo")),
-            "will run (in parallel):"
-        );
-        assert_eq!(
-            will_run_label(true, &asks, Some("sudo")),
-            "will run:",
-            "a step that asks questions keeps the terminal"
-        );
-        assert_eq!(
-            will_run_label(true, &rooted, Some("sudo")),
-            "will run:",
-            "design §11 — nothing privileged runs in the background"
-        );
-    }
-
-    #[test]
-    fn dry_run_names_the_steps_that_would_share_the_run() {
+    fn the_parallel_preview_marks_the_steps_that_run_at_once() {
         let plan = ActionPlan {
             created_at: Utc::now(),
             steps: vec![
                 plan_step("pacman", true, true),
-                plan_step("flatpak · user", false, false),
+                plan_step("flatpak · system", false, true),
                 plan_step("cargo", false, false),
             ],
             requires_sudo: true,
         };
-        assert_eq!(
-            parallel_note(&plan, Some("sudo")),
-            "in parallel: flatpak · user, cargo"
-        );
-
-        let alone = ActionPlan {
-            created_at: Utc::now(),
-            steps: vec![plan_step("pacman", true, true)],
-            requires_sudo: true,
+        let text = render_plan(&plan, Some("sudo"), true, true, &plain());
+        let line = |label: &str| {
+            text.lines()
+                .find(|l| l.trim_start().starts_with(label))
+                .unwrap_or_default()
+                .to_string()
         };
-        assert_eq!(
-            parallel_note(&alone, Some("sudo")),
-            "nothing in this plan can run in parallel",
-            "silence would leave the reader to guess"
+        assert!(line("cargo").ends_with('&'), "{text}");
+        assert!(
+            !line("pacman").ends_with('&'),
+            "a step that asks questions keeps the terminal:\n{text}"
         );
+        assert!(
+            !line("flatpak").ends_with('&'),
+            "design §11 — nothing privileged runs in the background:\n{text}"
+        );
+        let serial = render_plan(&plan, Some("sudo"), false, true, &plain());
+        assert!(!serial.contains('&'), "{serial}");
     }
 
     /// Piped styler: Unicode glyphs, no ANSI — deterministic for assertions.
@@ -489,16 +430,15 @@ mod tests {
         // and these are them (2026-09-17).
         let s = scan(Vec::new());
         let plan = planner::plan_full_upgrade(&s, |_| true);
-        let text = render_plan(&plan, &plain());
+        let text = render_plan(&plan, Some("sudo"), false, false, &plain());
 
-        assert!(text.starts_with("paclens · updating"), "{text}");
-        assert!(text.contains("pacman -Syu"), "{text}");
+        assert!(text.starts_with("paclens · update · 3 commands"), "{text}");
+        // The privilege prefix is in the command itself, so the preview and
+        // the run cannot disagree — and each command appears once.
+        assert!(text.contains("sudo pacman -Syu"), "{text}");
+        assert_eq!(text.matches("pacman -Syu").count(), 1, "{text}");
         assert!(text.contains("flatpak update --user"), "{text}");
-        assert!(text.contains("flatpak update --system"), "{text}");
-        assert!(
-            text.contains("requires sudo"),
-            "pacman is in the plan:\n{text}"
-        );
+        assert!(text.contains("sudo flatpak update --system"), "{text}");
         assert!(!text.contains('\u{1b}'), "no ANSI in the plain styler");
     }
 
@@ -520,7 +460,7 @@ mod tests {
         let plan = planner::plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
         assert_eq!(plan.steps.len(), 2, "one per installation");
         assert!(plan.requires_sudo, "the system half needs it");
-        let text = render_plan(&plan, &plain());
+        let text = render_plan(&plan, Some("sudo"), false, false, &plain());
         assert!(text.contains("flatpak · user"), "{text}");
         assert!(text.contains("flatpak · system"), "{text}");
     }
@@ -532,9 +472,9 @@ mod tests {
             source.available = false;
         }
         let plan = planner::plan_full_upgrade(&s, |_| true);
-        let text = render_plan(&plan, &plain());
+        let text = render_plan(&plan, Some("sudo"), false, false, &plain());
         assert!(text.contains("no source can be updated"), "{text}");
-        assert!(!text.contains("requires sudo"), "{text}");
+        assert!(!text.contains("sudo"), "{text}");
     }
 
     #[test]
@@ -681,15 +621,14 @@ mod tests {
     }
 
     #[test]
-    fn all_green_report_has_no_failed_segment() {
+    fn an_all_green_report_is_one_line() {
         let r = report(vec![step(SourceId::flatpak(), 1, StepStatus::Succeeded)]);
         let text = render_report(&r, &plain());
-        assert!(
-            text.contains("1 source ran · 1 succeeded"),
-            "headline missing:\n{text}"
-        );
+        // Everything worked: one line, and the log for the detail.
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("1 done"), "{text}");
+        assert!(text.contains("log /tmp/paclens/2026-06-12.log"), "{text}");
         assert!(!text.contains("failed"), "{text}");
-        assert!(text.contains("1 flatpak updated"), "{text}");
     }
 
     #[test]
