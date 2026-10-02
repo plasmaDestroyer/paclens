@@ -49,10 +49,7 @@ impl AppOptions {
             min_confidence: config.overlap.min_confidence(),
             orphan_ignore: config.cleanup.orphan_ignore.clone(),
             diff_prog: config.cleanup.diff_prog.clone(),
-            sudo_loop: config
-                .update
-                .sudo_loop
-                .then(|| std::time::Duration::from_secs(config.update.sudo_loop_interval.max(30))),
+            sudo_loop: config.update.loop_interval(),
         }
     }
 

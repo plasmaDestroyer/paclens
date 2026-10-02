@@ -64,12 +64,17 @@ pub fn run(
         }
         return Ok(());
     }
-    execute_flow(&plan, parallel, styles)
+    execute_flow(&plan, parallel, config.update.loop_interval(), styles)
 }
 
 /// The confirm + execute half of a bare `paclens update`: show the exact
 /// commands (P1), announce skips, ask `[Y/n]`, run, report every outcome.
-fn execute_flow(plan: &ActionPlan, parallel: bool, styles: &Styles) -> anyhow::Result<()> {
+fn execute_flow(
+    plan: &ActionPlan,
+    parallel: bool,
+    sudo_loop: Option<std::time::Duration>,
+    styles: &Styles,
+) -> anyhow::Result<()> {
     let tool = executor::sudo::detect();
 
     for step in &plan.steps {
@@ -113,7 +118,10 @@ fn execute_flow(plan: &ActionPlan, parallel: bool, styles: &Styles) -> anyhow::R
     }
 
     println!();
-    prime_privilege(plan, tool, styles);
+    // A warm timestamp only once there is one to keep warm (#24).
+    let _keepalive = (prime_privilege(plan, tool, styles) && sudo_loop.is_some())
+        .then(|| sudo_loop.map(executor::sudo::Keepalive::start))
+        .flatten();
 
     let mut log = UpdateLog::open_default()?;
     let report = if parallel {
@@ -147,9 +155,9 @@ fn execute_flow(plan: &ActionPlan, parallel: bool, styles: &Styles) -> anyhow::R
 /// prompt — `sudo_loop` in the config is the opt-in for that, and it stays
 /// opt-in because keeping the timestamp warm lets anything running as this
 /// user use sudo unasked.
-fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) {
-    if !worth_priming(plan, tool) {
-        return;
+fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) -> bool {
+    if !executor::sudo::worth_priming(plan, tool) {
+        return false;
     }
 
     let argv = executor::sudo::prime_command();
@@ -169,20 +177,7 @@ fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) {
         );
     }
     println!();
-}
-
-/// Will something in this plan ask for a password? Pure, so the AUR case can
-/// be pinned by a test: a helper escalates on its own, so a plan can need a
-/// password without carrying a single privileged step.
-///
-/// sudo only — `doas` and `pkexec` have no "authenticate without running
-/// anything" that a later command then finds satisfied.
-fn worth_priming(plan: &ActionPlan, tool: Option<&str>) -> bool {
-    tool == Some("sudo")
-        && plan.steps.iter().any(|st| {
-            executor::skip_reason(st, tool).is_none()
-                && (executor::needs_privilege(st) || st.source_id.as_str() == "aur")
-        })
+    ok
 }
 
 /// What `--dry-run --parallel` owes the reader: which steps would not wait for
@@ -561,16 +556,19 @@ mod tests {
             !plan.requires_sudo,
             "nothing in an AUR plan runs under sudo"
         );
-        assert!(worth_priming(&plan, Some("sudo")));
-        assert!(!worth_priming(&plan, Some("doas")), "sudo -v is sudo's own");
-        assert!(!worth_priming(&plan, None));
+        assert!(executor::sudo::worth_priming(&plan, Some("sudo")));
+        assert!(
+            !executor::sudo::worth_priming(&plan, Some("doas")),
+            "sudo -v is sudo's own"
+        );
+        assert!(!executor::sudo::worth_priming(&plan, None));
     }
 
     #[test]
     fn a_plan_that_never_escalates_is_not_worth_priming() {
         let s = scan(Vec::new());
         let plan = planner::plan_full_upgrade(&s, |id| id.as_str() == "cargo");
-        assert!(!worth_priming(&plan, Some("sudo")));
+        assert!(!executor::sudo::worth_priming(&plan, Some("sudo")));
     }
 
     // --- the Y/n answer ---

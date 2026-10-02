@@ -9,15 +9,19 @@ use std::time::Duration;
 
 const CANDIDATES: [&str; 3] = ["sudo", "doas", "pkexec"];
 
-/// Does a refresh loop apply to this run (#24)?
+/// Will something in this plan ask for a password? Then one `sudo -v`
+/// before the first step answers it for the whole run (2026-09-21).
 ///
-/// `sudo -v` semantics are sudo's own. `doas` has no timestamp refresh —
-/// persistence there is a `persist` option the user sets in `doas.conf` — and
-/// `pkexec` authenticates through polkit, which has no timestamp at all. On
-/// those the honest answer is to do nothing rather than run a subprocess every
-/// four minutes that cannot help.
-pub fn keepalive_applies(tool: Option<&str>, enabled: bool, plan_is_privileged: bool) -> bool {
-    enabled && plan_is_privileged && matches!(tool, Some("sudo"))
+/// A helper escalates on its own, so an AUR step needs a password without
+/// being privileged. sudo only: `doas` and `pkexec` have no "authenticate
+/// without running anything" that a later command then finds satisfied —
+/// and no timestamp a keepalive could refresh either.
+pub fn worth_priming(plan: &crate::model::ActionPlan, tool: Option<&str>) -> bool {
+    tool == Some("sudo")
+        && plan.steps.iter().any(|st| {
+            super::skip_reason(st, tool).is_none()
+                && (super::needs_privilege(st) || st.source_id.as_str() == "aur")
+        })
 }
 
 /// The command that authenticates without running anything, so the one prompt
@@ -136,24 +140,6 @@ mod tests {
         assert_eq!(pick(|t| t != "sudo"), Some("doas"));
         assert_eq!(pick(|t| t == "pkexec"), Some("pkexec"));
         assert_eq!(pick(|_| false), None);
-    }
-
-    #[test]
-    fn the_keepalive_is_sudo_only_and_opt_in() {
-        assert!(keepalive_applies(Some("sudo"), true, true));
-        assert!(
-            !keepalive_applies(Some("sudo"), false, true),
-            "off by default"
-        );
-        assert!(
-            !keepalive_applies(Some("sudo"), true, false),
-            "nothing privileged to keep warm"
-        );
-        // doas persists via its own config, pkexec through polkit: neither has
-        // a timestamp this could refresh.
-        assert!(!keepalive_applies(Some("doas"), true, true));
-        assert!(!keepalive_applies(Some("pkexec"), true, true));
-        assert!(!keepalive_applies(None, true, true));
     }
 
     #[test]

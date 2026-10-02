@@ -94,38 +94,32 @@ fn run_session(
         .collect();
     log.line(&format!("sources: [{}]", run_ids.join(", ")));
 
-    // #24: authenticate once, here, where the reader is looking — then keep
-    // the timestamp warm so a long AUR build does not stop for a second
-    // prompt in the middle of paru's output. The value lives for the run and
-    // its Drop stops the loop on every exit path.
-    let privileged = plan
-        .steps
-        .iter()
-        .any(|s| executor::needs_privilege(s) && skip_reason(s, tool).is_none());
-    let _keepalive = match sudo_loop {
-        Some(interval) if executor::sudo::keepalive_applies(tool, true, privileged) => {
-            let argv = executor::sudo::prime_command();
-            let _ = events.send(ExecEvent::Bytes(
-                format!(
-                    "\x1b[1m:: {} \x1b[0m\x1b[2m(once, for the whole run)\x1b[0m\r\n",
-                    argv.join(" ")
-                )
-                .into_bytes(),
-            ));
-            match run_step(&argv, size, &events, &input) {
-                StepStatus::Succeeded => {
-                    log.line("sudo timestamp primed; keepalive running");
-                    Some(executor::sudo::Keepalive::start(interval))
-                }
-                _ => {
-                    // Not fatal: the steps themselves will ask, exactly as
-                    // they do with the loop off.
-                    log.line("sudo priming failed; steps will authenticate on their own");
-                    None
-                }
+    // Authenticate once, here, where the reader is looking: pacman and the
+    // AUR helper then share the timestamp instead of each asking. With
+    // `sudo_loop` on, keep it warm so a long build does not stop for a second
+    // prompt (#24); the value's Drop stops the loop on every exit path.
+    let _keepalive = if executor::sudo::worth_priming(&plan, tool) {
+        let argv = executor::sudo::prime_command();
+        let _ = events.send(ExecEvent::Bytes(
+            format!(
+                "\x1b[1m:: {} \x1b[0m\x1b[2m(once, for the whole run)\x1b[0m\r\n",
+                argv.join(" ")
+            )
+            .into_bytes(),
+        ));
+        match run_step(&argv, size, &events, &input) {
+            StepStatus::Succeeded => {
+                log.line("sudo timestamp primed");
+                sudo_loop.map(executor::sudo::Keepalive::start)
+            }
+            // Not fatal: the steps themselves will ask.
+            _ => {
+                log.line("sudo priming failed; steps will authenticate on their own");
+                None
             }
         }
-        _ => None,
+    } else {
+        None
     };
 
     let mut steps = Vec::new();

@@ -75,6 +75,15 @@ pub struct Update {
     pub sudo_loop_interval: u64,
 }
 
+impl Update {
+    /// How often to refresh the sudo timestamp during a run, or `None` when
+    /// the loop is off (the default). Never faster than every 30s.
+    pub fn loop_interval(&self) -> Option<std::time::Duration> {
+        self.sudo_loop
+            .then(|| std::time::Duration::from_secs(self.sudo_loop_interval.max(30)))
+    }
+}
+
 impl Default for Update {
     fn default() -> Self {
         Self {
