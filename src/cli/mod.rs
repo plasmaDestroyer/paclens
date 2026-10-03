@@ -65,7 +65,12 @@ pub enum Command {
     /// Open the TUI (default when no subcommand is given).
     Ui,
     /// Print a dashboard summary to stdout.
-    Status,
+    Status {
+        /// One line for status bars: the cached update count. Exit 0 up to
+        /// date, 1 updates pending, 2 unknown. Never scans.
+        #[arg(long)]
+        check: bool,
+    },
     /// Update all sources or a specific one.
     Update {
         /// Print the plan without executing anything.
@@ -185,7 +190,8 @@ pub fn run() -> ExitCode {
             tui::run(&config, cli.refresh, config_path.as_deref(), cli.no_color),
             &err_styles,
         ),
-        Command::Status => {
+        Command::Status { check: true } => status::check(),
+        Command::Status { check: false } => {
             let out_styles = Styles::resolve(
                 cli.no_color,
                 config.general.color_theme(),
@@ -342,7 +348,7 @@ mod tests {
         let cli = Cli::try_parse_from(["paclens", "--refresh", "--debug", "status"]).unwrap();
         assert!(cli.refresh);
         assert!(cli.debug);
-        assert!(matches!(cli.command, Some(Command::Status)));
+        assert!(matches!(cli.command, Some(Command::Status { .. })));
     }
 
     #[test]

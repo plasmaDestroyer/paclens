@@ -3,7 +3,7 @@
 //! Loads from the scan cache when fresh (else re-scans), then prints a headline
 //! (total pending updates) and an aligned per-source table: installed/update
 //! counts and availability, followed by the cache size and last-scan time. The
-//! orphan/overlap rows arrive with their analyzers (v0.0.7/v0.0.8).
+//! `--check` prints just the cached count, for status bars.
 //!
 //! The per-source counts and the byte/time formatting are shared with the TUI
 //! dashboard (`crate::model::summarize`, `crate::format`) so the two never
@@ -14,7 +14,7 @@ use std::path::Path;
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::format::{human_bytes, relative_time};
-use crate::model::{ScanResult, SourceId, SourceSummary, summarize};
+use crate::model::{ScanResult, SourceSummary, summarize};
 use crate::providers::SystemCommandRunner;
 use crate::scanner;
 
@@ -26,23 +26,39 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
-
-    let pacman = summarize(&scan, |id| id == &SourceId::pacman());
-    let flatpak = summarize(&scan, is_flatpak);
-    tracing::info!(
-        pacman_installed = pacman.installed,
-        pacman_updates = pacman.updates,
-        flatpak_installed = flatpak.installed,
-        flatpak_updates = flatpak.updates,
-        "scan complete"
-    );
-
     print!("{}", render_status(&scan, styles));
     Ok(())
 }
 
-fn is_flatpak(id: &SourceId) -> bool {
-    id == &SourceId::flatpak()
+/// `status --check`, for status bars: the pending count on one line, from
+/// the cache only — never a scan, so a bar can call it every few seconds.
+/// Exit 0 when up to date, 1 when updates are pending, 2 when the answer is
+/// unknown (no cache, or a source whose check failed or never ran).
+pub fn check() -> std::process::ExitCode {
+    let scan = scanner::cache::Cache::locate()
+        .and_then(|c| c.read())
+        .ok()
+        .flatten();
+    let (line, code) = check_line(scan.as_ref());
+    println!("{line}");
+    std::process::ExitCode::from(code)
+}
+
+/// The pure half of [`check`].
+fn check_line(scan: Option<&ScanResult>) -> (String, u8) {
+    let Some(scan) = scan else {
+        return ("?".to_string(), 2);
+    };
+    let total = scan.updates.len();
+    // A count with an unchecked source in it is a floor, not an answer.
+    if scan
+        .sources
+        .iter()
+        .any(|s| s.scan_error.is_some() || (s.available && s.last_scanned.is_none()))
+    {
+        return (format!("{total}+"), 2);
+    }
+    (total.to_string(), u8::from(total > 0))
 }
 
 /// Build the whole status block. Pure (no IO) so the no-color rendering is
@@ -205,6 +221,7 @@ fn render_row_because(
 mod tests {
     use super::*;
     use crate::config::ColorTheme;
+    use crate::model::SourceId;
     use crate::model::{
         CacheSizes, InstallReason, Package, PendingUpdate, SCHEMA_VERSION, Source, SourceKind,
     };
@@ -289,6 +306,21 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn check_prints_the_count_and_exits_by_state() {
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        for s in scan.sources.iter_mut() {
+            s.last_scanned = Some(Utc::now());
+        }
+        assert_eq!(check_line(Some(&scan)), ("0".to_string(), 0));
+        scan.updates.push(upd("a", SourceId::pacman()));
+        assert_eq!(check_line(Some(&scan)), ("1".to_string(), 1));
+        // A failed check makes the count a floor, and the state unknown.
+        scan.sources[0].scan_error = Some("checkupdates exited 1".to_string());
+        assert_eq!(check_line(Some(&scan)), ("1+".to_string(), 2));
+        assert_eq!(check_line(None), ("?".to_string(), 2));
     }
 
     #[test]
