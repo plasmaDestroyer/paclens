@@ -98,7 +98,11 @@ pub enum Command {
         run: bool,
     },
     /// Print an orphan and cache summary (advisory only).
-    Cleanup,
+    Cleanup {
+        /// List every orphan, runtime and file instead of the largest few.
+        #[arg(long)]
+        all: bool,
+    },
     /// What past upgrades changed, from pacman's own log.
     History {
         /// One package's history instead of the transaction list.
@@ -273,14 +277,20 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
-        Command::Cleanup => {
+        Command::Cleanup { all } => {
             let out_styles = Styles::resolve(
                 cli.no_color,
                 config.general.color_theme(),
                 std::io::stdout().is_terminal(),
             );
             report(
-                cleanup::run(&config, cli.refresh, config_path.as_deref(), &out_styles),
+                cleanup::run(
+                    &config,
+                    cli.refresh,
+                    config_path.as_deref(),
+                    all,
+                    &out_styles,
+                ),
                 &err_styles,
             )
         }

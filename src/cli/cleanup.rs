@@ -22,6 +22,7 @@ pub fn run(
     config: &Config,
     refresh: bool,
     config_path: Option<&Path>,
+    all: bool,
     styles: &Styles,
 ) -> anyhow::Result<()> {
     let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
@@ -34,256 +35,363 @@ pub fn run(
             &graph,
             styles,
             &config.cleanup.diff_prog,
-            &config.cleanup.orphan_ignore
+            &config.cleanup.orphan_ignore,
+            all,
         )
     );
     Ok(())
 }
 
-/// The whole report. Pure (no IO) so the no-color rendering is deterministic
-/// and unit-testable, matching `status::render_status`.
-/// The diff program is the one part of the report that comes from config
-/// rather than from the scan.
+/// How many names a list shows before "… n more" — `--all` lifts it.
+const SHOWN: usize = 5;
+
+/// The whole report: one block per finding, its figure on the first line and
+/// what to run right under it, so a command never sits far from the thing it
+/// fixes. Every finding gets its first line even when the answer is "none" —
+/// a report that only speaks up when something is wrong leaves you wondering
+/// whether it looked. Pure (no IO), so the plain rendering is testable.
 fn render_cleanup_with(
     scan: &ScanResult,
     graph: &DepGraph,
     s: &Styles,
     diff_prog: &str,
     orphan_ignore: &[String],
+    all: bool,
 ) -> String {
     use crate::analyzer::pacfiles;
     let pacfiles = pacfiles::review_order(&scan.pacfiles);
     let stale = crate::analyzer::stale_units(&scan.stale_processes);
     let unowned = crate::analyzer::provenance::unowned(&scan.packages);
     let diff = pacfiles::diff_program(diff_prog, std::env::var("DIFFPROG").ok().as_deref());
-    let orphans = graph.orphans_ignoring(scan, orphan_ignore);
-    let unused: Vec<_> = graph.unused_runtimes(scan);
-    let unused_bytes: u64 = unused.iter().filter_map(|p| p.size_bytes).sum();
-    let orphan_bytes: u64 = orphans
-        .iter()
-        .filter_map(|n| {
-            scan.packages
-                .iter()
-                .find(|p| &p.name == n)
-                .and_then(|p| p.size_bytes)
+    let size_of = |name: &str| {
+        scan.packages
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.size_bytes)
+    };
+    // Largest first: size is what makes an orphan worth a look.
+    let mut orphans: Vec<(String, Option<u64>)> = graph
+        .orphans_ignoring(scan, orphan_ignore)
+        .into_iter()
+        .map(|n| {
+            let size = size_of(&n);
+            (n, size)
         })
-        .sum();
+        .collect();
+    orphans.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let orphan_bytes: u64 = orphans.iter().filter_map(|(_, b)| *b).sum();
+    let mut unused: Vec<_> = graph.unused_runtimes(scan);
+    unused.sort_by(|a, b| {
+        b.size_bytes
+            .cmp(&a.size_bytes)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let unused_bytes: u64 = unused.iter().filter_map(|p| p.size_bytes).sum();
     let sizes = &scan.cache_sizes;
 
+    let limit = if all { usize::MAX } else { SHOWN };
+    let more = |total: usize| (total > limit).then(|| s.dim(&format!("+{} more", total - limit)));
     let mut out = String::new();
-    // The headline counts things a reader could act on, not bytes: the cache
-    // total is mostly current-version tarballs that nothing should remove.
-    let actionable = orphans.len() + unused.len() + pacfiles.len() + stale.len() + unowned.len();
-    let headline = if actionable == 0 {
-        s.summary_ok("nothing to clean up")
-    } else {
-        s.summary_updates(&format!(
-            "{actionable} item{} worth reviewing",
-            if actionable == 1 { "" } else { "s" }
-        ))
+    let mut findings = 0;
+    let head = |out: &mut String, label: &str, value: String| {
+        out.push_str(&format!("{} {value}\n", s.title(&format!("{label:16}"))));
     };
-    out.push_str(&format!(
-        "{} {} {}\n\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
-        headline
-    ));
+    let detail = |out: &mut String, line: String| out.push_str(&format!("  {line}\n"));
+    let command = |out: &mut String, cmd: String| out.push_str(&format!("  $ {cmd}\n"));
 
-    // --- sizes ---
-    out.push_str(&row(
+    if !all {
+        return compact_report(
+            CompactInput {
+                cache: sizes,
+                helper: scan.aur_helper.helper(),
+                orphans: (orphans.len(), orphan_bytes),
+                unused: (unused.len(), unused_bytes),
+                pacfiles: pacfiles.len(),
+                stale: &stale,
+                unowned: unowned.len(),
+                review: pacfiles::review_all_command(&diff),
+            },
+            s,
+        );
+    }
+    // --- caches ---
+    head(
+        &mut out,
         "pacman cache",
-        &pacman_cache_value(
+        pacman_cache_value(
             sizes.pacman_cache_bytes,
             sizes.pacman_cache_reclaimable_bytes,
             s,
         ),
-        s,
-    ));
-    // Named for the helper in use, not paru — see the same rule in the TUI
-    // pane. No helper means no figure at all rather than someone else's.
+    );
+    // Only suggest what would do something: an 11 GiB cache that reclaims
+    // nothing carries no command.
+    if sizes.pacman_cache_reclaimable_bytes.is_some_and(|b| b > 0) {
+        findings += 1;
+        command(&mut out, "paccache -rk3".to_string());
+    }
+    // Named for the helper in use, not paru. No helper, no figure.
     if let (Some(b), Some(helper)) = (sizes.aur_cache_bytes, scan.aur_helper.helper()) {
-        out.push_str(&row(
-            &format!("{} build cache", helper.bin()),
-            &human_bytes(b),
-            s,
-        ));
-    }
-    out.push_str(&row(
-        "unused runtimes",
-        &if unused.is_empty() {
-            s.dim("none")
-        } else {
-            format!("{} ({})", unused.len(), human_bytes(unused_bytes))
-        },
-        s,
-    ));
-    out.push_str(&row(
-        "orphans",
-        &if orphans.is_empty() {
-            s.dim("none")
-        } else {
-            format!("{} ({})", orphans.len(), human_bytes(orphan_bytes))
-        },
-        s,
-    ));
-    out.push_str(&row(
-        "no repository",
-        &if unowned.is_empty() {
-            s.dim("none")
-        } else {
-            format!("{}", unowned.len())
-        },
-        s,
-    ));
-    out.push_str(&row(
-        "stale services",
-        &if stale.is_empty() {
-            s.dim("none")
-        } else {
-            format!("{} {}", stale.len(), s.dim("[inferred]"))
-        },
-        s,
-    ));
-    // A clean row rather than an absent section: "none" is the answer on most
-    // machines, and a report that only speaks up when something is wrong
-    // leaves you wondering whether it looked.
-    out.push_str(&row(
-        "config leftovers",
-        &if pacfiles.is_empty() {
-            s.dim("none")
-        } else {
-            format!("{}", pacfiles.len())
-        },
-        s,
-    ));
-
-    // --- the lists themselves, which the TUI shows on its own rows ---
-    if !unused.is_empty() {
-        out.push('\n');
-        out.push_str(&s.dim("unused runtimes:"));
-        out.push('\n');
-        for p in &unused {
-            let size = p
-                .size_bytes
-                .map(|b| format!(" ({})", human_bytes(b)))
-                .unwrap_or_default();
-            out.push_str(&format!("  {} {}{}\n", s.bullet(), p.name, s.dim(&size)));
-        }
-    }
-    if !orphans.is_empty() {
-        out.push('\n');
-        out.push_str(&s.dim("orphans - installed as dependencies, now required by nothing:"));
-        out.push('\n');
-        for name in &orphans {
-            let size = scan
-                .packages
-                .iter()
-                .find(|p| &p.name == name)
-                .and_then(|p| p.size_bytes)
-                .map(|b| format!(" ({})", human_bytes(b)))
-                .unwrap_or_default();
-            out.push_str(&format!("  {} {}{}\n", s.bullet(), name, s.dim(&size)));
-        }
+        findings += 1;
+        head(&mut out, &format!("{} cache", helper.bin()), human_bytes(b));
+        command(&mut out, helper.clean_command().join(" "));
     }
 
-    if !pacfiles.is_empty() {
-        out.push('\n');
-        out.push_str(
-            &s.dim("config leftovers - upgrades kept your file and left the new one beside it:"),
+    // --- orphans ---
+    if orphans.is_empty() {
+        head(&mut out, "orphans", s.dim("none"));
+    } else {
+        findings += 1;
+        head(
+            &mut out,
+            "orphans",
+            format!(
+                "{} {} {}",
+                orphans.len(),
+                s.bullet(),
+                human_bytes(orphan_bytes)
+            ),
         );
-        out.push('\n');
-        for f in &pacfiles {
-            out.push_str(&format!(
-                "  {} {} {}\n",
+        let mut names: Vec<String> = orphans
+            .iter()
+            .take(limit)
+            .map(|(n, b)| match b {
+                Some(b) => format!("{n} {}", s.dim(&human_bytes(*b))),
+                None => n.clone(),
+            })
+            .collect();
+        names.extend(more(orphans.len()));
+        detail(&mut out, names.join(", "));
+        // Per item, never batched (design §3): read why, then remove one.
+        command(&mut out, "paclens why <name>".to_string());
+    }
+
+    // --- unused runtimes ---
+    if unused.is_empty() {
+        head(&mut out, "unused runtimes", s.dim("none"));
+    } else {
+        findings += 1;
+        head(
+            &mut out,
+            "unused runtimes",
+            format!(
+                "{} {} {}",
+                unused.len(),
                 s.bullet(),
-                f.base(),
-                s.dim(f.kind.label())
-            ));
-        }
+                human_bytes(unused_bytes)
+            ),
+        );
+        let mut names: Vec<String> = unused.iter().take(limit).map(|p| p.name.clone()).collect();
+        names.extend(more(unused.len()));
+        detail(&mut out, names.join(", "));
+        command(&mut out, "flatpak uninstall --unused".to_string());
     }
 
-    if !unowned.is_empty() {
-        out.push('\n');
-        out.push_str(&s.dim(
-            "no repository - installed, but in no configured repo, so nothing can update them:",
-        ));
-        out.push('\n');
-        for (who, n) in crate::analyzer::provenance::by_packager(&unowned) {
-            out.push_str(&format!("  {} {n} packaged by {who}\n", s.bullet()));
+    // --- config leftovers ---
+    if pacfiles.is_empty() {
+        head(&mut out, "config files", s.dim("none"));
+    } else {
+        findings += 1;
+        head(
+            &mut out,
+            "config files",
+            format!(
+                "{} {}",
+                pacfiles.len(),
+                s.dim("left beside your config by upgrades")
+            ),
+        );
+        for f in pacfiles.iter().take(limit) {
+            detail(&mut out, format!("{} {}", f.base(), s.dim(f.kind.label())));
         }
-        let names: Vec<&str> = unowned.iter().take(6).map(|p| p.name.as_str()).collect();
-        out.push_str(&s.dim(&format!("      {}", names.join(", "))));
-        if unowned.len() > names.len() {
-            out.push_str(&s.dim(&format!(", and {} more", unowned.len() - names.len())));
+        if let Some(m) = more(pacfiles.len()) {
+            detail(&mut out, m);
         }
-        out.push('\n');
+        command(&mut out, pacfiles::review_all_command(&diff));
     }
 
-    if !stale.is_empty() {
-        out.push('\n');
-        out.push_str(&s.dim(
-            "stale services - running against files an upgrade replaced (yours only; system services need root to inspect):",
-        ));
-        out.push('\n');
+    // --- stale services ---
+    if stale.is_empty() {
+        head(&mut out, "stale services", s.dim("none"));
+    } else {
+        findings += 1;
+        head(
+            &mut out,
+            "stale services",
+            format!(
+                "{} {} {}",
+                stale.len(),
+                s.dim("running replaced files"),
+                s.dim("[inferred]")
+            ),
+        );
+        let mut relog = Vec::new();
         for u in &stale {
-            let procs = u.processes.join(", ");
-            let warning = if u.unit.ends_with(".scope") {
-                " - log out and back in to refresh this session"
-            } else if u.session_critical {
-                " - restarting this ends your session"
-            } else {
-                ""
-            };
-            out.push_str(&format!(
-                "  {} {} {}\n",
-                s.bullet(),
-                u.unit,
-                s.dim(&format!("({procs}){warning}"))
-            ));
-            // Name the file, which is the part that turns "something changed"
-            // into "the binary you are running is gone".
-            for f in u.files.iter().take(2) {
-                out.push_str(&s.dim(&format!("      {f} was replaced")));
-                out.push('\n');
+            let file = u
+                .files
+                .first()
+                .map(|f| s.dim(&format!(" {} {f} replaced", s.bullet())))
+                .unwrap_or_default();
+            detail(
+                &mut out,
+                format!(
+                    "{} {}{file}",
+                    u.unit,
+                    s.dim(&format!("({})", u.processes.join(", ")))
+                ),
+            );
+            // A scope cannot be restarted, and a session-critical service
+            // must not become a casual command (design §3).
+            match u.restart_command() {
+                Some(cmd) => command(&mut out, cmd),
+                None => relog.push(u.unit.as_str()),
             }
         }
+        if !relog.is_empty() {
+            detail(
+                &mut out,
+                s.dim(&format!("log out and back in for {}", relog.join(", "))),
+            );
+        }
+        detail(
+            &mut out,
+            s.dim("yours only; system services need root to inspect"),
+        );
     }
 
-    // --- suggestions ---
-    let mut suggestions = Vec::new();
-    // Only suggest what would actually do something: an 11 GiB cache that
-    // reclaims nothing should not carry a command that frees nothing.
-    if sizes.pacman_cache_reclaimable_bytes != Some(0) {
-        suggestions.push("paccache -rk3".to_string());
-    }
-    if !unused.is_empty() {
-        suggestions.push("flatpak uninstall --unused".to_string());
-    }
-    if let (Some(_), Some(helper)) = (sizes.aur_cache_bytes, scan.aur_helper.helper()) {
-        suggestions.push(helper.clean_command().join(" "));
-    }
-    if !pacfiles.is_empty() {
-        suggestions.push(pacfiles::review_all_command(&diff));
-    }
-    // A scope cannot be restarted, and a session-critical service must not
-    // become a casual command in a list headed "run yourself".
-    for u in &stale {
-        if let Some(command) = u.restart_command() {
-            suggestions.push(command);
+    // --- no repository ---
+    if unowned.is_empty() {
+        head(&mut out, "no repository", s.dim("none"));
+    } else {
+        findings += 1;
+        head(
+            &mut out,
+            "no repository",
+            format!(
+                "{} {}",
+                unowned.len(),
+                s.dim("in no configured repo, so nothing updates them")
+            ),
+        );
+        for (who, n) in crate::analyzer::provenance::by_packager(&unowned) {
+            detail(&mut out, format!("{n} packaged by {who}"));
         }
+        let mut names: Vec<String> = unowned.iter().take(limit).map(|p| p.name.clone()).collect();
+        names.extend(more(unowned.len()));
+        detail(&mut out, s.dim(&names.join(", ")));
     }
-    if !suggestions.is_empty() {
-        out.push('\n');
-        out.push_str(&s.dim("suggested - review, then run yourself:"));
-        out.push('\n');
-        for c in &suggestions {
-            out.push_str(&format!("  {c}\n"));
-        }
+
+    let headline = if findings == 0 {
+        s.summary_ok("nothing to clean up")
+    } else {
+        s.summary_updates(&format!(
+            "{findings} finding{}",
+            if findings == 1 { "" } else { "s" }
+        ))
+    };
+    format!(
+        "{} {} {}\n\n{out}",
+        s.title("paclens"),
+        s.dim(s.bullet()),
+        headline
+    )
+}
+
+/// What the one-line-per-finding report needs.
+struct CompactInput<'a> {
+    cache: &'a crate::model::CacheSizes,
+    helper: Option<crate::providers::aur::AurHelper>,
+    orphans: (usize, u64),
+    unused: (usize, u64),
+    pacfiles: usize,
+    stale: &'a [crate::analyzer::StaleUnit],
+    unowned: usize,
+    review: String,
+}
+
+/// The default report: one line per finding — the figure, then the command
+/// that acts on it. Clean findings are left out; `--all` lists everything.
+fn compact_report(c: CompactInput, s: &Styles) -> String {
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    if let Some(b) = c.cache.pacman_cache_bytes {
+        let (value, cmd) = match c.cache.pacman_cache_reclaimable_bytes {
+            Some(r) if r > 0 => (
+                format!("{} {} {} free", human_bytes(b), s.bullet(), human_bytes(r)),
+                "paccache -rk3".to_string(),
+            ),
+            _ => (human_bytes(b), String::new()),
+        };
+        rows.push(("pacman cache".into(), value, cmd));
     }
-    if !orphans.is_empty() {
-        out.push_str(&s.dim("  review each orphan: paclens why <name>"));
+    if let (Some(b), Some(h)) = (c.cache.aur_cache_bytes, c.helper) {
+        rows.push((
+            format!("{} cache", h.bin()),
+            human_bytes(b),
+            h.clean_command().join(" "),
+        ));
+    }
+    if c.orphans.0 > 0 {
+        rows.push((
+            "orphans".into(),
+            format!(
+                "{} {} {}",
+                c.orphans.0,
+                s.bullet(),
+                human_bytes(c.orphans.1)
+            ),
+            "paclens why <name>".into(),
+        ));
+    }
+    if c.unused.0 > 0 {
+        rows.push((
+            "runtimes".into(),
+            format!(
+                "{} unused {} {}",
+                c.unused.0,
+                s.bullet(),
+                human_bytes(c.unused.1)
+            ),
+            "flatpak uninstall --unused".into(),
+        ));
+    }
+    if c.pacfiles > 0 {
+        rows.push(("config files".into(), c.pacfiles.to_string(), c.review));
+    }
+    if !c.stale.is_empty() {
+        let restartable = c
+            .stale
+            .iter()
+            .filter(|u| u.restart_command().is_some())
+            .count();
+        let cmd = match restartable {
+            0 => "log out and back in".to_string(),
+            n => format!("{n} restart{} in --all", if n == 1 { "" } else { "s" }),
+        };
+        rows.push(("services".into(), format!("{} stale", c.stale.len()), cmd));
+    }
+    if c.unowned > 0 {
+        rows.push(("no repository".into(), c.unowned.to_string(), String::new()));
+    }
+    // Everything but the cache totals is something to act on.
+    let findings = rows.iter().filter(|r| !r.2.is_empty()).count();
+    let mut out = if findings == 0 {
+        s.summary_ok("nothing to clean up")
+    } else {
+        s.summary_updates(&format!("{findings} to review"))
+    };
+    out.push('\n');
+    let value_w = rows.iter().map(|r| r.1.chars().count()).max().unwrap_or(0);
+    for (label, value, cmd) in &rows {
+        let pad = value_w - value.chars().count();
+        let line = format!(
+            "  {} {value}{}  {cmd}",
+            s.dim(&format!("{label:14}")),
+            " ".repeat(pad),
+        );
+        out.push_str(line.trim_end());
         out.push('\n');
     }
+    out.push_str(&s.dim("  paclens cleanup --all for the lists\n"));
     out
 }
 
@@ -291,15 +399,20 @@ fn render_cleanup_with(
 /// large cache that frees nothing says so rather than implying a win.
 fn pacman_cache_value(total: Option<u64>, reclaimable: Option<u64>, s: &Styles) -> String {
     match (total, reclaimable) {
-        (Some(b), Some(0)) => format!("{} {}", human_bytes(b), s.dim("(nothing to reclaim)")),
-        (Some(b), Some(r)) => format!("{} ({} reclaimable)", human_bytes(b), human_bytes(r)),
+        (Some(b), Some(0)) => format!(
+            "{} {}",
+            human_bytes(b),
+            s.dim(&format!("{} nothing to reclaim", s.bullet()))
+        ),
+        (Some(b), Some(r)) => format!(
+            "{} {} {} reclaimable",
+            human_bytes(b),
+            s.bullet(),
+            human_bytes(r)
+        ),
         (Some(b), None) => human_bytes(b),
         (None, _) => s.dim("-"),
     }
-}
-
-fn row(label: &str, value: &str, s: &Styles) -> String {
-    format!("  {} {:16} {value}\n", s.dim(s.bullet()), s.dim(label))
 }
 
 #[cfg(test)]
@@ -373,7 +486,7 @@ mod tests {
 
     fn render(scan: &ScanResult) -> String {
         let graph = DepGraph::build(scan);
-        render_cleanup_with(scan, &graph, &ascii(), "", &[])
+        render_cleanup_with(scan, &graph, &ascii(), "", &[], true)
     }
 
     #[test]
@@ -393,7 +506,7 @@ mod tests {
         );
         let out = render(&s);
         assert!(out.contains("nothing to clean up"), "{out}");
-        assert!(out.contains("(nothing to reclaim)"), "{out}");
+        assert!(out.contains("nothing to reclaim"), "{out}");
         // A cache that frees nothing must not carry a command that frees
         // nothing (design §3 — no misleading numbers, and no busywork).
         assert!(!out.contains("paccache"), "{out}");
@@ -471,7 +584,7 @@ mod tests {
         assert!(out.contains("[inferred]"), "label missing:\n{out}");
         assert!(out.contains("pipewire.service"), "{out}");
         // The file is named, which is what `checkservices` cannot tell you.
-        assert!(out.contains("was replaced"), "no file named:\n{out}");
+        assert!(out.contains(" replaced"), "no file named:\n{out}");
         assert!(out.contains("/usr/lib/libc.so.6"), "{out}");
         // The one that would log you out is listed, warned about, and left
         // out of the commands.
@@ -508,8 +621,8 @@ mod tests {
             },
         ];
         let graph = DepGraph::build(&scan);
-        let out = render_cleanup_with(&scan, &graph, &ascii(), "meld", &[]);
-        assert!(out.contains("config leftovers"), "row missing:\n{out}");
+        let out = render_cleanup_with(&scan, &graph, &ascii(), "meld", &[], true);
+        assert!(out.contains("config files"), "row missing:\n{out}");
         // Listed by the config they sit next to, not by the leftover's name.
         assert!(out.contains("/etc/pacman.conf "), "base missing:\n{out}");
         assert!(out.contains("pacnew"), "kind missing:\n{out}");
@@ -531,7 +644,7 @@ mod tests {
         let out = render(&scan);
         assert!(out.contains("stale services"), "row missing:\n{out}");
         assert!(
-            out.contains("config leftovers"),
+            out.contains("config files     none"),
             "the row must say none rather than vanish:\n{out}"
         );
         assert!(!out.contains("pacdiff"), "nothing to suggest:\n{out}");
@@ -552,7 +665,7 @@ mod tests {
             CacheSizes::default(),
         );
         let out = render(&s);
-        assert!(out.contains("1 item worth reviewing"), "{out}");
+        assert!(out.contains("1 finding"), "{out}");
         assert!(out.contains("leftover"), "{out}");
         assert!(out.contains("2.00 KiB"), "size missing:\n{out}");
         assert!(!out.contains("sudo pacman -Rns"), "{out}");
@@ -571,7 +684,7 @@ mod tests {
             CacheSizes::default(),
         );
         let graph = DepGraph::build(&scan);
-        let out = render_cleanup_with(&scan, &graph, &ascii(), "", &["keep-me".to_string()]);
+        let out = render_cleanup_with(&scan, &graph, &ascii(), "", &["keep-me".to_string()], true);
         assert!(out.contains("orphans"), "{out}");
         assert!(
             !out.contains("keep-me") && !out.contains("paclens why"),
@@ -590,14 +703,17 @@ mod tests {
         let mut s = scan(Vec::new(), sizes.clone());
         s.aur_helper = HelperChoice::Detected(AurHelper::Yay);
         let out = render(&s);
-        assert!(out.contains("yay build cache"), "{out}");
+        assert!(out.contains("yay cache"), "{out}");
         assert!(out.contains("yay -Sc --aur"), "{out}");
         assert!(!out.contains("paru"), "{out}");
 
         let mut s = scan(Vec::new(), sizes);
         s.aur_helper = HelperChoice::None;
         let out = render(&s);
-        assert!(!out.contains("build cache"), "{out}");
+        assert!(
+            !out.contains("yay cache") && !out.contains("paru cache"),
+            "{out}"
+        );
         assert!(!out.contains("-Sc"), "{out}");
     }
 
@@ -619,7 +735,7 @@ mod tests {
             },
         );
         let out = render(&s);
-        assert!(out.contains("review, then run yourself"), "{out}");
+        assert!(out.contains("  $ "), "{out}");
         assert!(
             !out.contains("--noconfirm"),
             "a suggestion must still prompt:\n{out}"
@@ -628,6 +744,41 @@ mod tests {
 
     /// `--no-color` output carries no ANSI escapes at all — it is what gets
     /// piped into a file or another program.
+    #[test]
+    fn the_default_report_is_one_line_per_finding_with_its_command() {
+        let mut scan = scan(
+            Vec::new(),
+            CacheSizes {
+                pacman_cache_bytes: Some(1000),
+                pacman_cache_reclaimable_bytes: Some(500),
+                ..CacheSizes::default()
+            },
+        );
+        scan.pacfiles = vec![crate::analyzer::PacFile {
+            path: "/etc/pacman.conf.pacnew".to_string(),
+            kind: crate::analyzer::pacfiles::PacFileKind::Pacnew,
+            modified_secs: Some(1),
+        }];
+        let graph = DepGraph::build(&scan);
+        let out = render_cleanup_with(&scan, &graph, &ascii(), "meld", &[], false);
+        assert!(out.starts_with("2 to review\n"), "{out}");
+        let line = |label: &str| {
+            out.lines()
+                .find(|l| l.trim_start().starts_with(label))
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert!(line("pacman cache").ends_with("paccache -rk3"), "{out}");
+        assert!(
+            line("config files").ends_with("sudo DIFFPROG=meld pacdiff"),
+            "{out}"
+        );
+        // Clean findings say nothing; the lists wait for --all.
+        assert!(!out.contains("orphans"), "{out}");
+        assert!(!out.contains("/etc/pacman.conf"), "{out}");
+        assert!(out.contains("--all"), "{out}");
+    }
+
     #[test]
     fn no_color_output_is_plain_ascii() {
         let s = scan(
