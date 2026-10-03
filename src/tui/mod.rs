@@ -29,8 +29,8 @@ use crate::scanner;
 
 use app::{App, InputMode};
 use input::{
-    Action, map_cleanup_key, map_dashboard_key, map_exec_key, map_filter_key, map_history_key,
-    map_log_key, map_overlaps_key, map_packages_key,
+    Action, map_cleanup_key, map_dashboard_key, map_exec_key, map_filter_key, map_global_key,
+    map_history_key, map_log_key, map_overlaps_key, map_packages_key,
 };
 use theme::Theme;
 
@@ -385,6 +385,7 @@ fn run_loop(
                 }
             }
             Action::CloseLog => app.close_log(),
+            Action::ToggleHelp => app.toggle_help(),
             Action::OpenLog => match UpdateLog::latest_path() {
                 Some(path) => match std::fs::read_to_string(&path) {
                     Ok(text) => app.open_log(text),
@@ -402,6 +403,16 @@ fn run_loop(
 fn read_action(mode: InputMode, exec_done: bool) -> anyhow::Result<Action> {
     match event::read().context("failed to read a terminal event")? {
         Event::Key(key) if key.kind == KeyEventKind::Press => Ok(match mode {
+            InputMode::Help => Action::ToggleHelp,
+            InputMode::Dashboard
+            | InputMode::Packages
+            | InputMode::Overlaps
+            | InputMode::Cleanup
+            | InputMode::History
+                if map_global_key(key).is_some() =>
+            {
+                map_global_key(key).unwrap_or(Action::Ignore)
+            }
             InputMode::Dashboard => map_dashboard_key(key),
             InputMode::Packages => map_packages_key(key),
             InputMode::Overlaps => map_overlaps_key(key),

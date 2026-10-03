@@ -66,7 +66,21 @@ pub enum Action {
     FilterAccept,
     /// Filter input → drop the query.
     FilterCancel,
+    /// `?` on any screen → open or close the full key reference.
+    ToggleHelp,
     Ignore,
+}
+
+/// Keys that mean the same on every ordinary screen, checked before the
+/// screen's own map: `?` opens the key reference and `L` the update log.
+/// Not in the filter input, where both are characters to type, nor in the
+/// console, where every key belongs to the running command.
+pub fn map_global_key(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        KeyCode::Char('L') => Some(Action::OpenLog),
+        _ => None,
+    }
 }
 
 fn is_quit(key: &KeyEvent) -> bool {

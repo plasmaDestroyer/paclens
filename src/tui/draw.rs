@@ -53,6 +53,77 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::Cleanup => draw_cleanup(frame, area, app),
         Screen::History => draw_history(frame, area, app),
     }
+    if app.is_help_open() {
+        draw_help(frame, area, app);
+    }
+}
+
+/// Every key, by screen — what the one-line footers have no room for.
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "everywhere",
+        &[
+            ("j/k ↑/↓", "move"),
+            ("enter", "look closer"),
+            ("esc", "back"),
+            ("L", "update log"),
+            ("?", "this list"),
+            ("q", "quit"),
+        ],
+    ),
+    (
+        "dashboard",
+        &[
+            ("u", "run the update"),
+            ("space", "toggle a source"),
+            ("h/l ←/→", "switch pane"),
+            ("r", "refresh"),
+            ("o", "overlaps"),
+            ("c", "cleanup"),
+            ("H", "history"),
+        ],
+    ),
+    (
+        "packages",
+        &[
+            ("/", "filter"),
+            ("s", "sort"),
+            ("[ ]", "move the divider"),
+            ("pgup/pgdn", "page"),
+        ],
+    ),
+    (
+        "overlaps",
+        &[
+            ("d", "flip direction"),
+            ("x", "run the copy"),
+            ("R", "remove the source side"),
+        ],
+    ),
+];
+
+fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let mut lines = Vec::new();
+    for (screen, keys) in HELP {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(Span::styled(*screen, theme.header)));
+        for (key, what) in *keys {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {key:10}"), theme.title),
+                Span::styled(*what, theme.dim),
+            ]));
+        }
+    }
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let rect = centered(area, 40.min(area.width), height);
+    frame.render_widget(ratatui::widgets::Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(panel(theme, " keys · any key closes ")),
+        rect,
+    );
 }
 
 /// The pty size the console gets for a `width` × `height` terminal — mirrors
@@ -234,7 +305,7 @@ fn draw_log(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::Lo
 /// comfortable size it falls back to the flat single-table layout.
 fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let block = panel(theme, " paclens · dashboard ");
+    let block = panel(theme, " paclens ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -260,10 +331,18 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // One footer row of key hints; `?` has the rest.
+    let rows = Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).split(inner);
+    frame.render_widget(
+        Paragraph::new(dashboard_key_rows(theme, rows[1].width as usize, 1)),
+        rows[1],
+    );
     let cols =
-        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(inner);
-    let left = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(cols[0]);
-    let right = Layout::vertical([Constraint::Min(5), Constraint::Length(6)]).split(cols[1]);
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[0]);
+    // The sources pane is as tall as its rows (plus header and borders); the
+    // space left over goes to what needs attention.
+    let table_h = (app.scan().sources.len() as u16 + 3).max(5);
+    let left = Layout::vertical([Constraint::Length(table_h), Constraint::Min(5)]).split(cols[0]);
 
     let sources_focused = app.dash_focus() == crate::tui::app::DashPane::Sources;
     let sources_pane = subpane(theme, " sources ").border_style(if sources_focused {
@@ -276,19 +355,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     render_table(frame, sources_inner, app);
 
     render_system_pane(frame, left[1], app);
-    render_updates_pane(frame, right[0], app);
-
-    let keys_pane = subpane(theme, " keys ");
-    let keys_inner = keys_pane.inner(right[1]);
-    frame.render_widget(keys_pane, right[1]);
-    frame.render_widget(
-        Paragraph::new(dashboard_key_rows(
-            theme,
-            keys_inner.width as usize,
-            keys_inner.height as usize,
-        )),
-        keys_inner,
-    );
+    render_updates_pane(frame, cols[1], app);
 }
 
 /// The pre-quadrant layout, kept for small terminals.
@@ -415,19 +482,22 @@ fn fit_hints<'a>(
 /// tool is for. `q quit` is next safest to keep, since a user who cannot find
 /// the exit is stuck. `L log` goes first: it is the least urgent thing on the
 /// screen and the log is reachable again from anywhere.
-fn dashboard_hints<'a>(updown: &'a str, leftright: &'a str) -> [(u8, KeyHint<'a>); 11] {
+fn dashboard_hints<'a>(updown: &'a str, leftright: &'a str) -> [(u8, KeyHint<'a>); 12] {
     [
-        (4, (updown, "move")),
-        (6, (leftright, "pane")),
-        (3, ("enter", "packages")),
-        (2, ("space", "toggle")),
+        (5, (updown, "move")),
+        (7, (leftright, "pane")),
+        (4, ("enter", "packages")),
+        (3, ("space", "toggle")),
         (0, ("u", "update")),
-        (5, ("r", "refresh")),
-        (7, ("o", "overlaps")),
-        (8, ("c", "cleanup")),
-        (9, ("H", "history")),
-        (10, ("L", "log")),
-        (1, ("q", "quit")),
+        (6, ("r", "refresh")),
+        (8, ("o", "overlaps")),
+        (9, ("c", "cleanup")),
+        (10, ("H", "history")),
+        (11, ("L", "log")),
+        // `?` is the one that must survive: it shows every key the footer
+        // had no room for.
+        (1, ("?", "keys")),
+        (2, ("q", "quit")),
     ]
 }
 
@@ -456,99 +526,112 @@ fn subpane(theme: &Theme, title: &'static str) -> Block<'static> {
 /// dashboard debut (design §13 "dashboard enrichment").
 fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let pane = subpane(theme, " system ");
+    let pane = subpane(theme, " attention ");
     let inner = pane.inner(area);
     frame.render_widget(pane, area);
 
-    let kv = |label: &str, value: Span<'static>| {
+    let kv = |label: &str, value: String, style: Style| {
         Line::from(vec![
             Span::styled(format!("{} ", theme.glyphs.bullet), theme.dim),
-            Span::styled(format!("{:13}", label), theme.dim),
-            value,
+            Span::styled(format!("{:14}", label), theme.dim),
+            Span::styled(value, style),
         ])
     };
-    let count = |n: usize| {
-        if n > 0 {
-            Span::styled(n.to_string(), theme.accent)
-        } else {
-            Span::styled("0".to_string(), theme.dim)
-        }
-    };
-
-    let cache = match app.scan().cache_sizes.pacman_cache_bytes {
-        Some(b) => Span::styled(crate::format::human_bytes(b), theme.primary),
-        None => Span::styled("—".to_string(), theme.dim),
-    };
-    // What `u` will run right now — the plan-level summary (P1: what will
-    // happen is always visible before the key is pressed).
+    // What `u` will run right now (P1: what will happen is visible before
+    // the key is pressed). Mid-scan it is unknown, not empty (design §3).
     let plan = app.update_plan();
-    let plan_span = if !app.scan_settled() {
-        // Mid-scan the plan is not "empty", it is unknown — and the two must
-        // not read alike (design §3).
-        Span::styled("still checking".to_string(), theme.dim)
+    let plan_line = if !app.scan_settled() {
+        kv("plan", "still checking".into(), theme.dim)
     } else if plan.is_empty() {
-        Span::styled("nothing to run".to_string(), theme.dim)
+        kv("plan", "nothing to run".into(), theme.dim)
     } else {
         let n = plan.source_count();
-        Span::styled(
+        kv(
+            "plan",
             format!("{n} source{}", if n == 1 { "" } else { "s" }),
             theme.accent,
         )
     };
-    // Only a finding gets a row: a machine running what it has installed says
-    // nothing, the way a clean cache suggests nothing (#3).
+    // Below the plan, only findings get a row: a healthy machine says so in
+    // one line instead of a column of zeros.
+    let mut found: Vec<Line<'static>> = Vec::new();
     let reboot = app.reboot_status();
-    let mut lines = vec![kv("plan", plan_span)];
     if let Some(label) = reboot.label() {
-        lines.push(kv(
-            "reboot",
-            Span::styled(
-                label,
-                if reboot.is_required() {
-                    theme.accent
-                } else {
-                    theme.dim
-                },
-            ),
-        ));
+        let style = if reboot.is_required() {
+            theme.accent
+        } else {
+            theme.dim
+        };
+        found.push(kv("reboot", label.into(), style));
     }
-    let stale = app.stale_units();
-    if !stale.is_empty() {
-        lines.push(kv(
-            "services",
-            Span::styled(format!("{} want restarting", stale.len()), theme.accent),
-        ));
+    let stale = app.stale_units().len();
+    if stale > 0 {
+        found.push(kv("services", format!("{stale} stale"), theme.accent));
     }
-    // Packages the configured repos can no longer reach: `-Syu` skips them
-    // silently, every time, and the update count says nothing about it (#78).
+    // `-Syu` skips these silently, every time (#78).
     let stranded = app.stranded_count();
     if stranded > 0 {
-        lines.push(kv(
+        found.push(kv(
             "stranded",
-            Span::styled(format!("{stranded} no repo can reach"), theme.accent),
+            format!("{stranded} no repo can reach"),
+            theme.accent,
         ));
     }
-    lines.extend([
-        kv("pacman cache", cache),
-        kv("orphans", count(app.orphan_count())),
-        kv("overlaps", count(app.overlap_count())),
-        kv("scanned", scanned_span(app)),
-    ]);
+    let unowned = app.unowned_packages().len();
+    if unowned > 0 {
+        found.push(kv("no repository", unowned.to_string(), theme.accent));
+    }
+    let pacfiles = app.pacfiles().len();
+    if pacfiles > 0 {
+        found.push(kv(
+            "config files",
+            format!("{pacfiles} to merge"),
+            theme.accent,
+        ));
+    }
+    let orphans = app.orphan_count();
+    if orphans > 0 {
+        found.push(kv("orphans", orphans.to_string(), theme.primary));
+    }
+    if let Some(r) = app
+        .scan()
+        .cache_sizes
+        .pacman_cache_reclaimable_bytes
+        .filter(|r| *r > 0)
+    {
+        found.push(kv(
+            "cache",
+            format!("{} reclaimable", crate::format::human_bytes(r)),
+            theme.primary,
+        ));
+    }
+    let overlaps = app.overlap_count();
+    if overlaps > 0 {
+        found.push(kv("overlaps", overlaps.to_string(), theme.primary));
+    }
+    let mut lines = vec![plan_line];
+    if found.is_empty() && app.scan_settled() {
+        lines.push(Line::from(Span::styled(
+            "  nothing else needs attention".to_string(),
+            theme.dim,
+        )));
+    }
+    lines.extend(found);
     if app.stale_update_counts() {
         lines.push(Line::from(Span::styled(
             "stale? install pacman-contrib",
             theme.accent,
         )));
     }
-    // Why the aur source is degraded, shown only while it is the selected row
-    // (the pane already follows the sources cursor) and in accent rather than
-    // dim: it is the one line here that asks the user to do something.
+    // Why the selected source is degraded, while it is the selected row.
     if let Some(note) = app.selected_source_note() {
         lines.push(Line::from(Span::styled(note, theme.accent)));
     }
-    // Deliberately unwrapped: the pane has exactly one row to spare and the
-    // compact note is written to fit it. Wrapping would push the last row out
-    // of a fixed-height pane, which is how a clipped half-sentence happens.
+    lines.push(Line::from(vec![
+        Span::styled(format!("{} ", theme.glyphs.bullet), theme.dim),
+        Span::styled(format!("{:14}", "scanned"), theme.dim),
+        scanned_span(app),
+    ]));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -2715,7 +2798,7 @@ mod tests {
         row.iter().map(|&h| hint_width(h)).sum::<usize>() + HINT_SEP * row.len().saturating_sub(1)
     }
 
-    fn ranked() -> [(u8, KeyHint<'static>); 11] {
+    fn ranked() -> [(u8, KeyHint<'static>); 12] {
         dashboard_hints("^/v", "</>")
     }
 
@@ -2780,7 +2863,7 @@ mod tests {
         let r = ranked();
         let rows = fit_hints(&r, 64, 3);
         let shown: Vec<&str> = rows.iter().flatten().map(|&(k, _)| k).collect();
-        assert_eq!(shown.len(), 11, "not all hints shown: {shown:?}");
+        assert_eq!(shown.len(), 12, "not all hints shown: {shown:?}");
     }
 
     #[test]
@@ -2829,15 +2912,38 @@ mod tests {
             AppOptions::test(),
         );
         let text = render(&app, 96, 24);
-        for pane in ["sources", "pending updates · pacman (2)", "system", "keys"] {
+        for pane in [
+            "sources",
+            "pending updates · pacman (2)",
+            "attention",
+            "? keys",
+        ] {
             assert!(text.contains(pane), "pane {pane} missing:\n{text}");
         }
-        assert!(text.contains("orphans"), "{text}");
-        assert!(text.contains("overlaps"), "{text}");
-        assert!(text.contains("pacman cache"), "{text}");
+        // A healthy machine: no column of zeros, one line saying so.
+        assert!(text.contains("nothing else needs attention"), "{text}");
+        assert!(!text.contains("orphans"), "{text}");
         // Grouped preview with version transitions.
         assert!(text.contains("6.9.1 -> 6.9.2"), "preview missing:\n{text}");
         assert!(text.contains("q quit"), "keys missing:\n{text}");
+    }
+
+    #[test]
+    fn question_mark_lists_every_key_the_footer_dropped() {
+        let mut app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
+        app.toggle_help();
+        let text = render(&app, 96, 40);
+        for row in [
+            "o         overlaps",
+            "c         cleanup",
+            "H         history",
+            "L         update log",
+            "u         run the update",
+        ] {
+            assert!(text.contains(row), "{row} missing:\n{text}");
+        }
+        app.toggle_help();
+        assert!(!render(&app, 96, 40).contains("any key closes"));
     }
 
     #[test]
@@ -3074,7 +3180,7 @@ mod tests {
         );
         let text = render(&app, 96, 24);
         assert!(
-            text.contains("plan         2 sources"),
+            text.contains("plan          2 sources"),
             "plan line missing:\n{text}"
         );
 
@@ -3131,7 +3237,7 @@ mod tests {
         );
         app.finish_update(&report());
         let text = render(&app, 96, 24);
-        assert!(text.contains("paclens · dashboard"), "{text}");
+        assert!(text.contains("paclens"), "{text}");
         assert!(
             text.contains("update finished — 1 source succeeded"),
             "summary flash missing:\n{text}"
@@ -3549,12 +3655,12 @@ mod tests {
         }];
         let app = App::new(s, Theme::none(), AppOptions::test());
         let text = render(&app, 100, 24);
-        assert!(text.contains("want restarting"), "system pane row:\n{text}");
+        assert!(text.contains("1 stale"), "attention row:\n{text}");
 
         // Nothing stale: no row, the way the reboot row behaves.
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
         let text = render(&app, 100, 24);
-        assert!(!text.contains("want restarting"), "furniture:\n{text}");
+        assert!(!text.contains(" stale"), "furniture:\n{text}");
     }
 
     #[test]
@@ -4000,7 +4106,7 @@ mod tests {
     #[test]
     fn dashboard_hints_the_overlap_screen() {
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        let text = render(&app, 96, 24);
+        let text = render(&app, 160, 24);
         assert!(text.contains("o overlaps"), "hint missing:\n{text}");
     }
 
@@ -4379,7 +4485,7 @@ mod tests {
     #[test]
     fn dashboard_hints_the_cleanup_screen() {
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        let text = render(&app, 96, 24);
+        let text = render(&app, 160, 24);
         assert!(text.contains("c cleanup"), "hint missing:\n{text}");
     }
 
@@ -4846,7 +4952,7 @@ mod tests {
     #[test]
     fn dashboard_hints_the_history_screen() {
         let app = App::new(scan_with(Vec::new()), Theme::none(), AppOptions::test());
-        let text = render(&app, 110, 26);
+        let text = render(&app, 160, 26);
         assert!(text.contains("H history"), "hint missing:\n{text}");
     }
 

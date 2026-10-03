@@ -154,6 +154,8 @@ pub enum InputMode {
     LogView,
     /// Inline execution console: keys pass through to the running command.
     Exec,
+    /// The `?` key reference: any key closes it.
+    Help,
 }
 
 /// The inline log viewer: file contents + lines scrolled up from the end.
@@ -235,6 +237,8 @@ pub struct App {
     started: std::time::Instant,
     /// Inline log viewer overlay (any screen).
     log_view: Option<LogView>,
+    /// The `?` key reference is open (any screen).
+    help: bool,
     /// Inline execution console overlay (any screen).
     exec: Option<ExecView>,
     /// Dashboard: which pane has focus (←/→ or h/l switches).
@@ -401,6 +405,7 @@ impl App {
             spinner_frame: 0,
             started: std::time::Instant::now(),
             log_view: None,
+            help: false,
             exec: None,
             dash_focus: DashPane::Sources,
             updates_scroll: 0,
@@ -608,6 +613,9 @@ impl App {
         }
         if self.log_view.is_some() {
             return InputMode::LogView;
+        }
+        if self.help {
+            return InputMode::Help;
         }
         match self.screen {
             Screen::Dashboard => InputMode::Dashboard,
@@ -1130,6 +1138,14 @@ impl App {
         }
         let now = !self.is_enabled(&id);
         self.enabled.insert(id, now);
+    }
+
+    // --- key reference ---
+    pub fn is_help_open(&self) -> bool {
+        self.help
+    }
+    pub fn toggle_help(&mut self) {
+        self.help = !self.help;
     }
 
     // --- inline log viewer ---
