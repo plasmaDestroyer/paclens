@@ -53,12 +53,7 @@ fn render_overlaps(
             if n == 1 { "" } else { "s" }
         ))
     };
-    out.push_str(&format!(
-        "{} {} {}\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
-        headline
-    ));
+    out.push_str(&format!("{}\n", headline));
 
     for o in &shown {
         out.push('\n');

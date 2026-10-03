@@ -79,12 +79,7 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     };
 
     let mut out = String::new();
-    out.push_str(&format!(
-        "{} {} {}\n\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
-        summary
-    ));
+    out.push_str(&format!("{}\n", summary));
 
     out.push_str(&s.dim(&format!(
         "  {:<8} {:>9}  {:>7}  {}",
@@ -368,10 +363,7 @@ mod tests {
         let s = plain_styles();
         let scan = scan_with(vec![pkg("a", SourceId::pacman())], Vec::new(), true);
         let text = render_status(&scan, &s);
-        assert!(
-            text.starts_with("paclens · up to date"),
-            "text was:\n{text}"
-        );
+        assert!(text.starts_with("up to date"), "text was:\n{text}");
         assert!(text.contains("SOURCE"));
         assert!(text.contains("INSTALLED"));
     }
@@ -384,7 +376,7 @@ mod tests {
             vec![upd("a", SourceId::pacman())],
             true,
         );
-        assert!(render_status(&one, &s).starts_with("paclens · 1 update available"));
+        assert!(render_status(&one, &s).starts_with("1 update available"));
 
         let many = scan_with(
             Vec::new(),
@@ -395,7 +387,7 @@ mod tests {
             ],
             true,
         );
-        assert!(render_status(&many, &s).starts_with("paclens · 3 updates available"));
+        assert!(render_status(&many, &s).starts_with("3 updates available"));
     }
 
     #[test]
@@ -407,10 +399,7 @@ mod tests {
         );
         scan.sources[0].scan_error = Some("checkupdates exited with code 1".to_string());
         let text = render_status(&scan, &plain_styles());
-        assert!(
-            text.starts_with("paclens · 1 update found · 1 scan failed"),
-            "{text}"
-        );
+        assert!(text.starts_with("1 update found · 1 scan failed"), "{text}");
         let pacman = text
             .lines()
             .find(|l| l.trim_start().starts_with("pacman "))
@@ -440,7 +429,7 @@ mod tests {
         });
         let text = render_status(&scan, &plain_styles());
         assert!(
-            text.starts_with("paclens · 0 updates found · cargo unchecked"),
+            text.starts_with("0 updates found · cargo unchecked"),
             "{text}"
         );
     }

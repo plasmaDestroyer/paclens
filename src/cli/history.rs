@@ -59,9 +59,7 @@ fn render(transactions: &[Transaction], package: Option<&str>, limit: usize, s: 
     let runs = history::runs(transactions);
     let shown = runs.len().min(limit);
     out.push_str(&format!(
-        "{} {} {}\n\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
+        "{}\n",
         if runs.is_empty() {
             s.dim("no transactions in the log tail")
         } else {
@@ -102,9 +100,6 @@ fn render(transactions: &[Transaction], package: Option<&str>, limit: usize, s: 
             runs.len() - limit
         )));
     }
-    if !transactions.is_empty() {
-        out.push_str(&s.dim("\n  pacman only — Flatpak keeps no equivalent log\n"));
-    }
     out
 }
 
@@ -113,21 +108,19 @@ fn render_package(transactions: &[Transaction], name: &str, s: &Styles) -> Strin
     let events = history::package_history(transactions, name);
     if events.is_empty() {
         return format!(
-            "{} {} {}\n",
-            s.title("paclens"),
-            s.dim(s.bullet()),
+            "{}\n",
             s.dim(&format!(
                 "nothing about {name} in the log tail — it may predate it"
             ))
         );
     }
     let mut out = format!(
-        "{} {} {}\n\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
-        s.summary_ok(
-            &history::package_summary(transactions, name).unwrap_or_else(|| name.to_string())
-        )
+        "{}\n",
+        s.summary_ok(&format!(
+            "{name} {} {}",
+            s.bullet(),
+            history::package_summary(transactions, name).unwrap_or_default()
+        ))
     );
     for e in events {
         let versions = match (&e.from, &e.to) {
@@ -178,8 +171,6 @@ mod tests {
         assert!(out.contains("2 installed"), "{out}");
         // The interrupted transaction says so.
         assert!(out.contains("did not complete"), "{out}");
-        // And it does not pretend to know about Flatpak.
-        assert!(out.contains("pacman only"), "{out}");
     }
 
     #[test]

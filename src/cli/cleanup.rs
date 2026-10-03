@@ -289,12 +289,7 @@ fn render_cleanup_with(
             if findings == 1 { "" } else { "s" }
         ))
     };
-    format!(
-        "{} {} {}\n\n{out}",
-        s.title("paclens"),
-        s.dim(s.bullet()),
-        headline
-    )
+    format!("{}\n{out}", headline)
 }
 
 /// What the one-line-per-finding report needs.

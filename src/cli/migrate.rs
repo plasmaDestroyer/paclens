@@ -225,9 +225,7 @@ fn render_report(
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "{} {} {} {}\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
+        "{} {}\n",
         s.summary_updates(&format!(
             "migrate {} {} {}",
             r.display_name,

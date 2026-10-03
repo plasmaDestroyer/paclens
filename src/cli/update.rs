@@ -196,12 +196,7 @@ fn render_plan(
         })
     };
 
-    let mut out = format!(
-        "{} {} {}\n\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
-        summary
-    );
+    let mut out = format!("{}\n", summary);
     let label_w = plan
         .steps
         .iter()
@@ -257,12 +252,7 @@ fn render_report(report: &ExecutionReport, s: &Styles) -> String {
     };
 
     let mut out = String::new();
-    out.push_str(&format!(
-        "{} {} {}\n\n",
-        s.title("paclens"),
-        s.dim(s.bullet()),
-        headline
-    ));
+    out.push_str(&format!("{}\n", headline));
 
     let name_w = report
         .steps
@@ -432,7 +422,7 @@ mod tests {
         let plan = planner::plan_full_upgrade(&s, |_| true);
         let text = render_plan(&plan, Some("sudo"), false, false, &plain());
 
-        assert!(text.starts_with("paclens · update · 3 commands"), "{text}");
+        assert!(text.starts_with("update · 3 commands"), "{text}");
         // The privilege prefix is in the command itself, so the preview and
         // the run cannot disagree — and each command appears once.
         assert!(text.contains("sudo pacman -Syu"), "{text}");

@@ -125,7 +125,7 @@ fn status_no_color_is_plain_and_succeeds() {
     let out = run(&home, &["status", "--no-color"]);
     assert!(out.status.success(), "status should exit 0");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("paclens"), "stdout was: {stdout}");
+    assert!(stdout.contains("SOURCE"), "stdout was: {stdout}");
     assert!(
         !stdout.contains('\u{1b}'),
         "no-color output must not contain ANSI escapes: {stdout:?}"
@@ -141,7 +141,10 @@ fn update_dry_run_prints_a_plan_and_succeeds() {
     let out = run(&home, &["update", "--dry-run", "--no-color"]);
     assert!(out.status.success(), "update --dry-run should exit 0");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("paclens"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("would run") || stdout.contains("no source can be updated"),
+        "stdout was: {stdout}"
+    );
     assert!(
         !stdout.contains('\u{1b}'),
         "no-color output must not contain ANSI escapes: {stdout:?}"
