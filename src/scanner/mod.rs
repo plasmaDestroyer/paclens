@@ -646,6 +646,11 @@ fn assemble(
     // source row, so it lands with the finished result rather than partway.
     scan.kernel = read_running_kernel();
     scan.pacfiles = find_pacfiles(&config.cleanup.config_dirs);
+    // A network round trip, so it runs after the lanes rather than holding a
+    // row: nothing on the source table waits for it.
+    if config.scan.arch_news && lanes.pacman {
+        scan.news = crate::providers::news::fetch(runner, config.scan.provider_timeout_secs);
+    }
     // What each repo serves, against what pacman accepts (#78): one local
     // `pacman -Si`, after the lanes, because it needs the repo list.
     if lanes.pacman
@@ -874,6 +879,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         pacfiles: Vec::new(),
         stale_processes: Vec::new(),
         repo_arch: Default::default(),
+        news: Vec::new(),
     }
 }
 

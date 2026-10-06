@@ -1934,6 +1934,15 @@ YYYY-MM-DD | no --noconfirm for pacman
            | exact commands. The TUI keeps its plan view: there `u` is one
            | key among many, not a typed command.
 
+2026-10-06 | Arch news: posts that name an installed package (#1, #63–65)
+           | `curl` through the CommandRunner seam — pacman already depends on
+           | curl, so no HTTP crate. A post counts when its title names an
+           | installed package (Inferred: a word match) and it is newer than
+           | the last upgrade in pacman.log — so nothing is stored to mark a
+           | post read. Generic names (linux, arch, base…) never match. One
+           | `status` line per post with its link, one attention row in the
+           | TUI. Off with `scan.arch_news = false`; offline it shows nothing.
+
 ```
 
 ---

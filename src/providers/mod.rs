@@ -7,6 +7,7 @@
 pub mod aur;
 pub mod cargo;
 pub mod flatpak;
+pub mod news;
 pub mod pacman;
 
 /// Captured result of running a command.

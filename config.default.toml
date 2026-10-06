@@ -78,6 +78,11 @@ aur_devel = false
 # anything is broken.
 stale_services = true
 
+# Fetch the Arch news feed (archlinux.org) and show posts that name a package
+# you have installed, newer than your last upgrade. The one network request
+# paclens makes itself; offline it shows nothing.
+arch_news = true
+
 
 [why]
 

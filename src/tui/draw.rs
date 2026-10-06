@@ -555,6 +555,16 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     // Below the plan, only findings get a row: a healthy machine says so in
     // one line instead of a column of zeros.
     let mut found: Vec<Line<'static>> = Vec::new();
+    let since = crate::analyzer::news::last_upgrade(app.history_transactions());
+    let news = crate::analyzer::news::relevant(app.scan(), since);
+    if let Some(first) = news.first() {
+        let more = if news.len() > 1 {
+            format!(" +{}", news.len() - 1)
+        } else {
+            String::new()
+        };
+        found.push(kv("news", format!("{}{more}", first.package), theme.accent));
+    }
     let blocked = crate::analyzer::outranked::arch_mismatch(app.scan());
     if !blocked.is_empty() {
         let repos: Vec<&str> = blocked.iter().map(|(r, _)| r.as_str()).collect();
@@ -2679,6 +2689,7 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
+            news: Vec::new(),
         }
     }
 

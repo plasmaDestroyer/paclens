@@ -455,6 +455,7 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
+            news: Vec::new(),
         }
     }
 
@@ -687,6 +688,7 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
+            news: Vec::new(),
         };
         let plan = plan_full_upgrade(&empty, enable_all);
         assert!(plan.is_empty());

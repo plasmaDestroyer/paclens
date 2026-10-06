@@ -83,6 +83,9 @@ pub struct ScanResult {
     /// What architectures pacman accepts and each repo serves (#78).
     #[serde(default)]
     pub repo_arch: crate::providers::pacman::RepoArch,
+    /// Recent Arch news posts (#1); which ones matter is the analyzer's call.
+    #[serde(default)]
+    pub news: Vec<crate::providers::news::NewsItem>,
 }
 
 impl ScanResult {
@@ -202,6 +205,7 @@ impl ScanResult {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
+            news: Vec::new(),
         }
     }
 }

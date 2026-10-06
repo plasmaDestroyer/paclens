@@ -333,6 +333,7 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
+            news: Vec::new(),
         }
     }
 

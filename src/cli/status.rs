@@ -26,7 +26,13 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
     let scan = scanner::load_or_scan(&runner, config, refresh, config_path)?;
-    print!("{}", render_status(&scan, styles));
+    let since = crate::cli::history::read_tail(
+        Path::new(crate::cli::history::PACMAN_LOG),
+        crate::cli::history::TAIL_BYTES,
+    )
+    .ok()
+    .and_then(|log| crate::analyzer::news::last_upgrade(&crate::analyzer::history::parse(&log)));
+    print!("{}", render_status_since(&scan, since, styles));
     Ok(())
 }
 
@@ -63,7 +69,18 @@ fn check_line(scan: Option<&ScanResult>) -> (String, u8) {
 
 /// Build the whole status block. Pure (no IO) so the no-color rendering is
 /// deterministic and unit-testable.
+#[cfg(test)]
 fn render_status(scan: &ScanResult, s: &Styles) -> String {
+    render_status_since(scan, None, s)
+}
+
+/// [`render_status`], with news filtered to posts newer than `since` — the
+/// last upgrade, read from pacman's log by the caller.
+fn render_status_since(
+    scan: &ScanResult,
+    since: Option<chrono::DateTime<chrono::FixedOffset>>,
+    s: &Styles,
+) -> String {
     let total = scan.updates.len();
     let failed = scan
         .sources
@@ -143,6 +160,10 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     }
     // Packages no configured repo can reach: they never update again, and
     // nothing else on this screen would say so (#78).
+    for r in crate::analyzer::news::relevant(scan, since) {
+        out.push_str(&s.summary_updates(&format!("  news: {}", r.item.title)));
+        out.push_str(&s.dim(&format!(" {}\n", r.item.link)));
+    }
     if let Some(note) = crate::analyzer::outranked::arch_summary(scan) {
         out.push_str(&s.error(&format!("  {note}")));
         out.push('\n');
@@ -310,6 +331,7 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
+            news: Vec::new(),
         }
     }
 

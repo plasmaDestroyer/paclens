@@ -59,6 +59,9 @@ pub struct Scan {
     /// Reads `/proc/<pid>/maps` for every process this user can see, which is
     /// the most expensive thing a scan does.
     pub stale_services: bool,
+    /// Fetch the Arch news feed and show posts that name an installed package
+    /// (#1). The one network request paclens itself makes.
+    pub arch_news: bool,
 }
 
 /// The update run itself (#24).
@@ -176,6 +179,7 @@ impl Default for Scan {
             provider_timeout_secs: 10,
             aur_devel: false,
             stale_services: true,
+            arch_news: true,
         }
     }
 }
