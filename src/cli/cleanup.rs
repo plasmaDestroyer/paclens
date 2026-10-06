@@ -259,6 +259,36 @@ fn render_cleanup_with(
         );
     }
 
+    // --- what takes the space (#47) ---
+    // Installed size is a package's own files, and no two packages own the
+    // same file, so these figures do not overlap (design §3).
+    let mut largest: Vec<&crate::model::Package> = scan
+        .packages
+        .iter()
+        .filter(|p| p.size_bytes.is_some())
+        .collect();
+    largest.sort_by_key(|p| std::cmp::Reverse(p.size_bytes));
+    if !largest.is_empty() {
+        let total: u64 = largest.iter().filter_map(|p| p.size_bytes).sum();
+        head(
+            &mut out,
+            "largest",
+            format!("{} installed in all", human_bytes(total)),
+        );
+        let names: Vec<String> = largest
+            .iter()
+            .take(10)
+            .map(|p| {
+                format!(
+                    "{} {}",
+                    p.name,
+                    s.dim(&human_bytes(p.size_bytes.unwrap_or_default()))
+                )
+            })
+            .collect();
+        detail(&mut out, names.join(", "));
+    }
+
     // --- no repository ---
     if unowned.is_empty() {
         head(&mut out, "no repository", s.dim("none"));
@@ -683,11 +713,9 @@ mod tests {
         );
         let graph = DepGraph::build(&scan);
         let out = render_cleanup_with(&scan, &graph, &ascii(), "", &["keep-me".to_string()], true);
-        assert!(out.contains("orphans"), "{out}");
-        assert!(
-            !out.contains("keep-me") && !out.contains("paclens why"),
-            "{out}"
-        );
+        // Ignored as an orphan; still a package, so the size ranking keeps it.
+        assert!(out.contains("orphans          none"), "{out}");
+        assert!(!out.contains("paclens why"), "{out}");
     }
 
     /// The build-cache row and its clean command follow the detected helper,
@@ -775,6 +803,32 @@ mod tests {
         assert!(!out.contains("orphans"), "{out}");
         assert!(!out.contains("/etc/pacman.conf"), "{out}");
         assert!(out.contains("--all"), "{out}");
+    }
+
+    #[test]
+    fn the_full_report_ranks_the_largest_packages() {
+        let scan = scan(
+            vec![
+                pkg(
+                    "small",
+                    SourceId::pacman(),
+                    InstallReason::Explicit,
+                    Some(10),
+                ),
+                pkg(
+                    "big",
+                    SourceId::pacman(),
+                    InstallReason::Explicit,
+                    Some(5000),
+                ),
+            ],
+            CacheSizes::default(),
+        );
+        let graph = DepGraph::build(&scan);
+        let out = render_cleanup_with(&scan, &graph, &ascii(), "", &[], true);
+        let line = out.lines().find(|l| l.contains("big")).expect("listed");
+        assert!(line.find("big") < line.find("small"), "{out}");
+        assert!(out.contains("installed in all"), "{out}");
     }
 
     #[test]
