@@ -1118,7 +1118,7 @@ fn bottom_line(area: Rect) -> Rect {
 }
 
 // ---------------------------------------------------------------------------
-// Overlap screen (roadmap v0.1.4) — advisory only, no actions
+// Overlap screen — advisory only, no actions
 // ---------------------------------------------------------------------------
 
 fn draw_overlaps(frame: &mut Frame, area: Rect, app: &App) {
@@ -1306,7 +1306,7 @@ fn render_tradeoff_pane(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// The migration advisory pane (v0.4): Enter on an overlap swaps the
+/// The migration advisory pane: Enter on an overlap swaps the
 /// tradeoff pane for this. Per mapping two lines (from + to), then the
 /// analyzer's warnings; truncated content points at the CLI report.
 fn render_migrate_pane(
@@ -1634,7 +1634,7 @@ fn render_transaction_detail(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup screen (roadmap v0.1.5) — advisory only, no actions
+// Cleanup screen — advisory only, no actions
 // ---------------------------------------------------------------------------
 
 fn draw_cleanup(frame: &mut Frame, area: Rect, app: &App) {
@@ -1747,7 +1747,7 @@ fn render_cache_pane(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(spans)
     };
     let sizes = &app.scan().cache_sizes;
-    // Honesty rule (dev-notes 2026-07-14): the total is mostly the
+    // Honesty rule (design §13, 2026-07-14): the total is mostly the
     // current-version tarballs paccache never touches — show what a
     // `paccache -rk3` would actually free next to it.
     let pacman_cache = match (

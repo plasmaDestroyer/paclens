@@ -6,7 +6,7 @@ use super::SourceId;
 
 /// A single installed package from any source.
 ///
-/// For pacman, all fields are populated from `pacman -Qi` (v0.0.3). For
+/// For pacman, all fields are populated from `pacman -Qi`. For
 /// flatpak, `name` holds the application id (the stable identifier used by
 /// overlap detection) and the human display name lives in `description`;
 /// dependency fields stay empty because flatpak deps are bundled, not
@@ -28,7 +28,7 @@ pub struct Package {
     /// Virtual package names this provides (`pacman -Qi` "Provides").
     pub provides: Vec<String>,
     /// A Flatpak runtime (platform/SDK/theme/driver) rather than an app.
-    /// Always false for pacman packages. Spec §4.3 deviation (design §13).
+    /// Always false for pacman packages. (design §13, 2026-07-05)
     #[serde(default)]
     pub runtime: bool,
     /// Which flatpak installation this lives in — `None` for anything that is

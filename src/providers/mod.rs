@@ -3,8 +3,6 @@
 //! `CommandRunner` is the injectable seam used for testing; `Provider` is the
 //! per-source trait. Providers never call sudo and never know about each other
 //! (design §6).
-//!
-//! Built in v0.0.2 (probing) and v0.0.3 (full `pacman -Qi` parser).
 
 pub mod aur;
 pub mod cargo;
@@ -110,10 +108,6 @@ impl CommandRunner for SystemCommandRunner {
 
 /// A package source. Scanning is always unprivileged; a provider never calls
 /// sudo and never knows about other providers.
-///
-/// The update-related methods (`source_id`, `build_update_command`,
-/// `requires_sudo_for_update` from design §10) are added with the executor in
-/// v0.0.6 — this milestone only scans.
 pub trait Provider {
     /// Is the source's binary present on PATH?
     fn is_available(&self) -> bool;

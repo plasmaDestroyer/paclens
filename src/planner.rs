@@ -1,6 +1,6 @@
 //! The *plan* step (P4): turn a `ScanResult` + a per-source selection into an
 //! `ActionPlan`. Pure — same inputs, same output; never runs anything (that is
-//! the executor's job, v0.0.6). Both `paclens update --dry-run` and the TUI
+//! the executor's job). Both `paclens update --dry-run` and the TUI
 //! update screen build their plan here, so they can never disagree (P5).
 
 use std::path::Path;
@@ -92,17 +92,6 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                 }],
                 None => continue,
             },
-            // One tool, two installations, two commands with different
-            // privilege. Which scope an update belongs to is the installed
-            // package's answer — `flatpak remote-ls` does not say, and the
-            // same app id can legitimately be installed in both, in which
-            // case both steps are right.
-            //
-            // `flatpak update` takes no package names: the command updates a
-            // whole installation, so `targets` here is what the plan *shows*
-            // and the scope is what it *does*. An update whose package the
-            // scan cannot place falls to user scope, the unprivileged half —
-            // it must not vanish from a plan the dashboard already counted.
             // Everything cargo installs lives under `$HOME`, so no step it
             // produces is ever privileged. `cargo-update` is what does the
             // updating; without it the source has no update path and the scan
@@ -116,6 +105,17 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                 targets,
                 label: source.id.to_string(),
             }],
+            // One tool, two installations, two commands with different
+            // privilege. Which scope an update belongs to is the installed
+            // package's answer — `flatpak remote-ls` does not say, and the
+            // same app id can legitimately be installed in both, in which
+            // case both steps are right.
+            //
+            // `flatpak update` takes no package names: the command updates a
+            // whole installation, so `targets` here is what the plan *shows*
+            // and the scope is what it *does*. An update whose package the
+            // scan cannot place falls to user scope, the unprivileged half —
+            // it must not vanish from a plan the dashboard already counted.
             SourceKind::Flatpak => {
                 let scope_of = |name: &String| {
                     let scopes: Vec<FlatpakScope> = scan
@@ -207,7 +207,7 @@ fn backup_leaf(index: usize, to: &str) -> String {
     format!("{index}-{leaf}")
 }
 
-/// Build the migration copy plan (roadmap v0.5): back up every target dir
+/// Build the migration copy plan: back up every target dir
 /// that already exists into `backup_dir`, then `cp -aT` each actionable pair.
 /// All commands run as the user — profile data under `~` is user-owned even
 /// for system-scope apps — and the plan never contains an `rm`: source data
@@ -268,7 +268,7 @@ pub fn plan_migration(
     ActionPlan { steps }
 }
 
-/// The rollback instructions for a migration plan (roadmap v0.5): shown after
+/// The rollback instructions for a migration plan: shown after
 /// the run and never executed by paclens. Targets that were backed up restore
 /// from the backup; targets the run created fresh just get removed.
 pub fn rollback_lines(report: &MigrationReport, backup_dir: &Path) -> Vec<String> {
@@ -289,7 +289,7 @@ pub fn rollback_lines(report: &MigrationReport, backup_dir: &Path) -> Vec<String
         .collect()
 }
 
-/// The source side's removal plan (roadmap v0.5) — built only after the user
+/// The source side's removal plan — built only after the user
 /// verified the target works, and always behind its own confirmation. `None`
 /// when the candidate is missing that side.
 pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> Option<ActionPlan> {
@@ -692,7 +692,7 @@ mod tests {
         assert!(plan.steps.iter().all(|s| s.targets.is_empty()));
     }
 
-    // --- migration plans (v0.5) ---
+    // --- migration plans ---
     use crate::model::{Confidence, MatchMethod, PackageRef, Tradeoff};
 
     fn candidate() -> OverlapCandidate {

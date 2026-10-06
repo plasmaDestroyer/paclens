@@ -63,7 +63,7 @@ fn package_history(package: &str) -> Option<String> {
     analyzer::history::package_summary(&analyzer::history::parse(&text), package)
 }
 
-/// Render a found report (any source — unified in v0.1.3). Pure for
+/// Render a found report (any source). Pure for
 /// testability.
 fn render_report(
     report: &WhyReport,

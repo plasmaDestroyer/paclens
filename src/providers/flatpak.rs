@@ -16,7 +16,7 @@ const UPDATE_COLUMNS: &str = "--columns=application,version";
 
 /// The argv for a scoped Flatpak update (design §10, §13.3). `--noninteractive`
 /// suppresses Flatpak's own prompts; paclens gates on its own confirm first.
-/// User scope needs no sudo; system scope does (added by the executor in v0.0.6).
+/// User scope needs no sudo; system scope does (the executor adds it).
 /// Pure — building the command never runs anything.
 pub fn update_command(scope: FlatpakScope) -> Vec<String> {
     vec![

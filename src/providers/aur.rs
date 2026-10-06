@@ -121,16 +121,6 @@ impl HelperChoice {
         }
     }
 
-    /// [`note`](Self::note) squeezed onto one line for the dashboard's system
-    /// pane, which has exactly one row to spare.
-    ///
-    /// A separate string rather than a wrapped one: wrapping pushes the last
-    /// row out of a fixed-height pane, and a note clipped at "aur: config asks
-    /// for yay, which is not" has lost the half that matters. Kept short
-    /// enough that the pane truncates only on genuinely narrow terminals,
-    /// where every other row truncates too.
-    ///
-    /// The long form stays in `paclens status`, which has the width for it.
     /// Is paclens using a different helper than the config asked for?
     ///
     /// This, and not "there is something to say about this source", is what
@@ -142,6 +132,16 @@ impl HelperChoice {
         matches!(self, HelperChoice::FellBack { .. })
     }
 
+    /// [`note`](Self::note) squeezed onto one line for the dashboard's system
+    /// pane, which has exactly one row to spare.
+    ///
+    /// A separate string rather than a wrapped one: wrapping pushes the last
+    /// row out of a fixed-height pane, and a note clipped at "aur: config asks
+    /// for yay, which is not" has lost the half that matters. Kept short
+    /// enough that the pane truncates only on genuinely narrow terminals,
+    /// where every other row truncates too.
+    ///
+    /// The long form stays in `paclens status`, which has the width for it.
     pub fn compact_note(&self) -> Option<String> {
         match self {
             HelperChoice::Detected(_) | HelperChoice::Pinned(_) => Option::None,

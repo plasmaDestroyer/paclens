@@ -117,8 +117,7 @@ impl ExecutionReport {
     }
 }
 
-/// Why a step cannot run, or `None` if it is executable. Since v0.1.0 the only
-/// blocker is a privileged step with no privilege tool on PATH (design §11:
+/// Why a step cannot run, or `None` if it is executable. The only blocker is a privileged step with no privilege tool on PATH (design §11:
 /// "show error, do not proceed with privileged operations").
 pub fn skip_reason(step: &ActionStep, tool: Option<&str>) -> Option<&'static str> {
     if step.privileged && tool.is_none() {

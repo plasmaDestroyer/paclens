@@ -48,7 +48,7 @@ pub(crate) struct MapEntry {
     #[serde(default)]
     alt_names: Vec<String>,
     /// Curated native profile directories (`~/`-relative) — the migration
-    /// advisory's `Confirmed` tier (v0.4).
+    /// advisory's `Confirmed` tier.
     #[serde(default)]
     pub(crate) profile_dirs: Vec<String>,
 }
@@ -89,7 +89,7 @@ pub fn detect_overlaps(
     ignore: &[String],
     extra_mappings: &[ExtraMapping],
 ) -> Vec<OverlapCandidate> {
-    // "Native" = anything installed through libalpm — repo or AUR (v0.3).
+    // "Native" = anything installed through libalpm — repo or AUR.
     let native: HashMap<&str, &Package> = scan
         .packages
         .iter()
@@ -157,7 +157,7 @@ fn match_app<'a>(
     None
 }
 
-/// Spec §9.4 heuristic 2 threshold: a profile this big means user data.
+/// Design §9 heuristic 2 threshold: a profile this big means user data.
 const PROFILE_DATA_THRESHOLD: u64 = 10 * 1024 * 1024;
 
 fn candidate(
@@ -167,7 +167,7 @@ fn candidate(
     confidence: Confidence,
     profile_size: Option<u64>,
 ) -> OverlapCandidate {
-    // Spec §9.4, in order: explicit native vs unknown flatpak → native;
+    // Design §9, in order: explicit native vs unknown flatpak → native;
     // a >10 MiB flatpak profile → flatpak (user has data there); else
     // unknown. Advisory only — never acted on.
     let likely_primary = if native.install_reason == InstallReason::Explicit

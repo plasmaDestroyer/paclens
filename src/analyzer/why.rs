@@ -1,4 +1,4 @@
-//! The `why` query (design §8, roadmap v0.0.7): why is this package installed,
+//! The `why` query (design §8): why is this package installed,
 //! what happens if it is removed, with a cautious verdict.
 //!
 //! Pure — reads only the scan and the pre-built graph. Decision recorded in
@@ -28,7 +28,7 @@ impl std::fmt::Display for Verdict {
     }
 }
 
-/// The two shapes a `why` answer takes (unified across sources in v0.1.3);
+/// The two shapes a `why` answer takes (unified across sources);
 /// an unknown name gets a fuzzy suggestion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WhyReport {
@@ -57,10 +57,10 @@ pub struct WhyDetail {
     pub depth_from_explicit: Option<u32>,
     /// Direct deps that would be orphaned (their only requirer is this).
     pub would_remove: Vec<String>,
-    /// Reverse-dep chain as a tree ( / roadmap v0.1.2): each root is
+    /// Reverse-dep chain as a tree: each root is
     /// a direct requirer, children are *their* requirers, every edge labeled.
     pub tree: Vec<TreeNode>,
-    /// Source-specific warnings (roadmap v0.3): AUR PKGBUILD review, VCS
+    /// Source-specific warnings: AUR PKGBUILD review, VCS
     /// build-snapshot versions. Rendered verbatim by the CLI and the TUI.
     pub caveats: Vec<String>,
     pub verdict: Verdict,
@@ -161,7 +161,7 @@ fn flatten(nodes: &[TreeNode], indent: &str, g: (&str, &str, &str, &str), out: &
     }
 }
 
-/// AUR-specific warnings (roadmap v0.3). Advisory wording only — never
+/// AUR-specific warnings. Advisory wording only — never
 /// blocks anything.
 fn caveats_for(pkg: &crate::model::Package) -> Vec<String> {
     let mut out = Vec::new();
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(p.verdict, Verdict::LikelySafe);
     }
 
-    // --- flatpak (v0.1.3 relationship model) ---
+    // --- flatpak relationship model ---
     #[test]
     fn flatpak_app_is_a_confirmed_safe_leaf_that_orphans_its_runtime() {
         let p = detail("org.gnome.Calculator");
@@ -514,7 +514,7 @@ mod tests {
         }
     }
 
-    // --- AUR caveats (v0.3) ---
+    // --- AUR caveats ---
     #[test]
     fn aur_packages_follow_alpm_rules_without_a_generic_caveat() {
         let mut s = scan();

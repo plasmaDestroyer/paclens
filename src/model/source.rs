@@ -121,8 +121,7 @@ pub struct Source {
     pub available: bool,
     pub last_scanned: Option<DateTime<Utc>>,
     /// False when update counts came from a possibly-stale local DB (pacman
-    /// without pacman-contrib's checkupdates). Spec §4.2 deviation, recorded
-    /// in design §13.
+    /// without pacman-contrib's checkupdates; design §13, 2026-07-05).
     #[serde(default = "default_true")]
     pub accurate_updates: bool,
     /// A command failed during this source's scan. Counts from that lane are
@@ -146,7 +145,7 @@ fn default_true() -> bool {
 pub enum SourceKind {
     Pacman,
     /// Foreign (AUR) packages: installed through libalpm like pacman's, but
-    /// updated via paru (roadmap v0.3).
+    /// updated via paru.
     Aur,
     /// Both scopes. One tool updates them, so they are one source; which
     /// scope a package lives in rides on the package (design §13).

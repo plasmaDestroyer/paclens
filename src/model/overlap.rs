@@ -61,7 +61,7 @@ pub struct Tradeoff {
 pub enum PrimaryHeuristic {
     Native,
     /// A >10 MiB `~/.var/app/<id>` profile — the user has data there
-    /// (design §9 heuristic 2, live since v0.1.4).
+    /// (design §9 heuristic 2).
     Flatpak,
     #[default]
     Unknown,

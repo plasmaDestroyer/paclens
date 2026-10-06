@@ -50,7 +50,7 @@ pub struct ScanResult {
     #[serde(default)]
     pub flatpak_profile_sizes: std::collections::HashMap<String, u64>,
     /// Sizes of profile directories the migration advisory cares about
-    /// (v0.4), keyed by the `~/`-relative path. Only directories that exist
+    ///, keyed by the `~/`-relative path. Only directories that exist
     /// are present. Which paths get probed is decided by the pure
     /// `analyzer::migrate::probe_paths`; the scanner just measures them.
     #[serde(default)]
@@ -202,14 +202,13 @@ impl ScanResult {
     }
 }
 
-/// Cache/disk-usage figures gathered during a scan. Populated in v0.0.3;
-/// all `None` until then.
+/// Cache/disk-usage figures gathered during a scan; `None` = not measured.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheSizes {
     pub pacman_cache_bytes: Option<u64>,
     /// What `paccache -rk3` would actually free (its dry run) — the honest
     /// number next to the total, which is mostly current-version tarballs
-    /// (v0.5 cleanup honesty; dev-notes 2026-07-14). `None` = no paccache.
+    /// (design §3, 2026-07-14). `None` = no paccache.
     #[serde(default)]
     pub pacman_cache_reclaimable_bytes: Option<u64>,
     /// `~/.cache/<helper>` — AUR build cache (clones + built packages) for

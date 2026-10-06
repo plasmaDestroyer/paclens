@@ -83,9 +83,9 @@ pub enum Screen {
     Dashboard,
     /// Per-source package list, entered with Enter on a dashboard row.
     Packages,
-    /// Overlap candidates (roadmap v0.1.4), entered with `o`.
+    /// Overlap candidates, entered with `o`.
     Overlaps,
-    /// Cleanup summary (roadmap v0.1.5), entered with `c`.
+    /// Cleanup summary, entered with `c`.
     Cleanup,
     /// pacman transaction history (#8), entered with `H`.
     History,
@@ -206,8 +206,8 @@ pub struct App {
     enabled: HashMap<SourceId, bool>,
     /// Transient status line, cleared on the next key.
     flash: Option<String>,
-    /// A blocking re-scan is about to run; the dashboard shows it instead of
-    /// the scan age. (True async scanning is the v0.0.9 usability pass.)
+    /// A background scan is running; the dashboard shows it instead of the
+    /// scan age.
     scanning: bool,
     /// Sources whose visible numbers came from the previous scan because
     /// their lane has not reported yet.
@@ -223,7 +223,6 @@ pub struct App {
     pkg_filter: String,
     /// Package list: the filter input line has focus.
     filter_active: bool,
-    /// Package list: the why side pane is open.
     /// Columns added to (or taken from) the package screen's pane by `[`/`]`.
     pane_bias: i16,
     /// Package list: active sort mode (persists across list opens).
@@ -270,12 +269,12 @@ pub struct App {
     /// Overlap screen: cursor over `overlaps`.
     overlap_cursor: usize,
     /// Overlap screen: Enter swaps the tradeoff pane for the migration
-    /// advisory report (v0.4).
+    /// advisory report.
     overlap_migrate: bool,
     /// `d` direction override; `None` = the report's default (toward the
     /// likely-primary side). Cleared when the cursor moves.
     migrate_direction: Option<Direction>,
-    /// What the running (or just-finished) console session is doing (v0.5) —
+    /// What the running (or just-finished) console session is doing —
     /// decides where dismissal lands.
     exec_kind: ExecKind,
     /// Staged at migration start; armed (offered on `R`) only after the copy
@@ -284,7 +283,7 @@ pub struct App {
     removal_armed: bool,
 }
 
-/// The follow-up removal a successful migration stages (v0.5).
+/// The follow-up removal a successful migration stages.
 pub struct StagedRemoval {
     pub plan: ActionPlan,
     /// Backup dir, for the "kept at" flash.
@@ -794,7 +793,7 @@ impl App {
         self.scan.sources.get(self.dash_selected?)
     }
 
-    // --- overlap screen (v0.1.4) ---
+    // --- overlap screen ---
     pub fn open_overlaps(&mut self) {
         self.overlap_cursor = self
             .overlap_cursor
@@ -809,11 +808,6 @@ impl App {
     pub fn overlap_cursor(&self) -> usize {
         self.overlap_cursor
     }
-    /// The AUR helper note, but only while the aur row is the selected source.
-    ///
-    /// It lives in the system pane rather than under the table because it is
-    /// advice, not data — and it is tied to the cursor so a healthy pacman or
-    /// flatpak row is never interrupted by a sentence about the AUR.
     /// The note for whichever source the dashboard cursor is on — why it is
     /// degraded, and what fixes it. Any source can have one (#11).
     pub fn selected_source_note(&self) -> Option<String> {
@@ -839,7 +833,7 @@ impl App {
     pub fn is_migrate_open(&self) -> bool {
         self.overlap_migrate
     }
-    /// The migration advisory for the selected overlap (v0.4) — recomputed
+    /// The migration advisory for the selected overlap — recomputed
     /// per draw off the scan (P5), honoring the `d` direction override.
     pub fn migration_report(&self) -> Option<MigrationReport> {
         let candidate = self.selected_overlap()?;
@@ -860,7 +854,7 @@ impl App {
         }
     }
 
-    // --- cleanup screen (roadmap v0.1.5) ---
+    // --- cleanup screen ---
     pub fn open_cleanup(&mut self) {
         self.cleanup_cursor = self
             .cleanup_cursor
@@ -1029,14 +1023,14 @@ impl App {
         crate::analyzer::provenance::unowned(&self.scan.packages)
     }
 
-    /// Units running against files an upgrade replaced (#4). Inferred, and
-    /// only what this user could see.
     /// Installed packages no configured repo can reach — they never update
     /// again, and nothing else on the dashboard would say so (#78).
     pub fn stranded_count(&self) -> usize {
         crate::analyzer::outranked::outranked(&self.scan).len()
     }
 
+    /// Units running against files an upgrade replaced (#4). Inferred, and
+    /// only what this user could see.
     pub fn stale_units(&self) -> Vec<crate::analyzer::StaleUnit> {
         crate::analyzer::stale_units(&self.scan.stale_processes)
     }
@@ -1164,7 +1158,7 @@ impl App {
         self.last_run.as_ref().map(|(s, f)| (s.as_str(), *f))
     }
 
-    // --- migration execution (v0.5) ---
+    // --- migration execution ---
     /// Stage the follow-up removal before the copy run starts; it is only
     /// offered once the run succeeds.
     pub fn stage_removal(&mut self, staged: Option<StagedRemoval>) {
@@ -2122,7 +2116,7 @@ mod tests {
         assert_eq!(app.screen(), Screen::Dashboard);
     }
 
-    // --- migration execution (v0.5) ---
+    // --- migration execution ---
     fn failed_report() -> ExecutionReport {
         use crate::executor::{StepReport, StepStatus};
         ExecutionReport {

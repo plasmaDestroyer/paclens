@@ -1,7 +1,7 @@
 //! Scan orchestration and the scan cache.
 //!
 //! Detects available providers, runs them concurrently on scoped threads
-//! (spec Q5 — one lane each for pacman, flatpak, and `du`), assembles a
+//! (one lane each for pacman, the AUR, flatpak, cargo and `du`), assembles a
 //! `ScanResult`, and persists it to the cache ([`cache`]). Never analyzes
 //! data (design §6).
 
@@ -223,9 +223,6 @@ pub fn scan_and_store_with(
     Ok(scan)
 }
 
-/// Run every enabled, available provider and assemble a `ScanResult`.
-///
-/// Detects provider availability on PATH, then delegates to [`assemble`].
 /// Which sources exist on this machine, without asking any of them anything.
 ///
 /// PATH probes and the config, nothing more: no package lists, no update
@@ -259,6 +256,10 @@ pub fn detect_sources(runner: &dyn CommandRunner, config: &Config) -> ScanResult
     )
 }
 
+/// Run every enabled, available provider and assemble a `ScanResult`.
+///
+/// Detects provider availability on PATH, then delegates to [`assemble`].
+///
 /// Reports partial results as each lane lands: the TUI opens on the dashboard
 /// and fills it in, so it wants every partial; the CLI wants the answer and
 /// passes a sink that drops them.
@@ -328,10 +329,6 @@ struct Availability {
     cargo: bool,
 }
 
-/// What one lane has finished.
-///
-/// Lanes report as they land rather than all at the end, so the dashboard can
-/// fill in a row at a time (design §13, 2026-09-09).
 /// What the flatpak lane produces: its packages, its updates, and the sizes
 /// of the `~/.var/app` profiles it found along the way.
 type FlatpakLane = (
@@ -340,6 +337,10 @@ type FlatpakLane = (
     std::collections::HashMap<String, u64>,
 );
 
+/// What one lane has finished.
+///
+/// Lanes report as they land rather than all at the end, so the dashboard can
+/// fill in a row at a time (design §13, 2026-09-09).
 enum LaneResult {
     Error(SourceId, String),
     Pacman(Vec<Package>, Vec<PendingUpdate>),
@@ -406,7 +407,7 @@ impl Parts {
 /// hermetically testable with a mock runner.
 ///
 /// The lanes — pacman, the AUR, flatpak, and `du` cache sizing — run on scoped
-/// threads (spec Q5): wall time is the slowest lane, not the sum. They report
+/// threads: wall time is the slowest lane, not the sum. They report
 /// over a channel as they finish, and `progress` is called with a partial
 /// result each time, carrying `last_scanned` only for the sources whose own
 /// data is complete. Provider failures are isolated: a source that errors is
@@ -640,7 +641,7 @@ fn assemble(
         Vec::new()
     };
 
-    // v0.4 migration-advisory probe. Which paths matter is pure analyzer
+    // Migration-advisory probe. Which paths matter is pure analyzer
     // logic (overlap candidates → their profile-dir pairs); the scanner only
     // expands `~` and measures. Runs after the lanes join because it needs
     // the assembled package list.
@@ -756,7 +757,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             updates.extend(ups.iter().cloned());
         }
         // Foreign packages keep their full pacman -Qi metadata but belong to
-        // the aur source (v0.3) — everything downstream keys on source_id.
+        // the aur source — everything downstream keys on source_id.
         //
         // Foreign is not the same as from the AUR, though (#77). A repo that
         // is removed from pacman.conf leaves its packages foreign without
@@ -886,7 +887,7 @@ fn measure_profile_dirs(
 }
 
 /// Gather disk-usage figures: pacman cache total, what paccache would
-/// actually reclaim (v0.5 cleanup honesty), and the AUR build cache of
+/// actually reclaim (design §3), and the AUR build cache of
 /// whichever helper is in use.
 fn gather_cache_sizes(
     runner: &dyn CommandRunner,

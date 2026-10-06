@@ -18,7 +18,7 @@ pub enum EdgeKind {
     /// From pacman dep data. Ground truth.
     Real,
     /// Heuristic. Cross-source or appstream-derived — flatpak app → runtime
-    /// grouping edges wear this (design §8, v0.1.3).
+    /// grouping edges wear this (design §8).
     Inferred,
 }
 

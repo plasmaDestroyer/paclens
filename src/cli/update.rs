@@ -1,11 +1,9 @@
-//! `paclens update [--dry-run] [--source <id>] [--parallel]` — show the update plan (spec
-//! §11.3) and, since v0.0.6, execute it after a Y/n confirmation. v0.0.6 runs
-//! Flatpak user-scope only; everything needing sudo is reported as skipped.
+//! `paclens update [--dry-run] [--source <id>] [--parallel]` — run every
+//! source's update after one sudo prompt; the tools ask their own questions
+//! (design §13, 2026-10-06). `--dry-run` prints the exact commands instead.
 //!
 //! The plan is built by the shared `crate::planner` and executed by the shared
-//! `crate::executor`, so the CLI and the TUI can never disagree (P5). The
-//! pipeline is intact (P4): the full plan prints before the prompt, nothing
-//! runs without confirmation, and the per-source report hides nothing.
+//! `crate::executor`, so the CLI and the TUI can never disagree (P5).
 
 use crate::cli::style::Styles;
 use crate::config::Config;

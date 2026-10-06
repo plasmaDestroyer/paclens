@@ -2,9 +2,9 @@
 //!
 //! An `ActionPlan` is the output of the *plan* step (P4: scan → analyze → plan →
 //! confirm → execute). It is built by `crate::planner` from a `ScanResult` and a
-//! per-source selection, shown to the user (CLI dry-run and the TUI update
-//! screen), and — from v0.0.6 — handed to the executor. It is ephemeral: never
-//! cached, so no serde derive.
+//! per-source selection, shown to the user (CLI dry-run and the TUI
+//! dashboard), and handed to the executor. It is ephemeral: never cached, so
+//! no serde derive.
 
 use super::SourceId;
 
@@ -53,10 +53,10 @@ pub struct ActionStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Update,
-    /// Migration copy step (v0.5): backup or `cp -aT` of user-owned profile
+    /// Migration copy step: backup or `cp -aT` of user-owned profile
     /// dirs. Never privileged, regardless of source.
     Migrate,
-    /// Post-migration source removal (v0.5), after the user verified the
+    /// Post-migration source removal, after the user verified the
     /// target side works. Privilege follows the source as usual.
     Remove,
 }

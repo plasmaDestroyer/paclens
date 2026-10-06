@@ -1,10 +1,10 @@
-//! Migration advisory (roadmap v0.4): for an overlap candidate, derive where
+//! Migration advisory: for an overlap candidate, derive where
 //! each side stores its data and assemble a structured, read-only report.
 //!
 //! Pure — path pairs are derived from names and the curated map; existence
 //! and sizes come from the scanner's probe (`ScanResult.profile_dir_sizes`).
 //! Nothing here reads the filesystem, and nothing downstream executes any of
-//! it: the report is "what you would need to do manually" (roadmap v0.4).
+//! it: the report is "what you would need to do manually".
 
 use crate::config::ExtraMapping;
 use crate::model::{

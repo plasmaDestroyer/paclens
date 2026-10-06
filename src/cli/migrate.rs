@@ -1,5 +1,5 @@
-//! `paclens migrate <name>` — the migration advisory report (roadmap v0.4)
-//! and, with `--run`, its execution (roadmap v0.5).
+//! `paclens migrate <name>` — the migration advisory report
+//! and, with `--run`, its execution.
 //!
 //! The report is read-only. `--run` executes exactly the copy plan it just
 //! showed — backups first, `cp -aT` per pair, never an `rm` — then prints the
@@ -63,7 +63,7 @@ pub fn run(
     execute_flow(&report, candidate, stdin_is_tty, styles)
 }
 
-/// The v0.5 execution half: plan → confirm → copy → rollback block → offer
+/// The execution half: plan → confirm → copy → rollback block → offer
 /// the source removal in-flow (user decision 2026-07-14). P4 intact — the
 /// exact commands print before anything runs.
 fn execute_flow(

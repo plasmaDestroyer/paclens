@@ -1,6 +1,6 @@
 //! `paclens overlaps` — list detected Flatpak/native overlaps.
 //!
-//! Advisory only (roadmap v0.0.8): no suggested actions, no remove prompts.
+//! Advisory only: no suggested actions, no remove prompts.
 //! Rendering goes through the shared `Styles`; the confidence label sits
 //! inline with the match method, per the confidence model's rule 2.
 

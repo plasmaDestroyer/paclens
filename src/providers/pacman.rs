@@ -16,10 +16,9 @@ use super::{CommandRunner, Provider, ProviderError};
 pub const PACMAN_BIN: &str = "pacman";
 pub const CHECKUPDATES_BIN: &str = "checkupdates";
 
-/// The argv for a full pacman system update (no `--noconfirm`, per spec Q6 /
-/// dev-notes decisions: it suppresses conflict resolution). Pure — building the
-/// command never runs anything. The privilege prefix (sudo/doas/pkexec) is added
-/// by the executor in v0.0.6; pacman updates require it.
+/// The argv for a full pacman system update — no `--noconfirm`, which would
+/// answer conflict prompts silently (design §3). The executor adds the
+/// privilege prefix.
 pub fn update_command() -> Vec<String> {
     vec![PACMAN_BIN.to_string(), "-Syu".to_string()]
 }
@@ -270,8 +269,6 @@ fn parse_size(raw: &str) -> Option<u64> {
     Some((value * multiplier).round() as u64)
 }
 
-/// Parse the `name current -> available` line format shared by
-/// `pacman -Qu`, `checkupdates` and `paru -Qua`.
 /// What one configured repo offers for a package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoOffer {
@@ -319,6 +316,8 @@ pub fn sync_list(runner: &dyn CommandRunner) -> Result<Vec<RepoOffer>, ProviderE
     Ok(parse_sync_list(&out.stdout))
 }
 
+/// Parse the `name current -> available` line format shared by
+/// `pacman -Qu`, `checkupdates` and `paru -Qua`.
 pub(crate) fn parse_updates_as(stdout: &str, source: SourceId) -> Vec<PendingUpdate> {
     stdout
         .lines()

@@ -53,11 +53,11 @@ pub enum Action {
     /// left (a wider pane, `-`). The sign is the pane's, so it reads inverted
     /// here — the keys point at where the divider goes.
     ResizePane(i16),
-    /// Flip the migration report's direction (overlap screen, v0.4).
+    /// Flip the migration report's direction (overlap screen).
     FlipDirection,
-    /// Run the open migration report's copy plan (overlap screen, v0.5).
+    /// Run the open migration report's copy plan (overlap screen).
     RunMigration,
-    /// Remove the source side after a verified migration (v0.5).
+    /// Remove the source side after a verified migration.
     RemoveSource,
     /// Filter input → append a character.
     FilterChar(char),
@@ -129,10 +129,10 @@ pub fn map_overlaps_key(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => Action::Next,
         KeyCode::Up | KeyCode::Char('k') => Action::Prev,
-        // Enter/w toggles the migration advisory pane (v0.4).
+        // Enter/w toggles the migration advisory pane.
         KeyCode::Enter | KeyCode::Char('w') | KeyCode::Char('W') => Action::ToggleWhy,
         KeyCode::Char('d') | KeyCode::Char('D') => Action::FlipDirection,
-        // v0.5 execution: x runs the copy plan; R (deliberate shift) removes
+        // Execution: x runs the copy plan; R (deliberate shift) removes
         // the source after the user verified the target.
         KeyCode::Char('x') | KeyCode::Char('X') => Action::RunMigration,
         KeyCode::Char('R') => Action::RemoveSource,

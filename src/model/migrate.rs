@@ -1,7 +1,6 @@
-//! Migration advisory types (v0.4): where an overlapping app stores its data
-//! on each side, and what a manual migration would involve. Advisory only —
-//! paclens never copies, moves, or deletes profile data (that is v0.5's
-//! problem, behind backups and confirmations).
+//! Migration advisory types: where an overlapping app stores its data
+//! on each side, and what a migration would involve. Copying happens only in
+//! the planner's backed-up plan; nothing here touches a file.
 
 use crate::model::Confidence;
 
@@ -91,7 +90,7 @@ impl PathMapping {
     }
 }
 
-/// The structured advisory report for one overlap candidate (roadmap v0.4):
+/// The structured advisory report for one overlap candidate:
 /// data locations per side, and warnings covering everything the user must
 /// check before touching files. No file ops.
 pub struct MigrationReport {

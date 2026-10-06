@@ -34,7 +34,7 @@ pub struct DepGraph {
 impl DepGraph {
     /// Build from the scan's packages: pacman deps as `Real`/`Confirmed`
     /// edges, flatpak app → runtime grouping as `Inferred`/`Inferred` edges
-    /// (design §8, v0.1.3). Pure — no IO.
+    /// (design §8). Pure — no IO.
     pub fn build(scan: &ScanResult) -> Self {
         // Provides alias map (pacman only — flatpaks have no provides):
         // virtual name → real provider. First provider wins on the rare
@@ -97,7 +97,7 @@ impl DepGraph {
     }
 
     /// Only tests assert membership directly today; the TUI/CLI go through
-    /// `why()`. Kept because the overlap detector (v0.0.8) needs it.
+    /// `why()`. Kept because the overlap detector needs it.
     #[cfg_attr(not(test), expect(dead_code))]
     pub fn contains(&self, name: &str) -> bool {
         self.index.contains_key(name)
@@ -204,7 +204,7 @@ impl DepGraph {
         None
     }
 
-    /// Unused Flatpak runtimes (roadmap v0.1.5): runtime-flagged packages no
+    /// Unused Flatpak runtimes: runtime-flagged packages no
     /// installed app depends on. Name-level — a runtime name any app uses
     /// counts as used for every branch of it (conservative; a false
     /// negative beats suggesting a removal that breaks an app).
@@ -217,7 +217,7 @@ impl DepGraph {
 
     /// Orphan candidates (design §8): installed as a dependency, nothing
     /// requires them. Replaces `pacman -Qtd`.
-    /// Spec §7.2 deliverable; feeds the dashboard's system pane.
+    /// Feeds the dashboard's attention pane.
     pub fn orphans(&self, scan: &ScanResult) -> Vec<String> {
         let mut out: Vec<String> = scan
             .packages
