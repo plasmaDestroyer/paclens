@@ -227,63 +227,27 @@ several real sources and someone has a concrete thing they cannot do without it.
 
 ```
 src/
-├── main.rs              entry point, arg parsing, mode dispatch
-├── cli/
-│   ├── mod.rs           clap command definitions
-│   ├── why.rs           `paclens why <pkg>` handler
-│   ├── update.rs        `paclens update` handler
-│   ├── overlaps.rs      `paclens overlaps` handler
-│   ├── status.rs        `paclens status` handler
-│   └── cleanup.rs       `paclens cleanup` handler
+├── main.rs              entry point
+├── cli/                 clap definitions (mod.rs) and one file per subcommand:
+│                        status, update, why, overlaps, migrate, cleanup,
+│                        history; style.rs holds CLI colours
 ├── tui/
-│   ├── mod.rs           ratatui app setup, event loop
-│   ├── app.rs           application state struct
-│   ├── event.rs         event types (terminal input + internal channels)
-│   ├── screens/
-│   │   ├── dashboard.rs
-│   │   ├── updates.rs
-│   │   ├── packages.rs
-│   │   ├── why.rs
-│   │   ├── overlaps.rs
-│   │   ├── cleanup.rs
-│   │   └── help.rs
-│   ├── widgets/
-│   │   ├── source_bar.rs
-│   │   ├── detail_pane.rs
-│   │   ├── progress.rs
-│   │   ├── search_bar.rs
-│   │   └── footer.rs
-│   └── theme.rs         color palette, style constants
-├── model/
-│   ├── mod.rs           re-exports all model types
-│   ├── source.rs        Source, SourceId, SourceKind
-│   ├── package.rs       Package, InstallReason
-│   ├── update.rs        PendingUpdate
-│   ├── dependency.rs    DependencyEdge, EdgeKind, Confidence
-│   ├── overlap.rs       OverlapCandidate, MatchMethod, Tradeoff
-│   ├── scan.rs          ScanResult
-│   └── action.rs        ActionPlan, ActionStep, ActionKind
-├── providers/
-│   ├── mod.rs           Provider trait, CommandRunner trait
-│   ├── pacman.rs        pacman provider
-│   └── flatpak.rs       Flatpak provider
-├── scanner/
-│   ├── mod.rs           Scanner, orchestrates providers
-│   └── cache.rs         ScanCache, read/write/invalidate
-├── analyzer/
-│   ├── mod.rs
-│   ├── dep_graph.rs     petgraph wrapper, graph construction from Package data
-│   ├── why.rs           why query logic, verdict generation
-│   ├── overlap.rs       overlap detection algorithm
-│   └── cleanup.rs       orphan detection (from graph), cache sizing
-├── executor/
-│   ├── mod.rs
-│   ├── runner.rs        command spawning, output capture
-│   ├── sudo.rs          privilege escalation model
-│   └── log.rs           update log writer
-└── config/
-    ├── mod.rs
-    └── schema.rs        Config struct, defaults, TOML deserialization
+│   ├── mod.rs           terminal setup, event loop, background scan
+│   ├── app.rs           all screen state (the only mutator is the loop)
+│   ├── draw.rs          every screen's rendering (takes &App)
+│   ├── input.rs         key → Action, one pure map per screen
+│   ├── exec.rs          the pty console a plan runs in
+│   └── theme.rs         styles, borders, glyph set
+├── model/               the data types every module shares
+├── providers/           pacman, aur, flatpak, cargo + CommandRunner
+├── scanner/             lanes on scoped threads; cache.rs = scan cache
+├── analyzer/            pure: graph, why, overlap, migrate, history,
+│                        kernel, pacfiles, services, provenance, outranked,
+│                        version
+├── planner.rs           ScanResult + selection → ActionPlan
+├── executor/            runs plans; sudo.rs = privilege tool, log.rs = log
+├── config/              schema + loading
+└── format.rs, fuzzy.rs, glyphs.rs, logging.rs
 ```
 
 ---
@@ -555,16 +519,11 @@ pub struct CommandOutput {
     pub exit_code: i32,
 }
 
-/// Trait for package source providers.
-pub trait Provider: Send + Sync {
-    fn source_id(&self) -> SourceId;
-    fn is_available(&self) -> bool;
-    fn scan_installed(&self) -> Result<Vec<Package>>;
-    fn scan_updates(&self) -> Result<Vec<PendingUpdate>>;
-    fn build_update_command(&self, targets: &[String]) -> Vec<String>;
-    fn requires_sudo_for_update(&self) -> bool;
-}
 ```
+
+Each provider is a set of functions over a `CommandRunner` — scan installed,
+scan updates, build the update argv. The update step's privilege is declared by
+the planner on each step, never by the provider (§13, 2026-09-07).
 
 `CommandRunner` is injected into providers. In production: calls the real binary. In tests: returns fixture data. This is the primary testing seam.
 
@@ -613,8 +572,7 @@ du -sb /var/cache/pacman/pkg/
 ```
 Parse: first whitespace-separated field is bytes.
 
-**Update execution:**
-See open question Q6 (Section 18) regarding `--noconfirm`.
+**Update execution:** `pacman -Syu`, never with `--noconfirm` (§3).
 
 **Error handling:**
 - `pacman` not on PATH → `Source.available = false`, skip
@@ -857,15 +815,10 @@ paclens runs as the user. It only escalates privileges when executing a pacman u
 
 #### Escalation mechanism
 
-For TUI mode (v0.0.6 through v0.1+):
-1. paclens suspends the TUI (`LeaveAlternateScreen`)
-2. shows the user the exact command that will run
-3. spawns the command (which may include `sudo`) in the raw terminal
-4. user interacts with sudo prompt and pacman directly
-5. command completes, paclens restores the TUI (`EnterAlternateScreen`)
-6. result (exit code) shown in TUI
-
-See open question Q6 for discussion on `--noconfirm`.
+Every step runs in a real terminal — the CLI's own, or the TUI's pty
+console — so sudo, doas, pkexec, pacman and the AUR helper prompt exactly as
+in a shell. One `sudo -v` before the first step covers the run (§13,
+2026-09-21); paclens never sees the password.
 
 #### Flatpak
 
@@ -1017,7 +970,7 @@ tests/
       overlap_map.toml        the bundled map (same as production)
 ```
 
-Capture these from your own Zephyrus G14. They are the ground truth.
+Capture these from a real Arch system. They are the ground truth.
 
 #### Injectable CommandRunner
 
