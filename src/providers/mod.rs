@@ -9,8 +9,6 @@ pub mod cargo;
 pub mod flatpak;
 pub mod pacman;
 
-use crate::model::{Package, PendingUpdate};
-
 /// Captured result of running a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
@@ -104,18 +102,6 @@ impl CommandRunner for SystemCommandRunner {
             exit_code: status.code().unwrap_or(-1),
         })
     }
-}
-
-/// A package source. Scanning is always unprivileged; a provider never calls
-/// sudo and never knows about other providers.
-pub trait Provider {
-    /// Is the source's binary present on PATH?
-    fn is_available(&self) -> bool;
-    /// Installed packages. `Ok(vec![])` when nothing is installed; `Err` only
-    /// when the binary exists but the command failed.
-    fn scan_installed(&self) -> Result<Vec<Package>, ProviderError>;
-    /// Available updates. `Ok(vec![])` when none are pending.
-    fn scan_updates(&self) -> Result<Vec<PendingUpdate>, ProviderError>;
 }
 
 /// A provider-level failure. App code wraps these in `anyhow` with context.

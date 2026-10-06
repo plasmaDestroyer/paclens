@@ -16,10 +16,10 @@ use crate::model::{
     CacheSizes, FlatpakScope, Package, PendingUpdate, SCHEMA_VERSION, ScanResult, Source, SourceId,
     SourceKind,
 };
+use crate::providers::CommandRunner;
 use crate::providers::aur;
 use crate::providers::flatpak::FlatpakProvider;
 use crate::providers::pacman::{self, PacmanProvider};
-use crate::providers::{CommandRunner, Provider};
 
 /// pacman's package cache; its size is reported under cleanup advisories.
 const PACMAN_CACHE_DIR: &str = "/var/cache/pacman/pkg/";
@@ -469,7 +469,11 @@ fn assemble(
                 return;
             }
             let provider = PacmanProvider::with_checkupdates(runner, checkupdates_available);
-            let (pkgs, ups, error) = collect_provider(&provider, "pacman");
+            let (pkgs, ups, error) = collect_provider(
+                provider.scan_installed(),
+                || provider.scan_updates(),
+                "pacman",
+            );
             if let Some(error) = error {
                 let _ = pacman_tx.send(LaneResult::Error(SourceId::pacman(), error));
             }
@@ -481,7 +485,14 @@ fn assemble(
             if !lanes.flatpak {
                 return;
             }
-            let (pkgs, ups, error) = collect_provider(&FlatpakProvider::new(runner), "flatpak");
+            let (pkgs, ups, error) = {
+                let provider = FlatpakProvider::new(runner);
+                collect_provider(
+                    provider.scan_installed(),
+                    || provider.scan_updates(),
+                    "flatpak",
+                )
+            };
             if let Some(error) = error {
                 let _ = flatpak_tx.send(LaneResult::Error(SourceId::flatpak(), error));
             }
@@ -977,12 +988,13 @@ fn gather_profile_sizes(
 }
 
 /// Run one provider's scans, logging any failure and returning what survived.
-fn collect_provider<P: Provider>(
-    provider: &P,
+fn collect_provider<E: std::fmt::Display>(
+    installed: Result<Vec<Package>, E>,
+    updates: impl FnOnce() -> Result<Vec<PendingUpdate>, E>,
     label: &str,
 ) -> (Vec<Package>, Vec<PendingUpdate>, Option<String>) {
     let mut error = None;
-    let packages = match provider.scan_installed() {
+    let packages = match installed {
         Ok(pkgs) => pkgs,
         Err(err) => {
             tracing::error!(source = label, error = %err, "scan_installed failed");
@@ -990,7 +1002,7 @@ fn collect_provider<P: Provider>(
             Vec::new()
         }
     };
-    let updates = match provider.scan_updates() {
+    let updates = match updates() {
         Ok(ups) => ups,
         Err(err) => {
             tracing::error!(source = label, error = %err, "scan_updates failed");

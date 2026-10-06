@@ -7,7 +7,7 @@
 
 use crate::model::{FlatpakScope, InstallReason, Package, PendingUpdate, SourceId};
 
-use super::{CommandRunner, Provider, ProviderError};
+use super::{CommandRunner, ProviderError};
 
 pub const FLATPAK_BIN: &str = "flatpak";
 
@@ -37,8 +37,8 @@ impl<'a> FlatpakProvider<'a> {
     }
 }
 
-impl Provider for FlatpakProvider<'_> {
-    fn is_available(&self) -> bool {
+impl FlatpakProvider<'_> {
+    pub fn is_available(&self) -> bool {
         super::binary_on_path(FLATPAK_BIN)
     }
 
@@ -46,7 +46,7 @@ impl Provider for FlatpakProvider<'_> {
     /// the scan (the user's pending updates are often runtimes — GNOME
     /// Platform, GL drivers, themes). Runtimes can repeat rows (branches /
     /// arches share an ID); dedup on (name, version, scope).
-    fn scan_installed(&self) -> Result<Vec<Package>, ProviderError> {
+    pub fn scan_installed(&self) -> Result<Vec<Package>, ProviderError> {
         let apps = self.list(&["list", "--app", LIST_COLUMNS], false)?;
         let mut runtimes = self.list(&["list", "--runtime", LIST_COLUMNS], true)?;
 
@@ -65,7 +65,7 @@ impl Provider for FlatpakProvider<'_> {
 
     /// No `--app` filter: runtime updates count too — they are what
     /// `flatpak update` will actually install.
-    fn scan_updates(&self) -> Result<Vec<PendingUpdate>, ProviderError> {
+    pub fn scan_updates(&self) -> Result<Vec<PendingUpdate>, ProviderError> {
         let out = self
             .runner
             .run(FLATPAK_BIN, &["remote-ls", "--updates", UPDATE_COLUMNS])

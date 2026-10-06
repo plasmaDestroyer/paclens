@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use crate::model::{InstallReason, Package, PendingUpdate, SourceId};
 
-use super::{CommandRunner, Provider, ProviderError};
+use super::{CommandRunner, ProviderError};
 
 pub const PACMAN_BIN: &str = "pacman";
 pub const CHECKUPDATES_BIN: &str = "checkupdates";
@@ -51,12 +51,12 @@ impl<'a> PacmanProvider<'a> {
     }
 }
 
-impl Provider for PacmanProvider<'_> {
-    fn is_available(&self) -> bool {
+impl PacmanProvider<'_> {
+    pub fn is_available(&self) -> bool {
         super::binary_on_path(PACMAN_BIN)
     }
 
-    fn scan_installed(&self) -> Result<Vec<Package>, ProviderError> {
+    pub fn scan_installed(&self) -> Result<Vec<Package>, ProviderError> {
         let out = self
             .runner
             .run(PACMAN_BIN, &["-Qi"])
@@ -74,7 +74,7 @@ impl Provider for PacmanProvider<'_> {
         Ok(parse_qi(&out.stdout))
     }
 
-    fn scan_updates(&self) -> Result<Vec<PendingUpdate>, ProviderError> {
+    pub fn scan_updates(&self) -> Result<Vec<PendingUpdate>, ProviderError> {
         if self.checkupdates {
             return self.scan_updates_checkupdates();
         }
