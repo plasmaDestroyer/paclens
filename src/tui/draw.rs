@@ -10,7 +10,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
@@ -997,10 +997,9 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                         // Dot and word breathe together — one glowing cell, not a
                         // glowing dot beside a static label. Nothing moves across
                         // the screen, which is what the spinners did wrong.
-                        let glow = pulse_style(theme, app.pulse());
                         Line::from(Span::styled(
-                            format!("{} scanning", theme.glyphs.available),
-                            glow,
+                            format!("{} scanning", app.spinner()),
+                            theme.accent,
                         ))
                     }
                     // The scan gave up before this source answered. `unchecked`
@@ -1104,22 +1103,6 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     state.select(app.selected());
     frame.render_stateful_widget(table, area, &mut state);
 }
-/// The colour of the breathing status at `phase` (0 dimmest, 1 brightest).
-///
-/// Interpolated, not stepped: the redraw runs at 30ms while scanning, so a
-/// breath gets around fifty distinct shades instead of the seven a 256-colour
-/// ramp could hold inside one hue. A theme with no fade (no-color) gets the
-/// settled style and holds still.
-fn pulse_style(theme: &Theme, phase: f32) -> Style {
-    let Some([low, high]) = theme.pulse else {
-        return theme.accent;
-    };
-    let t = phase.clamp(0.0, 1.0);
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
-    let color = Color::Rgb(mix(low.0, high.0), mix(low.1, high.1), mix(low.2, high.2));
-    Style::new().fg(color).add_modifier(Modifier::BOLD)
-}
-
 /// The last row of `area` (for a footer outside a Layout split).
 fn bottom_line(area: Rect) -> Rect {
     Rect {
@@ -2683,74 +2666,6 @@ mod tests {
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
         }
-    }
-
-    /// Render with a real theme and keep the buffer, so a test can look at
-    /// colours — `flatten` throws every style away.
-    fn render_buffer(app: &App, width: u16, height: u16) -> Buffer {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| draw(frame, app)).expect("draw");
-        terminal.backend().buffer().clone()
-    }
-
-    /// Is this colour somewhere on the breathing fade — full red, no blue,
-    /// green somewhere between the warm end and yellow?
-    fn is_pulse_shade(color: &ratatui::style::Color) -> bool {
-        use crate::tui::theme::Theme;
-        let Some([warm, high]) = Theme::dark().pulse else {
-            return false;
-        };
-        match color {
-            ratatui::style::Color::Rgb(r, g, b) => {
-                *r == high.0 && *b == 0 && (warm.1..=high.1).contains(g)
-            }
-            _ => false,
-        }
-    }
-
-    /// The foreground colours of exactly the cells spelling `needle`.
-    ///
-    /// Column by column, not by byte offset: a rendered line is full of
-    /// multi-byte glyphs (`│`, `▶`, `●`), so `str::find` returns a position
-    /// that is not a column and samples the wrong cells.
-    fn colors_of(buf: &Buffer, needle: &str) -> Vec<ratatui::style::Color> {
-        let area = buf.area;
-        let want: Vec<String> = needle.chars().map(|c| c.to_string()).collect();
-        for y in 0..area.height {
-            let cols: Vec<String> = (0..area.width)
-                .map(|x| {
-                    buf.cell((x, y))
-                        .map(|c| c.symbol().to_string())
-                        .unwrap_or_default()
-                })
-                .collect();
-            let Some(start) = cols.windows(want.len()).position(|w| w == want) else {
-                continue;
-            };
-            return (start..start + want.len())
-                .filter_map(|x| buf.cell((x as u16, y)))
-                .map(|c| c.fg)
-                .collect();
-        }
-        panic!("no cells spelling {needle:?}");
-    }
-
-    /// The foreground colours of the row containing `needle`, in order.
-    fn row_colors(buf: &Buffer, needle: &str) -> Vec<ratatui::style::Color> {
-        let area = buf.area;
-        for y in 0..area.height {
-            let line: String = (0..area.width)
-                .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
-                .collect();
-            if line.contains(needle) {
-                return (0..area.width)
-                    .filter_map(|x| buf.cell((x, y)))
-                    .map(|c| c.fg)
-                    .collect();
-            }
-        }
-        panic!("no row containing {needle:?}");
     }
 
     fn flatten(buf: &Buffer) -> String {
@@ -4551,30 +4466,6 @@ mod tests {
     }
 
     #[test]
-    fn a_scanning_row_breathes_but_never_spins() {
-        let text = render(&mid_scan(&[]), 104, 20);
-        // Braille frames, so the count cannot be confused with the ASCII box
-        // drawing the way `|` and `-` would be. The rows must run none: the
-        // one animated spinner belongs to the system pane.
-        let spinner_frames = Theme::dark().glyphs.spinner;
-        let animated: usize = text
-            .lines()
-            .filter(|l| spinner_frames.iter().any(|f| l.contains(f)))
-            .count();
-        assert_eq!(
-            animated, 0,
-            "the ascii theme has no braille; a row is spinning:\n{text}"
-        );
-        // What a scanning row wears instead is a rung of the pulse ramp.
-        // What a scanning row wears instead is the settled dot, coloured.
-        let row = lines_of(&text, "scanning");
-        assert!(
-            row.contains(Theme::none().glyphs.available),
-            "no status dot on the row:\n{row}"
-        );
-    }
-
-    #[test]
     fn a_scanning_dashboard_never_claims_a_number_it_does_not_have() {
         let text = render(&mid_scan(&[]), 104, 20);
         assert!(
@@ -4595,104 +4486,6 @@ mod tests {
         for row in text.lines().filter(|l| l.contains("* scanning")) {
             assert!(!row.contains('—'), "a dash sits in a count column:\n{row}");
         }
-    }
-
-    #[test]
-    fn the_climbing_count_rises_toward_the_last_known_number_and_stops_short() {
-        use std::time::{Duration, Instant};
-
-        let at = |ago_ms: u64| {
-            let mut app = mid_scan_after(&[], false);
-            app.set_scan_started(Instant::now() - Duration::from_millis(ago_ms));
-            app.rows()
-                .iter()
-                .find(|r| r.id == "pacman")
-                .and_then(|r| r.installed)
-                .expect("pacman row")
-        };
-        // pacman has 2 packages in the fixture, so the climb is short; what
-        // matters is that it rises and never reaches the target.
-        let early = at(0);
-        let late = at(1400);
-        assert!(early <= late, "the count must not go backwards");
-        assert!(
-            late < 2,
-            "it must stop short of the real number: {late} of 2"
-        );
-
-        // And once the lane reports, it is the real number, plainly.
-        let landed = mid_scan_after(&[SourceId::pacman()], false);
-        let row = landed
-            .rows()
-            .into_iter()
-            .find(|r| r.id == "pacman")
-            .expect("row");
-        assert_eq!(row.installed, Some(2));
-        assert!(!row.stale, "no longer an estimate");
-    }
-
-    #[test]
-    fn the_count_keeps_moving_and_never_moves_backwards() {
-        use std::time::{Duration, Instant};
-        // 30ms redraws: the ramp must show a different number often enough
-        // not to look parked, and must never correct downward mid-climb.
-        let seen: Vec<usize> = (0..49)
-            .map(|frame| {
-                let mut app = mid_scan_after(&[], true);
-                app.set_scan_started(Instant::now() - Duration::from_millis(frame * 30));
-                app.rows()
-                    .into_iter()
-                    .find(|r| r.id == "pacman")
-                    .and_then(|r| r.installed)
-                    .unwrap_or(0)
-            })
-            .collect();
-        assert!(
-            seen.windows(2).all(|w| w[0] <= w[1]),
-            "the count went backwards: {seen:?}"
-        );
-        let parked = seen
-            .windows(4)
-            .filter(|w| w.iter().all(|n| *n == w[0]))
-            .count();
-        assert_eq!(parked, 0, "the count parked for four frames: {seen:?}");
-    }
-
-    #[test]
-    fn a_climb_keeps_counting_for_as_long_as_the_lane_takes() {
-        use std::time::{Duration, Instant};
-        // A stalled network runs to the provider timeout, many times the 1.5s
-        // ramp. The number must still be moving out there: one that stops
-        // looks like an answer.
-        let at = |ms: u64| {
-            let mut app = mid_scan_after(&[], true);
-            app.set_scan_started(Instant::now() - Duration::from_millis(ms));
-            app.rows()
-                .into_iter()
-                .find(|r| r.id == "pacman")
-                .and_then(|r| r.installed)
-                .expect("a number")
-        };
-        assert!(at(6000) > at(3000), "still climbing at six seconds");
-        assert!(at(9000) > at(6000), "and at nine");
-        assert!(at(9000) < 1840, "and never reaching the real number");
-    }
-
-    #[test]
-    fn a_small_machine_has_almost_nothing_to_climb() {
-        use std::time::{Duration, Instant};
-        // Four packages: the estimate can only ever be 0..=3, so the counter
-        // is nearly pointless here — worth seeing rather than assuming.
-        let mut app = mid_scan_after(&[], false);
-        app.set_scan_started(Instant::now() - Duration::from_millis(750));
-        let row = app
-            .rows()
-            .into_iter()
-            .find(|r| r.id == "pacman")
-            .expect("row");
-        let installed = row.installed.expect("a number");
-        assert!(installed < 2, "cannot reach the real 2: {installed}");
-        assert!(row.stale, "still an estimate");
     }
 
     #[test]
@@ -4811,114 +4604,6 @@ mod tests {
         assert!(
             app.rows().iter().all(|r| r.installed.is_some()),
             "nothing is pending once the scan is done"
-        );
-    }
-
-    /// The first rendered line containing `needle`.
-    fn lines_of(text: &str, needle: &str) -> String {
-        text.lines()
-            .find(|l| l.contains(needle))
-            .unwrap_or_else(|| panic!("no line with {needle:?} in:\n{text}"))
-            .to_string()
-    }
-
-    /// Prints one full breath, shade by shade — `cargo test demo_pulse -- --nocapture`.
-    /// Prints one breath — `cargo test demo_pulse -- --nocapture`.
-    #[test]
-    fn demo_pulse() {
-        use crate::tui::theme::Theme;
-        use std::time::{Duration, Instant};
-        let mut app = App::new(scan_with(Vec::new()), Theme::dark(), AppOptions::test());
-        println!("\n########## one breath at the scanning redraw rate ##########");
-        let mut seen = Vec::new();
-        for i in 0..54u64 {
-            app.set_started(Instant::now() - Duration::from_millis(i * 30));
-            let style = pulse_style(&app.theme, app.pulse());
-            seen.push(style.fg);
-            if i % 6 == 0 {
-                let shade = match style.fg {
-                    Some(ratatui::style::Color::Rgb(r, g, b)) => format!("#{r:02x}{g:02x}{b:02x}"),
-                    other => format!("{other:?}"),
-                };
-                println!(
-                    "  {:>5}ms   {}   {shade}",
-                    i * 30,
-                    app.theme.glyphs.available
-                );
-            }
-        }
-        let mut unique = seen.clone();
-        unique.dedup();
-        println!(
-            "\n  {} frames, {} distinct shades",
-            seen.len(),
-            unique.len()
-        );
-    }
-
-    #[test]
-    fn the_fade_gives_a_shade_per_frame_across_the_band() {
-        use crate::tui::theme::Theme;
-        // 30ms redraws across a 1.6s breath, so 27 frames in each direction.
-        // The band has to be wide enough that each of them lands on its own
-        // shade, or the fade is a stepped ramp wearing an interpolation's
-        // clothes.
-        let theme = Theme::dark();
-        let frames = 27;
-        let shades: Vec<Option<ratatui::style::Color>> = (0..frames)
-            .map(|i| pulse_style(&theme, i as f32 / (frames - 1) as f32).fg)
-            .collect();
-        let mut unique = shades.clone();
-        unique.dedup();
-        assert!(
-            unique.len() > 20,
-            "only {} distinct shades across half a breath",
-            unique.len()
-        );
-        let [_, high] = theme.pulse.expect("a colored theme breathes");
-        assert_eq!(
-            shades.last().and_then(|c| *c),
-            Some(ratatui::style::Color::Rgb(high.0, high.1, high.2)),
-            "the breath tops out at the theme's bright end"
-        );
-        // A theme with no fade holds still rather than panicking.
-        let plain = Theme::none();
-        assert_eq!(pulse_style(&plain, 0.0), plain.accent);
-        assert_eq!(pulse_style(&plain, 1.0), plain.accent);
-    }
-
-    #[test]
-    fn the_selected_row_keeps_breathing_under_the_cursor() {
-        use crate::tui::theme::Theme;
-        use ratatui::style::Color;
-        // ratatui's `row_highlight_style` patches the whole row's area, so
-        // the selection hue used to overwrite the breathing status: moving
-        // the cursor onto a scanning row froze it cyan.
-        let mut app = mid_scan(&[]);
-        app.set_theme(Theme::dark());
-        assert_eq!(app.selected(), Some(0), "the fixture selects the first row");
-
-        let buf = render_buffer(&app, 104, 20);
-        let colors = row_colors(&buf, "scanning");
-        assert!(
-            colors.iter().any(is_pulse_shade),
-            "the selected row's status is not a shade of the breath: {colors:?}"
-        );
-        // And the rest of the row still wears the selection colour.
-        assert!(
-            colors.contains(&Color::Cyan),
-            "the selection hue is gone from the selected row: {colors:?}"
-        );
-
-        // The status cell specifically must not be cyan: that was the bug.
-        let word = colors_of(&buf, "scanning");
-        assert!(
-            !word.contains(&Color::Cyan),
-            "the cursor froze the breath cyan: {word:?}"
-        );
-        assert!(
-            word.iter().all(is_pulse_shade),
-            "the whole status glows, dot and word: {word:?}"
         );
     }
 

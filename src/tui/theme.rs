@@ -51,21 +51,6 @@ pub struct Theme {
     pub selected: Style,
     /// The table header row.
     pub header: Style,
-    /// The two ends of the breathing status dot's fade, dimmest first.
-    /// `None` in the no-color theme, where the dot simply holds still.
-    ///
-    /// RGB, and interpolated per frame rather than stepped through a list.
-    /// The 256-colour palette holds about seven usable shades inside a band
-    /// narrow enough not to read as a hue change, and seven steps at 1.6s is
-    /// visibly a sequence; interpolation gives one per redraw — around fifty
-    /// across a breath at the scanning tick.
-    ///
-    /// Both ends hold red at full, so the *hue* moves and the brightness does
-    /// not: yellow warming toward orange and back. Dropping luminance instead
-    /// reads as the dot going dim rather than as a glow. The yellow end is
-    /// `accent`'s, so the breath resolves into the colour a settled row
-    /// wears.
-    pub pulse: Option<[(u8, u8, u8); 2]>,
 }
 
 impl Theme {
@@ -100,17 +85,6 @@ impl Theme {
             header: Style::new()
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::DIM),
-            // #ffc300 → #ffe100: a short throw centred between orange and
-            // yellow — an orangey yellow shifting to a yellowy orange, rather
-            // than the full span, which read as two colours taking turns.
-            // Red stays at full and only green moves, so the dot changes hue
-            // without appearing to dim.
-            //
-            // The band is 30 values wide and a breath is 27 frames in each
-            // direction, so every frame still lands on a shade of its own:
-            // the redraw rate limits the stages, not the width of the band.
-            // Narrower than 27 and frames start repeating.
-            pulse: Some([(255, 195, 0), (255, 225, 0)]),
         }
     }
 
@@ -128,44 +102,12 @@ impl Theme {
             border: Style::new(),
             selected: Style::new().add_modifier(Modifier::REVERSED),
             header: Style::new().add_modifier(Modifier::BOLD),
-            // No colour to fade through; the dot holds still and the word
-            // beside it carries the state.
-            pulse: None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn the_pulse_fade_warms_toward_orange_without_dimming() {
-        let [warm, high] = Theme::dark().pulse.expect("a colored theme breathes");
-        // Both ends sit between amber and `accent`'s yellow — a band in the
-        // middle, not the whole span. The peak stops short of accent, which
-        // costs a barely visible step when a row settles and buys a fade
-        // narrow enough to read as one colour.
-        assert!(high.1 < 255, "the peak reaches all the way to accent");
-        assert!(high.1 > 180, "and is not still an orange");
-        // Red at full on both ends: the hue moves, the brightness does not.
-        // A ramp that drops luminance instead reads as the dot going dim,
-        // which is what the first two attempts did.
-        assert_eq!(warm.0, high.0, "the warm end is darker, not warmer");
-        assert_eq!(warm.2, 0, "and has picked up blue");
-        assert!(warm.1 < high.1, "the warm end must be more orange");
-        assert!(
-            warm.1 > high.1 / 2,
-            "and only slightly: below this it is orange, not warm yellow"
-        );
-        // Wide enough that every frame of a breath gets its own shade — 27
-        // frames in each direction at the scanning redraw rate — and no
-        // wider, because a long throw reads as two colours rather than one.
-        let band = high.1 - warm.1;
-        assert!(band >= 27, "only {band} shades: frames would repeat");
-        assert!(band <= 50, "{band} shades is a colour change, not a glow");
-        // The no-color theme has nothing to fade through.
-        assert!(Theme::none().pulse.is_none());
-    }
-
     use super::*;
 
     // `resolve` is asserted via the one observable difference between the no-color

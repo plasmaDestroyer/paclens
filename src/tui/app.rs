@@ -183,9 +183,6 @@ pub struct SourceRow {
     /// lane is still out. Real numbers, possibly stale — rendered as
     /// approximate so they cannot be read as this run's answer.
     pub stale: bool,
-    /// The shown number is a climb in progress, so it is moving and needs no
-    /// other mark. False once the ramp expires, when it stops moving and does.
-    pub climbing: bool,
     pub available: bool,
     /// Included in the update plan (Space toggles; None = nothing to update).
     pub enabled: Option<bool>,
@@ -496,59 +493,11 @@ impl App {
         self.scan_started = started.or_else(|| Some(std::time::Instant::now()));
     }
 
-    /// How long a lane is assumed to take, for the climbing count. Measured
-    /// on the author's machine: `checkupdates` 1.08s, `flatpak remote-ls`
-    /// 1.30s, `paru -Qua` 1.64s.
-    const EXPECTED_LANE: std::time::Duration = std::time::Duration::from_millis(1500);
-
-    /// The number to show for a source whose lane is still out, when the
-    /// `count` placeholder is on.
-    ///
-    /// **This is not a measurement.** It is the previous scan's count, eased
-    /// in over the time a lane usually takes, so the cell has something
-    /// moving in it. It never reaches the target, so the real count always
-    /// visibly replaces it; it carries a `~` wherever it is drawn, and the row
-    /// keeps its
-    /// "scanning" status until the real count lands. A source with no
-    /// previous count has nothing to climb toward and shows nothing.
-    pub fn climbing_count(&self, id: &SourceId, target: usize) -> Option<usize> {
-        if !self.carried.contains(id) {
-            return None;
-        }
-        let elapsed = self.scan_started?.elapsed();
-        // Ramps elapsed, not a fraction of one: the curve decides what to do
-        // past the first, and the default one keeps going.
-        let progress = elapsed.as_secs_f32() / Self::EXPECTED_LANE.as_secs_f32();
-        // Hyperbolic, tuned to reach ~90% by the time a lane usually returns
-        // and then to crawl: 90% at one ramp, 97% at two, 99% at four, and
-        // still rising at eight. It never arrives, which is the point — a
-        // number that stops looks like an answer, and a provider hanging on a
-        // dead network should look like what it is.
-        let k = 3.0 * progress;
-        let shaped = 1.0 - 1.0 / (1.0 + k * k);
-        // Never the target itself, however small the target is: the estimate
-        // must always be visibly replaced when the real count lands, so it
-        // can never be the number the user walks away with.
-        Some((((target as f32) * shaped).floor() as usize).min(target.saturating_sub(1)))
-    }
-
-    /// Swap the theme, so a test can render with real colours.
-    #[cfg(test)]
-    pub fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme;
-    }
     /// Move the session clock, so a spinner test need not sleep.
     #[cfg(test)]
     pub fn set_started(&mut self, at: std::time::Instant) {
         self.started = at;
     }
-    /// Move the scan clock, so a test can look at the climb at a chosen
-    /// moment instead of sleeping for one.
-    #[cfg(test)]
-    pub fn set_scan_started(&mut self, at: std::time::Instant) {
-        self.scan_started = Some(at);
-    }
-
     /// Are this source's numbers real yet? Everything is, once no scan is
     /// running — that is the settled case every other screen assumes.
     pub fn source_counted(&self, id: &SourceId) -> bool {
@@ -661,25 +610,6 @@ impl App {
     pub fn tick(&mut self) {
         self.spinner_frame = self.started.elapsed().as_millis() as usize / 120;
     }
-    /// How far through a breath the status dot is: 0 at its dimmest, 1 at its
-    /// brightest, and back down — a triangle over 1.6s.
-    ///
-    /// Drives the breathing status dot on a row that is still being scanned.
-    /// A pulse rather than a spinner because nothing moves across the screen:
-    /// three spinners read as a light show, three dots breathing on one clock
-    /// read as a machine working (2026-09-08). The theme decides how many
-    /// shades that phase lands on.
-    pub fn pulse(&self) -> f32 {
-        const PERIOD_MS: f32 = 1600.0;
-        let phase = (self.started.elapsed().as_millis() as f32 % PERIOD_MS) / PERIOD_MS;
-        // 0 → 1 over the first half, 1 → 0 over the second.
-        if phase < 0.5 {
-            phase * 2.0
-        } else {
-            (1.0 - phase) * 2.0
-        }
-    }
-
     /// The current spinner glyph from the active theme's frame set.
     pub fn spinner(&self) -> &'static str {
         let frames = self.theme.glyphs.spinner;
@@ -813,8 +743,7 @@ impl App {
                 let stale = !counted && self.carried.contains(&s.id);
                 let known = counted || stale;
                 let failed = s.scan_error.is_some();
-                let climb = self.climbing_count(&s.id, summary.installed);
-                let installed = (known && !failed).then(|| climb.unwrap_or(summary.installed));
+                let installed = (known && !failed).then_some(summary.installed);
                 // A source with no update path checked nothing: it has no
                 // count to show, and "0" there reads as "none pending"
                 // (design §3). What it *has* installed is still known.
@@ -826,7 +755,6 @@ impl App {
                     installed,
                     updates,
                     stale,
-                    climbing: climb.is_some(),
                     available: s.available,
                     enabled,
                 }
@@ -1902,33 +1830,6 @@ mod tests {
         let app = app();
         assert_eq!(app.updates_for(&SourceId::pacman()).len(), 1);
         assert_eq!(app.updates_for(&SourceId::flatpak()).len(), 0);
-    }
-
-    #[test]
-    fn the_pulse_breathes_in_and_out_on_a_clock() {
-        use std::time::{Duration, Instant};
-        let mut app = app();
-        // A full period, sampled: it must rise, fall, and come back — not
-        // ramp and reset, which reads as a flicker rather than breathing.
-        let seen: Vec<f32> = (0..17)
-            .map(|i| {
-                app.set_started(Instant::now() - Duration::from_millis(i * 100));
-                app.pulse()
-            })
-            .collect();
-        let peak = seen.iter().cloned().fold(f32::MIN, f32::max);
-        let trough = seen.iter().cloned().fold(f32::MAX, f32::min);
-        assert!(peak > 0.9, "never reaches full brightness: {seen:?}");
-        assert!(trough < 0.1, "never dims all the way: {seen:?}");
-        assert!(
-            (seen[0] - seen[16]).abs() < 0.05,
-            "a period does not bring it back: {seen:?}"
-        );
-        // And it moves smoothly: no jump bigger than one sample's worth.
-        assert!(
-            seen.windows(2).all(|w| (w[0] - w[1]).abs() < 0.2),
-            "the pulse jumped: {seen:?}"
-        );
     }
 
     #[test]

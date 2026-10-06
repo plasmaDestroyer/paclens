@@ -38,13 +38,6 @@ use theme::Theme;
 /// the scan channel. Also the spinner's frame rate.
 const TICK: Duration = Duration::from_millis(120);
 
-/// The redraw interval while a scan is running. The climbing counts are the
-/// only thing on screen that changes between frames, and at 120ms they moved
-/// in ~12 visible steps; at 30ms they read as a counter rather than a
-/// slideshow. It only applies while scanning, so an idle dashboard still
-/// wakes eight times a second rather than thirty.
-const SCAN_TICK: Duration = Duration::from_millis(30);
-
 /// What a scan reports back as it runs.
 enum ScanEvent {
     /// A partial result: everything up to `phase` is real, the rest is not
@@ -179,7 +172,7 @@ fn run_loop(
         }
 
         // Wait for a key with a timeout so the spinner keeps animating.
-        let tick = if app.is_scanning() { SCAN_TICK } else { TICK };
+        let tick = TICK;
         if !event::poll(tick).context("failed to poll for terminal events")? {
             app.tick();
             continue;
