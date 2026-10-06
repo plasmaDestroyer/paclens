@@ -236,6 +236,8 @@ pub struct App {
     log_view: Option<LogView>,
     /// The `?` key reference is open (any screen).
     help: bool,
+    /// The last update's outcome line, and whether it failed (#21).
+    last_run: Option<(String, bool)>,
     /// Inline execution console overlay (any screen).
     exec: Option<ExecView>,
     /// Dashboard: which pane has focus (←/→ or h/l switches).
@@ -403,6 +405,7 @@ impl App {
             started: std::time::Instant::now(),
             log_view: None,
             help: false,
+            last_run: None,
             exec: None,
             dash_focus: DashPane::Sources,
             updates_scroll: 0,
@@ -1132,20 +1135,33 @@ impl App {
     /// After the console is dismissed: back to the dashboard with a one-line
     /// summary flash (the result view died with the confirm modal — user
     /// decision 2026-07-08).
+    /// After the console is dismissed: back to the dashboard, with the run's
+    /// outcome kept in the attention pane until the next run — a flash would
+    /// be gone at the next key press (#21).
     pub fn finish_update(&mut self, report: &ExecutionReport) {
         self.screen = Screen::Dashboard;
-        let failed = report.failed();
+        let failed: Vec<&str> = report
+            .steps
+            .iter()
+            .filter(|s| matches!(s.status, crate::executor::StepStatus::Failed { .. }))
+            .map(|s| s.label.as_str())
+            .collect();
         let executed = report.executed();
-        self.flash = Some(if executed == 0 {
-            "nothing was executed".to_string()
-        } else if failed == 0 {
-            format!(
-                "update finished — {executed} source{} succeeded (L for the log)",
-                if executed == 1 { "" } else { "s" }
-            )
+        self.last_run = Some(if executed == 0 {
+            ("nothing ran".to_string(), false)
+        } else if failed.is_empty() {
+            (format!("{executed} ok"), false)
         } else {
-            format!("update finished — {failed} of {executed} sources FAILED (L for the log)")
+            (
+                format!("{} failed · L for the log", failed.join(", ")),
+                true,
+            )
         });
+    }
+
+    /// The last update's outcome, and whether anything in it failed.
+    pub fn last_run(&self) -> Option<(&str, bool)> {
+        self.last_run.as_ref().map(|(s, f)| (s.as_str(), *f))
     }
 
     // --- migration execution (v0.5) ---
@@ -1907,13 +1923,14 @@ mod tests {
     }
 
     #[test]
-    fn finish_update_lands_on_the_dashboard_with_a_summary_flash() {
+    fn finish_update_lands_on_the_dashboard_and_keeps_the_outcome() {
         let mut app = app();
         app.finish_update(&sample_report());
         assert_eq!(app.screen(), Screen::Dashboard);
-        let flash = app.flash().expect("summary flash");
-        assert!(flash.contains("1 source succeeded"), "{flash}");
-        assert!(flash.contains("L for the log"), "{flash}");
+        assert_eq!(app.last_run(), Some(("1 ok", false)));
+        // Unlike a flash, a key press does not clear it.
+        app.clear_flash();
+        assert!(app.last_run().is_some());
     }
 
     #[test]
@@ -1940,9 +1957,10 @@ mod tests {
             log_path: std::path::PathBuf::from("/tmp/x.log"),
         };
         app.finish_update(&report);
-        let flash = app.flash().expect("summary flash");
-        assert!(flash.contains("1 of 2 sources FAILED"), "{flash}");
-        assert!(flash.contains("L for the log"), "{flash}");
+        let (outcome, failed) = app.last_run().expect("outcome kept");
+        assert!(failed);
+        assert!(outcome.contains("pacman failed"), "{outcome}");
+        assert!(outcome.contains("L for the log"), "{outcome}");
     }
 
     // --- package list ---

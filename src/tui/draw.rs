@@ -610,6 +610,10 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         found.push(kv("overlaps", overlaps.to_string(), theme.primary));
     }
     let mut lines = vec![plan_line];
+    if let Some((outcome, failed)) = app.last_run() {
+        let style = if failed { theme.error } else { theme.success };
+        lines.push(kv("last run", outcome.to_string(), style));
+    }
     if found.is_empty() && app.scan_settled() {
         lines.push(Line::from(Span::styled(
             "  nothing else needs attention".to_string(),
@@ -3144,7 +3148,7 @@ mod tests {
     }
 
     #[test]
-    fn finished_update_flashes_its_summary_on_the_dashboard() {
+    fn finished_update_shows_its_outcome_on_the_dashboard() {
         let mut app = App::new(
             scan_with(vec![upd("linux", "1", "2", SourceId::pacman())]),
             Theme::none(),
@@ -3154,8 +3158,8 @@ mod tests {
         let text = render(&app, 96, 24);
         assert!(text.contains("paclens"), "{text}");
         assert!(
-            text.contains("update finished — 1 source succeeded"),
-            "summary flash missing:\n{text}"
+            text.contains("last run      1 ok"),
+            "outcome missing:\n{text}"
         );
     }
 
