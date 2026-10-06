@@ -136,8 +136,10 @@ An 11 GiB package cache that `paccache` would free nothing from says exactly
 that. Reclaimable sits next to the total, never in place of it.
 
 **No total silently double-counts.**
-Package sizes overlap, because shared libraries belong to everything that needs
-them. Any total says which unit it is measuring.
+A package's installed size counts only its own files, and pacman lets no two
+packages own the same file, so summing them is honest. What overlaps is "this
+app plus what it pulled in": such a total, or a "removing this frees" figure,
+is an estimate and says so (§13, 2026-10-06).
 
 **Progress is measured or labelled.**
 A count shown is a real count. A bar is either a real ratio or an estimate

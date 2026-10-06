@@ -2,31 +2,33 @@
 
 A TUI-first **pacman + AUR + Flatpak** inspection and update tool for **Arch Linux**.
 
-paclens unifies your two package worlds into one dashboard: update both from
-one place, ask *why* anything is installed and what removing it would break,
+paclens puts pacman, the AUR, Flatpak and cargo on one dashboard: update them
+all from one place, ask *why* anything is installed and what removing it would break,
 spot apps you have installed both natively **and** as a Flatpak, and see what
 orphans and caches are eating your disk — all without paclens ever touching
 your system uninvited.
 
 ```
-+ paclens · dashboard -------------------------------------------------------+
-| + sources ---------------------++ pending updates · pacman (62) ----------+|
-| |       SOURCE       INST  UPD || linux    6.9.1  -> 6.9.2                ||
-| | > [x] pacman       1832   62 || mesa     24.0   -> 24.1                 ||
-| |    -  flatpak        12    0 || ...                                     ||
-| +------------------------------++-----------------------------------------+|
-| + system ----------------------++ keys -----------------------------------+|
-| | - plan          62 packages  || ^/v move   ←/→ pane   i packages        ||
-| | - pacman cache  7.6 GiB      || space toggle   u update   r refresh     ||
-| | - orphans       3            || o overlaps   c cleanup   L log   q quit ||
-| +------------------------------++-----------------------------------------+|
-+----------------------------------------------------------------------------+
++ paclens -------------------------------------------------------------------+
+| + sources -----------------------++ pending updates · pacman (62) --------+ |
+| |       SOURCE       INST  UPD   || linux    6.9.1  -> 6.9.2              | |
+| | > [x] pacman       1832   62   || mesa     24.0   -> 24.1               | |
+| |   [x] flatpak        12    0   || ...                                   | |
+| +--------------------------------+|                                       | |
+| + attention ---------------------+|                                       | |
+| | - plan          2 sources      ||                                       | |
+| | - config files  3 to merge     ||                                       | |
+| | - orphans       3              ||                                       | |
+| +--------------------------------++---------------------------------------+ |
+| enter packages  .  space toggle  .  u update  .  ? keys  .  q quit          |
++-----------------------------------------------------------------------------+
 ```
 
 paclens is **not** a package manager. It wraps `pacman` and `flatpak`, reads
 their state, and presents it. Updates run the real commands in a terminal
 emulated inside the TUI — sudo and pacman prompt you exactly as they would in
-your shell. Everything else is advisory: paclens never removes anything.
+your shell. Everything else is advisory: the only thing paclens ever removes
+is the source side of a migration, after you have verified the copy.
 
 ## Features
 
@@ -141,7 +143,10 @@ Everything is also available headless:
 
 ```sh
 paclens status            # dashboard summary to stdout
-paclens update            # update all sources (asks y/N first)
+paclens update            # sudo once, then every source; the tools ask their own questions
+paclens update --dry-run  # print the exact commands instead
+paclens status --check    # one line for a status bar: 0 up to date, 1 pending, 2 unknown
+paclens cleanup           # one line per finding; --all for the lists
 paclens update --parallel # flatpak and cargo run at once; pacman keeps the terminal
 paclens why firefox       # why is this installed, what breaks without it
 paclens overlaps          # Flatpak/native duplicates with tradeoffs
