@@ -921,8 +921,6 @@ fn gather_cache_sizes(
         pacman_cache_bytes,
         pacman_cache_reclaimable_bytes,
         aur_cache_bytes,
-        flatpak_unused_runtime_count: None,
-        flatpak_unused_runtime_bytes: None,
     }
 }
 

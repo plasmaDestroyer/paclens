@@ -3976,11 +3976,7 @@ mod tests {
 
         // A successful copy run arms R.
         app.stage_removal(Some(crate::tui::app::StagedRemoval {
-            plan: crate::model::ActionPlan {
-                created_at: chrono::Utc::now(),
-                steps: Vec::new(),
-                requires_sudo: true,
-            },
+            plan: crate::model::ActionPlan { steps: Vec::new() },
             backup: "/b".to_string(),
         }));
         app.start_exec(10, 40, ExecKind::Migrate);

@@ -6,17 +6,11 @@
 //! screen), and — from v0.0.6 — handed to the executor. It is ephemeral: never
 //! cached, so no serde derive.
 
-use chrono::{DateTime, Utc};
-
 use super::SourceId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionPlan {
-    pub created_at: DateTime<Utc>,
     pub steps: Vec<ActionStep>,
-    /// True if any step needs privilege escalation (pacman, or system-scope
-    /// Flatpak). The exact escalation tool is chosen by the executor (v0.0.6).
-    pub requires_sudo: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +62,12 @@ pub enum ActionKind {
 }
 
 impl ActionPlan {
+    /// Does any step need privilege escalation? Derived from the steps, so it
+    /// cannot disagree with them.
+    pub fn requires_sudo(&self) -> bool {
+        self.steps.iter().any(|s| s.privileged)
+    }
+
     /// Number of distinct sources in the plan.
     ///
     /// Not the step count: flatpak is one source whose two installations are

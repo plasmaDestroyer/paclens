@@ -2140,11 +2140,7 @@ mod tests {
 
     fn staged() -> StagedRemoval {
         StagedRemoval {
-            plan: crate::model::ActionPlan {
-                created_at: chrono::Utc::now(),
-                steps: Vec::new(),
-                requires_sudo: true,
-            },
+            plan: crate::model::ActionPlan { steps: Vec::new() },
             backup: "/b/firefox/1".to_string(),
         }
     }

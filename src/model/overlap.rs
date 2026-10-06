@@ -46,18 +46,13 @@ impl std::fmt::Display for MatchMethod {
     }
 }
 
-/// Spec §4.6 verbatim; `native_profile_path` and `native_is_newer` still
-/// wait for a per-app config-path map and a reliable cross-source version
-/// comparison. Flatpak profile path/size are live (v0.1.4).
+/// What the overlap screen weighs between the two installs.
 #[derive(Default)]
-#[allow(dead_code)]
 pub struct Tradeoff {
-    pub native_profile_path: Option<PathBuf>,
     pub flatpak_profile_path: Option<PathBuf>,
     pub native_version: Option<String>,
     pub flatpak_version: Option<String>,
-    pub native_is_newer: Option<bool>,
-    /// Filled once the scanner measures `~/.var/app/<id>` (deferred).
+    /// `~/.var/app/<id>` size, as the scanner measured it.
     pub flatpak_profile_size_bytes: Option<u64>,
     pub likely_primary: PrimaryHeuristic,
 }

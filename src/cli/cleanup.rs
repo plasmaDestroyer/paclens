@@ -787,7 +787,6 @@ mod tests {
                 pacman_cache_bytes: Some(1000),
                 pacman_cache_reclaimable_bytes: Some(500),
                 aur_cache_bytes: Some(50),
-                ..Default::default()
             },
         );
         let out = render(&s);

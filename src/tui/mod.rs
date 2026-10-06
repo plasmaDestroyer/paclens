@@ -335,7 +335,7 @@ fn run_loop(
                 None => app.set_flash("nothing to remove — run a migration first (x)"),
                 Some(staged) => {
                     let tool = app.privilege_tool();
-                    if staged.plan.requires_sudo && tool.is_none() {
+                    if staged.plan.requires_sudo() && tool.is_none() {
                         app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot remove");
                     } else {
                         let plan = staged.plan.clone();

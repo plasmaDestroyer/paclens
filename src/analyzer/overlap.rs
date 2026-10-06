@@ -200,7 +200,6 @@ fn candidate(
                 .map(|_| std::path::PathBuf::from(format!("~/.var/app/{}", app.name))),
             flatpak_profile_size_bytes: profile_size,
             likely_primary,
-            ..Tradeoff::default()
         },
     }
 }

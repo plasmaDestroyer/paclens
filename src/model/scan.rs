@@ -217,8 +217,6 @@ pub struct CacheSizes {
     /// directory does not exist yet.
     #[serde(default)]
     pub aur_cache_bytes: Option<u64>,
-    pub flatpak_unused_runtime_count: Option<u32>,
-    pub flatpak_unused_runtime_bytes: Option<u64>,
 }
 
 #[cfg(test)]

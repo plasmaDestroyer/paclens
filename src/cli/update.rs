@@ -291,13 +291,11 @@ mod tests {
     #[test]
     fn the_parallel_preview_marks_the_steps_that_run_at_once() {
         let plan = ActionPlan {
-            created_at: Utc::now(),
             steps: vec![
                 plan_step("pacman", true, true),
                 plan_step("flatpak · system", false, true),
                 plan_step("cargo", false, false),
             ],
-            requires_sudo: true,
         };
         let text = render_plan(&plan, Some("sudo"), true, true, &plain());
         let line = |label: &str| {
@@ -414,7 +412,7 @@ mod tests {
         let s = scan(Vec::new());
         let plan = planner::plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
         assert_eq!(plan.steps.len(), 2, "one per installation");
-        assert!(plan.requires_sudo, "the system half needs it");
+        assert!(plan.requires_sudo(), "the system half needs it");
         let text = render_plan(&plan, Some("sudo"), false, false, &plain());
         assert!(text.contains("flatpak · user"), "{text}");
         assert!(text.contains("flatpak · system"), "{text}");
@@ -448,7 +446,7 @@ mod tests {
         let plan = planner::plan_full_upgrade(&s, |id| id.as_str() == "aur");
 
         assert!(
-            !plan.requires_sudo,
+            !plan.requires_sudo(),
             "nothing in an AUR plan runs under sudo"
         );
         assert!(executor::sudo::worth_priming(&plan, Some("sudo")));

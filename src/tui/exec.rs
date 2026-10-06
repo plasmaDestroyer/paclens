@@ -304,11 +304,9 @@ fn spawn_pump(
 mod tests {
     use super::*;
     use crate::model::{ActionKind, ActionStep, SourceId};
-    use chrono::Utc;
 
     fn plan_for(script: &str) -> ActionPlan {
         ActionPlan {
-            created_at: Utc::now(),
             steps: vec![ActionStep {
                 label: "flatpak".to_string(),
                 source_id: SourceId::flatpak(),
@@ -318,7 +316,6 @@ mod tests {
                 privileged: false,
                 interactive: true,
             }],
-            requires_sudo: false,
         }
     }
 

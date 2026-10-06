@@ -117,24 +117,11 @@ impl ExecutionReport {
     }
 }
 
-/// Does this step need privilege escalation?
-///
-/// The step says so; nothing here reads its source id (design §13,
-/// 2026-09-07). This used to be "privileged unless the id is flatpak-user or
-/// aur", which made root the default for every source that did not exist yet —
-/// cargo, npm, pipx and rustup are all unprivileged and would all have been
-/// wrapped in sudo by a rule nobody remembered to edit. Declaring it at the
-/// planner means forgetting produces a missing prompt, not a command run as
-/// root.
-pub fn needs_privilege(step: &ActionStep) -> bool {
-    step.privileged
-}
-
 /// Why a step cannot run, or `None` if it is executable. Since v0.1.0 the only
 /// blocker is a privileged step with no privilege tool on PATH (design §11:
 /// "show error, do not proceed with privileged operations").
 pub fn skip_reason(step: &ActionStep, tool: Option<&str>) -> Option<&'static str> {
-    if needs_privilege(step) && tool.is_none() {
+    if step.privileged && tool.is_none() {
         Some("no privilege tool found (sudo/doas/pkexec)")
     } else {
         None
@@ -145,7 +132,7 @@ pub fn skip_reason(step: &ActionStep, tool: Option<&str>) -> Option<&'static str
 /// tool prepended when the step needs it. Renderers show this same value
 /// before anything runs (P1) — display and execution can never diverge.
 pub fn effective_command(step: &ActionStep, tool: Option<&str>) -> Vec<String> {
-    match (needs_privilege(step), tool) {
+    match (step.privileged, tool) {
         (true, Some(tool)) => std::iter::once(tool.to_string())
             .chain(step.command.iter().cloned())
             .collect(),
@@ -169,7 +156,7 @@ pub fn effective_command(step: &ActionStep, tool: Option<&str>) -> Vec<String> {
 /// The CLI preview and the executor both call this, so what the plan promises
 /// and what runs cannot diverge (the same contract as [`effective_command`]).
 pub fn runs_in_background(step: &ActionStep, tool: Option<&str>) -> bool {
-    !step.interactive && !needs_privilege(step) && skip_reason(step, tool).is_none()
+    !step.interactive && !step.privileged && skip_reason(step, tool).is_none()
 }
 
 /// How many steps would actually run.
@@ -535,11 +522,7 @@ mod tests {
     }
 
     fn plan(steps: Vec<ActionStep>) -> ActionPlan {
-        ActionPlan {
-            created_at: Utc::now(),
-            steps,
-            requires_sudo: false,
-        }
+        ActionPlan { steps }
     }
 
     fn sandbox(tag: &str) -> std::path::PathBuf {
@@ -556,17 +539,9 @@ mod tests {
     // --- privilege classification ---
     #[test]
     fn only_flatpak_user_runs_unprivileged() {
-        assert!(!needs_privilege(&flatpak_user_step()));
-        assert!(needs_privilege(&step(
-            SourceId::flatpak(),
-            &["a"],
-            &["flatpak"]
-        )));
-        assert!(needs_privilege(&step(
-            SourceId::pacman(),
-            &["a"],
-            &["pacman", "-Syu"]
-        )));
+        assert!(!flatpak_user_step().privileged);
+        assert!(step(SourceId::flatpak(), &["a"], &["flatpak"]).privileged);
+        assert!(step(SourceId::pacman(), &["a"], &["pacman", "-Syu"]).privileged);
     }
 
     #[test]
@@ -614,7 +589,7 @@ mod tests {
         // directions are pinned here, ids deliberately at odds with the flag.
         let unprivileged =
             privileged_step(SourceId::pacman(), &["timr-bin"], &["paru", "-Sua"], false);
-        assert!(!needs_privilege(&unprivileged));
+        assert!(!unprivileged.privileged);
         assert_eq!(skip_reason(&unprivileged, None), None, "no tool needed");
         assert_eq!(
             effective_command(&unprivileged, Some("sudo")),
@@ -628,7 +603,7 @@ mod tests {
             &["flatpak", "update", "--system"],
             true,
         );
-        assert!(needs_privilege(&privileged));
+        assert!(privileged.privileged);
         assert_eq!(
             effective_command(&privileged, Some("sudo"))[0],
             "sudo",

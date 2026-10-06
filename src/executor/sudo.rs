@@ -20,7 +20,7 @@ pub fn worth_priming(plan: &crate::model::ActionPlan, tool: Option<&str>) -> boo
     tool == Some("sudo")
         && plan.steps.iter().any(|st| {
             super::skip_reason(st, tool).is_none()
-                && (super::needs_privilege(st) || st.source_id.as_str() == "aur")
+                && (st.privileged || st.source_id.as_str() == "aur")
         })
 }
 
@@ -113,21 +113,7 @@ pub fn pick(available: impl Fn(&str) -> bool) -> Option<&'static str> {
 
 /// Probe PATH for the first available privilege tool.
 pub fn detect() -> Option<&'static str> {
-    pick(on_path)
-}
-
-fn on_path(bin: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(bin)))
-}
-
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    pick(crate::providers::binary_on_path)
 }
 
 #[cfg(test)]

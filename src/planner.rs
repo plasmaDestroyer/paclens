@@ -5,8 +5,6 @@
 
 use std::path::Path;
 
-use chrono::Utc;
-
 use crate::model::{
     ActionKind, ActionPlan, ActionStep, Direction, FlatpakScope, MigrationReport, OverlapCandidate,
     PathKind, PathMapping, ScanResult, SourceId, SourceKind,
@@ -43,7 +41,6 @@ struct Built {
 /// old, and planning from it skipped sources that had gained updates since.
 pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bool) -> ActionPlan {
     let mut steps = Vec::new();
-    let mut requires_sudo = false;
 
     for source in &scan.sources {
         if !source.available || !is_enabled(&source.id) {
@@ -168,7 +165,6 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
             }
         };
         for b in built {
-            requires_sudo |= b.privileged;
             steps.push(ActionStep {
                 source_id: source.id.clone(),
                 kind: ActionKind::Update,
@@ -181,11 +177,7 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
         }
     }
 
-    ActionPlan {
-        created_at: Utc::now(),
-        steps,
-        requires_sudo,
-    }
+    ActionPlan { steps }
 }
 
 /// The pairs a migration would actually copy: from-side exists, not a cache
@@ -273,11 +265,7 @@ pub fn plan_migration(
         ));
     }
 
-    ActionPlan {
-        created_at: Utc::now(),
-        steps,
-        requires_sudo: false,
-    }
+    ActionPlan { steps }
 }
 
 /// The rollback instructions for a migration plan (roadmap v0.5): shown after
@@ -339,7 +327,6 @@ pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> O
         }
     };
     Some(ActionPlan {
-        created_at: Utc::now(),
         steps: vec![ActionStep {
             label: source_id.to_string(),
             source_id,
@@ -351,7 +338,6 @@ pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> O
             // command carries a "yes to everything" flag, deliberately.
             interactive: true,
         }],
-        requires_sudo,
     })
 }
 
@@ -382,6 +368,7 @@ fn target_source_id(direction: Direction, candidate: &OverlapCandidate) -> Sourc
 mod tests {
     use super::*;
     use crate::model::{CacheSizes, PendingUpdate, SCHEMA_VERSION, Source, SourceKind};
+    use chrono::Utc;
 
     fn upd(name: &str, source: SourceId) -> PendingUpdate {
         PendingUpdate {
@@ -411,7 +398,7 @@ mod tests {
         s.sources[1].last_scanned = None;
         let plan = plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
         assert_eq!(plan.steps.len(), 2);
-        assert!(plan.requires_sudo, "the system half asks for root");
+        assert!(plan.requires_sudo(), "the system half asks for root");
     }
 
     #[test]
@@ -528,7 +515,7 @@ mod tests {
             let plan = plan_full_upgrade(&aur_scan(Some(helper)), |id| id == &SourceId::aur());
             assert_eq!(plan.source_count(), 1);
             assert!(
-                !plan.requires_sudo,
+                !plan.requires_sudo(),
                 "{} must self-elevate, never be run under sudo",
                 helper.bin()
             );
@@ -568,7 +555,7 @@ mod tests {
         let step = &plan.steps[0];
         assert!(!step.privileged, "cargo must never run under sudo");
         assert_eq!(step.command, ["cargo", "install-update", "-a"]);
-        assert!(!plan.requires_sudo);
+        assert!(!plan.requires_sudo());
     }
 
     #[test]
@@ -593,7 +580,7 @@ mod tests {
             );
         }
         assert_eq!(
-            plan.requires_sudo,
+            plan.requires_sudo(),
             plan.steps.iter().any(|s| s.privileged),
             "the plan-level flag must agree with its steps"
         );
@@ -601,14 +588,14 @@ mod tests {
 
     #[test]
     fn pacman_in_the_plan_requires_sudo() {
-        assert!(plan_full_upgrade(&scan(), enable_all).requires_sudo);
+        assert!(plan_full_upgrade(&scan(), enable_all).requires_sudo());
     }
 
     #[test]
     fn flatpak_user_only_does_not_require_sudo() {
         let plan = plan_full_upgrade(&scan(), |id| id == &SourceId::flatpak());
         assert_eq!(plan.source_count(), 1);
-        assert!(!plan.requires_sudo);
+        assert!(!plan.requires_sudo());
     }
 
     #[test]
@@ -622,7 +609,7 @@ mod tests {
         let plan = plan_full_upgrade(&s, |id| id == &SourceId::flatpak());
         assert_eq!(plan.source_count(), 1, "still one source");
         assert_eq!(plan.steps.len(), 2, "one step per installation with work");
-        assert!(plan.requires_sudo);
+        assert!(plan.requires_sudo());
 
         let user = &plan.steps[0];
         assert_eq!(
@@ -669,7 +656,7 @@ mod tests {
         let plan = plan_full_upgrade(&scan(), |id| id != &SourceId::pacman());
         assert_eq!(plan.source_count(), 1);
         assert_eq!(plan.steps[0].source_id, SourceId::flatpak());
-        assert!(!plan.requires_sudo);
+        assert!(!plan.requires_sudo());
     }
 
     #[test]
@@ -701,7 +688,7 @@ mod tests {
         };
         let plan = plan_full_upgrade(&empty, enable_all);
         assert!(plan.is_empty());
-        assert!(!plan.requires_sudo);
+        assert!(!plan.requires_sudo());
         assert!(plan.steps.iter().all(|s| s.targets.is_empty()));
     }
 
@@ -789,7 +776,7 @@ mod tests {
             Path::new("/home/t"),
             Path::new("/home/t/.local/share/paclens/backups/firefox/20260714-120000"),
         );
-        assert!(!plan.requires_sudo);
+        assert!(!plan.requires_sudo());
         assert!(plan.steps.iter().all(|s| s.kind == ActionKind::Migrate));
         assert!(
             plan.steps
@@ -922,27 +909,27 @@ mod tests {
     fn removal_plan_to_flatpak_removes_native_via_sudo_pacman() {
         let r = report(Direction::ToFlatpak, Vec::new());
         let plan = plan_removal(&r, &candidate()).expect("plan");
-        assert!(plan.requires_sudo);
+        assert!(plan.requires_sudo());
         let step = &plan.steps[0];
         assert_eq!(step.kind, ActionKind::Remove);
         assert_eq!(step.source_id, SourceId::pacman());
         assert_eq!(step.command, vec!["pacman", "-Rns", "firefox"]);
         // Kind Remove keeps the source-based privilege rule.
-        assert!(crate::executor::needs_privilege(step));
+        assert!(step.privileged);
     }
 
     #[test]
     fn removal_plan_to_native_uninstalls_the_flatpak_unprivileged() {
         let r = report(Direction::ToNative, Vec::new());
         let plan = plan_removal(&r, &candidate()).expect("plan");
-        assert!(!plan.requires_sudo);
+        assert!(!plan.requires_sudo());
         let step = &plan.steps[0];
         assert_eq!(step.source_id, SourceId::flatpak());
         assert_eq!(
             step.command,
             vec!["flatpak", "uninstall", "--user", "org.mozilla.firefox"]
         );
-        assert!(!crate::executor::needs_privilege(step));
+        assert!(!step.privileged);
     }
 
     #[test]
@@ -953,7 +940,7 @@ mod tests {
         c.flatpak_app.as_mut().expect("app").scope = Some(FlatpakScope::System);
         let r = report(Direction::ToNative, Vec::new());
         let plan = plan_removal(&r, &c).expect("plan");
-        assert!(plan.requires_sudo);
+        assert!(plan.requires_sudo());
         assert!(plan.steps[0].privileged);
         assert_eq!(plan.steps[0].command[2], "--system");
     }
@@ -1005,7 +992,7 @@ mod tests {
             privileged: false,
             interactive: false,
         };
-        assert!(!crate::executor::needs_privilege(&step));
+        assert!(!step.privileged);
         assert_eq!(crate::executor::skip_reason(&step, None), None);
     }
 }
