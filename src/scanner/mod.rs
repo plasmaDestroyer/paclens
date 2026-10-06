@@ -86,6 +86,59 @@ fn find_stale_processes() -> Vec<crate::analyzer::services::StaleProcess> {
     out
 }
 
+/// Commands in `~/.cargo/bin` that pacman also installed in `/usr/bin`, and
+/// which copy `PATH` runs (#18). One `pacman -Qo` over the doubled paths;
+/// a path pacman does not own is not a duplicate of anything.
+fn find_shadows(
+    runner: &dyn CommandRunner,
+    home: Option<&Path>,
+) -> Vec<crate::analyzer::shadows::Shadow> {
+    let Some(cargo_bin) = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".cargo")))
+        .map(|c| c.join("bin"))
+    else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&cargo_bin) else {
+        return Vec::new();
+    };
+    let doubled: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let usr = Path::new("/usr/bin").join(e.file_name());
+            usr.exists().then(|| usr.to_string_lossy().into_owned())
+        })
+        .collect();
+    if doubled.is_empty() {
+        return Vec::new();
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs: Vec<_> = std::env::split_paths(&path).collect();
+    let first = |d: &Path| dirs.iter().position(|p| p == d);
+    let cargo_wins = match (first(&cargo_bin), first(Path::new("/usr/bin"))) {
+        (Some(c), Some(u)) => c < u,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    let args: Vec<&str> = std::iter::once("-Qo")
+        .chain(doubled.iter().map(String::as_str))
+        .collect();
+    let Ok(out) = runner.run(pacman::PACMAN_BIN, &args) else {
+        return Vec::new();
+    };
+    let mut shadows: Vec<_> = crate::analyzer::shadows::parse_owners(&out.stdout)
+        .into_iter()
+        .map(|(bin, pacman_package)| crate::analyzer::shadows::Shadow {
+            bin,
+            pacman_package,
+            cargo_wins,
+        })
+        .collect();
+    shadows.sort_by(|a, b| a.bin.cmp(&b.bin));
+    shadows
+}
+
 /// Walk the config dirs for `.pacnew` / `.pacsave` leftovers (#2).
 ///
 /// Bounded rather than unlimited: `/etc` is shallow, and a runaway walk of a
@@ -658,6 +711,9 @@ fn assemble(
     {
         scan.repo_arch = pacman::repo_arch(runner, offers);
     }
+    if lanes.pacman {
+        scan.shadows = find_shadows(runner, home_dir);
+    }
     scan.stale_processes = if config.scan.stale_services {
         find_stale_processes()
     } else {
@@ -880,6 +936,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         stale_processes: Vec::new(),
         repo_arch: Default::default(),
         news: Vec::new(),
+        shadows: Vec::new(),
     }
 }
 

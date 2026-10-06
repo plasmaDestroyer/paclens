@@ -160,6 +160,9 @@ fn render_status_since(
     }
     // Packages no configured repo can reach: they never update again, and
     // nothing else on this screen would say so (#78).
+    for line in crate::analyzer::shadows::lines(&scan.shadows) {
+        out.push_str(&s.dim(&format!("  {line}\n")));
+    }
     for r in crate::analyzer::news::relevant(scan, since) {
         out.push_str(&s.summary_updates(&format!("  news: {}", r.item.title)));
         out.push_str(&s.dim(&format!(" {}\n", r.item.link)));
@@ -332,6 +335,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            shadows: Vec::new(),
         }
     }
 

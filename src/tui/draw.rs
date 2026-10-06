@@ -565,6 +565,13 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         };
         found.push(kv("news", format!("{}{more}", first.package), theme.accent));
     }
+    for (pkg, bins, _) in crate::analyzer::shadows::by_package(&app.scan().shadows) {
+        found.push(kv(
+            "duplicates",
+            format!("{pkg} · {} in ~/.cargo/bin", bins.len()),
+            theme.primary,
+        ));
+    }
     let blocked = crate::analyzer::outranked::arch_mismatch(app.scan());
     if !blocked.is_empty() {
         let repos: Vec<&str> = blocked.iter().map(|(r, _)| r.as_str()).collect();
@@ -2690,6 +2697,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            shadows: Vec::new(),
         }
     }
 

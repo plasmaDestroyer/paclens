@@ -29,6 +29,15 @@ pub fn run(
     );
     let min = config.overlap.min_confidence();
     print!("{}", render_overlaps(&overlaps, &scan, min, styles));
+    // The same command from cargo and pacman (#18): the other kind of
+    // installed-twice, decided by PATH rather than by which app you launch.
+    let shadows = crate::analyzer::shadows::lines(&scan.shadows);
+    if !shadows.is_empty() {
+        println!();
+        for line in shadows {
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 
@@ -204,6 +213,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            shadows: Vec::new(),
         }
     }
 

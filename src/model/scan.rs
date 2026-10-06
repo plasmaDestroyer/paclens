@@ -86,6 +86,9 @@ pub struct ScanResult {
     /// Recent Arch news posts (#1); which ones matter is the analyzer's call.
     #[serde(default)]
     pub news: Vec<crate::providers::news::NewsItem>,
+    /// Commands in both `~/.cargo/bin` and pacman's `/usr/bin` (#18).
+    #[serde(default)]
+    pub shadows: Vec<crate::analyzer::shadows::Shadow>,
 }
 
 impl ScanResult {
@@ -206,6 +209,7 @@ impl ScanResult {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            shadows: Vec::new(),
         }
     }
 }
