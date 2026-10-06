@@ -316,6 +316,74 @@ pub fn sync_list(runner: &dyn CommandRunner) -> Result<Vec<RepoOffer>, ProviderE
     Ok(parse_sync_list(&out.stdout))
 }
 
+/// Which architectures pacman accepts (`pacman-conf Architecture`), and the
+/// architecture each configured repo actually serves (#78). Facts only; the
+/// analyzer decides whether they disagree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RepoArch {
+    pub accepted: Vec<String>,
+    /// `(repo, arch)`, from the first package of each repo that is not `any`.
+    pub served: Vec<(String, String)>,
+}
+
+/// Parse `pacman -Si` records down to `(repository, architecture)` pairs.
+pub fn parse_si_arches(stdout: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut repo: Option<String> = None;
+    for line in stdout.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        match key.trim() {
+            "Repository" => repo = Some(value.trim().to_string()),
+            "Architecture" => {
+                if let Some(r) = repo.take() {
+                    out.push((r, value.trim().to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Probe what each repo serves: one `pacman -Si` over a few packages per repo
+/// (local sync databases — no network, no privilege) plus `pacman-conf`.
+/// Anything unreadable yields an empty answer, never a guess.
+pub fn repo_arch(runner: &dyn CommandRunner, offers: &[RepoOffer]) -> RepoArch {
+    let accepted = runner
+        .run("pacman-conf", &["Architecture"])
+        .ok()
+        .filter(|o| o.exit_code == 0)
+        .map(|o| o.stdout.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+    // A few names per repo: `any` packages say nothing about the arch.
+    let mut per_repo: Vec<(&str, usize)> = Vec::new();
+    let mut targets: Vec<String> = Vec::new();
+    for o in offers {
+        match per_repo.iter_mut().find(|(r, _)| *r == o.repo) {
+            Some((_, n)) if *n >= 5 => continue,
+            Some((_, n)) => *n += 1,
+            None => per_repo.push((&o.repo, 1)),
+        }
+        targets.push(format!("{}/{}", o.repo, o.name));
+    }
+    let mut served: Vec<(String, String)> = Vec::new();
+    if !targets.is_empty() {
+        let args: Vec<&str> = std::iter::once("-Si")
+            .chain(targets.iter().map(String::as_str))
+            .collect();
+        if let Ok(out) = runner.run(PACMAN_BIN, &args) {
+            for (repo, arch) in parse_si_arches(&out.stdout) {
+                if arch != "any" && !served.iter().any(|(r, _)| *r == repo) {
+                    served.push((repo, arch));
+                }
+            }
+        }
+    }
+    RepoArch { accepted, served }
+}
+
 /// Parse the `name current -> available` line format shared by
 /// `pacman -Qu`, `checkupdates` and `paru -Qua`.
 pub(crate) fn parse_updates_as(stdout: &str, source: SourceId) -> Vec<PendingUpdate> {
@@ -345,7 +413,7 @@ fn parse_updates(stdout: &str) -> Vec<PendingUpdate> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepoOffer, parse_sync_list};
+    use super::{RepoOffer, parse_si_arches, parse_sync_list};
 
     #[test]
     fn the_sync_list_parses_repo_name_and_version() {
@@ -370,6 +438,18 @@ core binutils 2.47-4
         // The `[installed]` marker is not a field and must not be mistaken
         // for one.
         assert!(offers.iter().all(|o| o.version != "[installed]"));
+    }
+
+    #[test]
+    fn si_records_reduce_to_repo_and_arch() {
+        let out = "Repository      : core\nName            : bash\nArchitecture    : x86_64\n\nRepository      : cachyos-v3\nArchitecture    : x86_64_v3\n";
+        assert_eq!(
+            parse_si_arches(out),
+            vec![
+                ("core".to_string(), "x86_64".to_string()),
+                ("cachyos-v3".to_string(), "x86_64_v3".to_string())
+            ]
+        );
     }
 
     #[test]

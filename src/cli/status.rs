@@ -143,6 +143,10 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
     }
     // Packages no configured repo can reach: they never update again, and
     // nothing else on this screen would say so (#78).
+    if let Some(note) = crate::analyzer::outranked::arch_summary(scan) {
+        out.push_str(&s.error(&format!("  {note}")));
+        out.push('\n');
+    }
     if let Some(note) =
         crate::analyzer::outranked::summary(&crate::analyzer::outranked::outranked(scan))
     {
@@ -305,6 +309,7 @@ mod tests {
             kernel: None,
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
+            repo_arch: Default::default(),
         }
     }
 

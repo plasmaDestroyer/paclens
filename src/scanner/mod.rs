@@ -646,6 +646,13 @@ fn assemble(
     // source row, so it lands with the finished result rather than partway.
     scan.kernel = read_running_kernel();
     scan.pacfiles = find_pacfiles(&config.cleanup.config_dirs);
+    // What each repo serves, against what pacman accepts (#78): one local
+    // `pacman -Si`, after the lanes, because it needs the repo list.
+    if lanes.pacman
+        && let Some(offers) = &parts.offers
+    {
+        scan.repo_arch = pacman::repo_arch(runner, offers);
+    }
     scan.stale_processes = if config.scan.stale_services {
         find_stale_processes()
     } else {
@@ -866,6 +873,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         kernel: None,
         pacfiles: Vec::new(),
         stale_processes: Vec::new(),
+        repo_arch: Default::default(),
     }
 }
 

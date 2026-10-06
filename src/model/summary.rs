@@ -111,6 +111,7 @@ mod tests {
             kernel: None,
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
+            repo_arch: Default::default(),
         }
     }
 
@@ -183,6 +184,7 @@ mod tests {
             kernel: None,
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
+            repo_arch: Default::default(),
         };
         assert_eq!(
             summarize(&empty, |_| true),

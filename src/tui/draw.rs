@@ -555,6 +555,15 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     // Below the plan, only findings get a row: a healthy machine says so in
     // one line instead of a column of zeros.
     let mut found: Vec<Line<'static>> = Vec::new();
+    let blocked = crate::analyzer::outranked::arch_mismatch(app.scan());
+    if !blocked.is_empty() {
+        let repos: Vec<&str> = blocked.iter().map(|(r, _)| r.as_str()).collect();
+        found.push(kv(
+            "update blocked",
+            format!("{} arch not accepted", repos.join(", ")),
+            theme.error,
+        ));
+    }
     let reboot = app.reboot_status();
     if let Some(label) = reboot.label() {
         let style = if reboot.is_required() {
@@ -2669,6 +2678,7 @@ mod tests {
             kernel: None,
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
+            repo_arch: Default::default(),
         }
     }
 

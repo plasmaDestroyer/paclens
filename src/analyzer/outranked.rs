@@ -18,6 +18,39 @@ use std::cmp::Ordering;
 
 use crate::model::{Package, ScanResult};
 
+/// Repos serving an architecture pacman does not accept, as `(repo, arch)`.
+/// pacman refuses the whole transaction over one such package, so every
+/// update fails — including the ones from core and extra (#78).
+pub fn arch_mismatch(scan: &ScanResult) -> Vec<(String, String)> {
+    let accepted = &scan.repo_arch.accepted;
+    if accepted.is_empty() {
+        return Vec::new(); // unknown is not a mismatch
+    }
+    scan.repo_arch
+        .served
+        .iter()
+        .filter(|(_, arch)| !accepted.iter().any(|a| a == arch))
+        .cloned()
+        .collect()
+}
+
+/// The finding as one line, or `None` when every repo fits.
+pub fn arch_summary(scan: &ScanResult) -> Option<String> {
+    let bad = arch_mismatch(scan);
+    if bad.is_empty() {
+        return None;
+    }
+    let repos: Vec<String> = bad
+        .iter()
+        .map(|(r, a)| format!("[{r}] serves {a}"))
+        .collect();
+    Some(format!(
+        "updates will fail: {}; pacman.conf accepts {}",
+        repos.join(", "),
+        scan.repo_arch.accepted.join(" ")
+    ))
+}
+
 /// One installed package that outranks every configured repo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outranked {
@@ -96,6 +129,26 @@ pub fn summary(stranded: &[Outranked]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repo_serving_an_unaccepted_arch_is_reported_and_unknown_is_not() {
+        let mut scan = scan_with(Vec::new());
+        scan.repo_arch.served = vec![
+            ("core".to_string(), "x86_64".to_string()),
+            ("cachyos-v3".to_string(), "x86_64_v3".to_string()),
+        ];
+        // Nothing known about what pacman accepts: no claim either way.
+        assert!(arch_mismatch(&scan).is_empty());
+        scan.repo_arch.accepted = vec!["x86_64".to_string()];
+        assert_eq!(
+            arch_mismatch(&scan),
+            vec![("cachyos-v3".to_string(), "x86_64_v3".to_string())]
+        );
+        let line = arch_summary(&scan).expect("finding");
+        assert!(line.contains("[cachyos-v3] serves x86_64_v3"), "{line}");
+        scan.repo_arch.accepted.push("x86_64_v3".to_string());
+        assert!(arch_summary(&scan).is_none());
+    }
     use crate::model::{InstallReason, SourceId};
 
     fn pkg(name: &str, installed: &str, offer: Option<(&str, &str)>) -> Package {

@@ -80,6 +80,9 @@ pub struct ScanResult {
     /// privilege, and paclens does not take any to look.
     #[serde(default)]
     pub stale_processes: Vec<crate::analyzer::services::StaleProcess>,
+    /// What architectures pacman accepts and each repo serves (#78).
+    #[serde(default)]
+    pub repo_arch: crate::providers::pacman::RepoArch,
 }
 
 impl ScanResult {
@@ -198,6 +201,7 @@ impl ScanResult {
             kernel: None,
             pacfiles: Vec::new(),
             stale_processes: Vec::new(),
+            repo_arch: Default::default(),
         }
     }
 }
