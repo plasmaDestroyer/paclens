@@ -44,6 +44,7 @@ pub struct Sources {
     pub flatpak: bool,
     pub aur: bool,
     pub cargo: bool,
+    pub rustup: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,6 +168,7 @@ impl Default for Sources {
             flatpak: true,
             aur: true,
             cargo: true,
+            rustup: true,
         }
     }
 }

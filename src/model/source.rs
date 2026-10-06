@@ -33,6 +33,10 @@ impl SourceId {
         SourceId("cargo".to_string())
     }
 
+    pub fn rustup() -> Self {
+        SourceId("rustup".to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -155,6 +159,8 @@ pub enum SourceKind {
     /// from whatever happens to be in `~/.cargo/bin` (rustup owns most of
     /// that).
     Cargo,
+    /// Rust toolchains, installed and updated by rustup (#12).
+    Rustup,
 }
 
 /// What a screen may ask a source about (design §13, 2026-09-07).
@@ -236,6 +242,13 @@ impl SourceKind {
                 install_reason: true,
                 orphans: false,
                 removal_hint: Some("cargo uninstall"),
+            },
+            // Toolchains: asked for by name, depended on by nothing.
+            SourceKind::Rustup => SourceCapabilities {
+                dependency_graph: false,
+                install_reason: true,
+                orphans: false,
+                removal_hint: Some("rustup toolchain uninstall"),
             },
         }
     }

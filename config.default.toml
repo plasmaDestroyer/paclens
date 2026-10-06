@@ -51,6 +51,10 @@ aur     = true
 # without it the source still lists what you have.
 cargo   = true
 
+# Rust toolchains managed by rustup. `rustup check` finds updates and
+# `rustup update` applies them, unprivileged.
+rustup  = true
+
 
 [scan]
 
