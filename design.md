@@ -46,7 +46,8 @@ among them.
 ## 2. Principles
 
 **1. Explain before acting.** Nothing runs until you have seen exactly what will
-run. Not a summary of it — the commands.
+run. Not a summary of it — the commands. One exception: `paclens update`, where typing the
+command is the decision and the tools ask for themselves (§13, 2026-10-06).
 
 **2. Safety over aggression.** When in doubt, do nothing. When paclens cannot
 tell whether something is safe, it says so and stops. It never removes more than
@@ -1966,6 +1967,17 @@ YYYY-MM-DD | no --noconfirm for pacman
            | toggles, clean or not. One exception to "unchecked means both":
            | once a scan has listed flatpak, a scope with nothing installed
            | gets no step, since its only effect was a root prompt.
+
+2026-10-06 | `paclens update` asks nothing of its own (user decision)
+           | Amends principle 1 for the `update` verb. Typing `update` is the
+           | decision, and the plan plus [Y/n] above it caught nothing: the
+           | commands are fixed, and pacman and the AUR helper each print
+           | what they will change and ask [Y/n] themselves. So a bare
+           | `update` now prompts once for sudo and hands over the terminal.
+           | Every other rule holds — no `--noconfirm`, no partial upgrade,
+           | the helper never under sudo — and `--dry-run` still prints the
+           | exact commands. The TUI keeps its plan view: there `u` is one
+           | key among many, not a typed command.
 
 ```
 

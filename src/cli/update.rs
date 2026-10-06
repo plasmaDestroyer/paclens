@@ -7,8 +7,6 @@
 //! pipeline is intact (P4): the full plan prints before the prompt, nothing
 //! runs without confirmation, and the per-source report hides nothing.
 
-use std::io::{BufRead, Write};
-
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::executor::{self, ExecutionReport, InteractiveRunner, StepStatus, UpdateLog};
@@ -27,7 +25,9 @@ pub fn run(
     // Executing needs an interactive confirmation, so fail fast (before the
     // scan) when there is no terminal to ask on. Scripts get --dry-run.
     if !dry_run && !stdin_is_tty {
-        anyhow::bail!("update needs a terminal to confirm on — use --dry-run to preview the plan");
+        anyhow::bail!(
+            "update needs a terminal for the tools' own prompts — use --dry-run to preview"
+        );
     }
 
     let runner = SystemCommandRunner::new(config.scan.provider_timeout_secs);
@@ -53,17 +53,18 @@ pub fn run(
         None => true,
     });
 
-    let tool = executor::sudo::detect();
-    print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
-
+    // Typing `update` is the decision: no plan and no [Y/n] of paclens's
+    // own. pacman and the helper show what they will change and ask for
+    // themselves (design §13, 2026-10-06). `--dry-run` still shows it all.
     if dry_run || plan.is_empty() {
+        let tool = executor::sudo::detect();
+        print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
         return Ok(());
     }
     execute_flow(&plan, parallel, config.update.loop_interval(), styles)
 }
 
-/// The confirm + execute half of a bare `paclens update`: show the exact
-/// commands (P1), announce skips, ask `[Y/n]`, run, report every outcome.
+/// The execute half of a bare `paclens update`: one sudo prompt, run, report.
 fn execute_flow(
     plan: &ActionPlan,
     parallel: bool,
@@ -80,18 +81,6 @@ fn execute_flow(
         return Ok(());
     }
 
-    print!(
-        "\n{} {} ",
-        styles.summary_updates("Run?"),
-        styles.dim("[Y/n]")
-    );
-    std::io::stdout().flush()?;
-    if !confirmed(&mut std::io::stdin().lock())? {
-        println!("{}", styles.dim("cancelled — nothing executed"));
-        return Ok(());
-    }
-
-    println!();
     // A warm timestamp only once there is one to keep warm (#24).
     let _keepalive = (prime_privilege(plan, tool, styles) && sudo_loop.is_some())
         .then(|| sudo_loop.map(executor::sudo::Keepalive::start))
@@ -135,10 +124,6 @@ fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) -> bool {
     }
 
     let argv = executor::sudo::prime_command();
-    println!(
-        "  {}",
-        s.dim(&format!("{} (once, for the whole run)", argv.join(" ")))
-    );
     let ok = std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .status()
@@ -150,27 +135,7 @@ fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) -> bool {
             s.dim("could not authenticate — each step will ask for itself")
         );
     }
-    println!();
     ok
-}
-
-/// Does this answer to `[Y/n]` mean yes?
-///
-/// Enter means yes (user decision 2026-09-21): the plan is on screen above
-/// the prompt, and someone who typed `update` and read it is answering the
-/// question they asked. Anything that is not a yes or an empty line is still
-/// a refusal — a typo cancels rather than upgrades the system.
-fn accepts(answer: &str) -> bool {
-    matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "" | "y" | "yes"
-    )
-}
-
-/// EOF is not an empty Enter: a closed terminal must cancel the plan.
-fn confirmed(input: &mut impl BufRead) -> std::io::Result<bool> {
-    let mut answer = String::new();
-    Ok(input.read_line(&mut answer)? != 0 && accepts(&answer))
 }
 
 /// The plan, once: each step's label and the exact command that will run,
@@ -499,23 +464,6 @@ mod tests {
         let s = scan(Vec::new());
         let plan = planner::plan_full_upgrade(&s, |id| id.as_str() == "cargo");
         assert!(!executor::sudo::worth_priming(&plan, Some("sudo")));
-    }
-
-    // --- the Y/n answer ---
-    #[test]
-    fn enter_accepts_and_anything_unrecognised_still_refuses() {
-        for yes in ["y", "Y", "yes", "YES", " y \n", "", "\n", "  \n"] {
-            assert!(accepts(yes), "{yes:?} should accept");
-        }
-        for no in ["n", "N", "no", "q", "yep", "sure"] {
-            assert!(!accepts(no), "{no:?} should refuse");
-        }
-    }
-
-    #[test]
-    fn eof_cancels_while_enter_confirms() {
-        assert!(matches!(confirmed(&mut &b""[..]), Ok(false)));
-        assert!(matches!(confirmed(&mut &b"\n"[..]), Ok(true)));
     }
 
     // --- the post-execution report ---
