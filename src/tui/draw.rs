@@ -75,7 +75,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "dashboard",
         &[
             ("u", "run the update, or show it"),
-            ("ctrl+]", "hide a running update"),
+            ("esc", "hide a running update"),
             ("space", "toggle a source"),
             ("h/l ←/→", "switch pane"),
             ("r", "refresh"),
@@ -173,7 +173,7 @@ fn draw_exec(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::E
             &[
                 ("keys", "pass through"),
                 ("ctrl+c", "interrupt"),
-                ("ctrl+]", "hide, keep running"),
+                ("esc", "dashboard, keep running"),
             ],
         )
     } else {

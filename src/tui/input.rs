@@ -239,12 +239,9 @@ pub fn map_exec_key(key: KeyEvent, done: bool) -> Action {
         }
         return Action::ExecDismiss;
     }
-    // Ctrl-] hides the console and lets the run carry on. It is no key a
-    // pacman prompt or the helper's pager answers. Terminals report it as
-    // Ctrl-] or, in legacy encoding, as Ctrl-5.
-    if key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
-    {
+    // Esc goes back to the dashboard and lets the run carry on (user
+    // decision 2026-10-08). The tools never see it.
+    if key.code == KeyCode::Esc {
         return Action::HideExec;
     }
     Action::ExecKey(key)
@@ -289,14 +286,11 @@ pub fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
 mod tests {
 
     #[test]
-    fn ctrl_bracket_hides_a_running_console_in_either_encoding() {
+    fn esc_hides_a_running_console() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        for c in [']', '5'] {
-            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
-            assert_eq!(map_exec_key(key, false), Action::HideExec);
-        }
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(map_exec_key(key, false), Action::HideExec);
         // A finished console has nothing to hide behind: any key dismisses.
-        let key = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
         assert_eq!(map_exec_key(key, true), Action::ExecDismiss);
     }
     use super::*;
@@ -533,7 +527,6 @@ mod tests {
             KeyCode::Char('y'),
             KeyCode::Char('q'), // may be part of a password — never quits
             KeyCode::Enter,
-            KeyCode::Esc,
         ] {
             assert_eq!(
                 map_exec_key(plain(code), false),

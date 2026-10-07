@@ -235,7 +235,7 @@ pub struct App {
     log_view: Option<LogView>,
     /// The `?` key reference is open (any screen).
     help: bool,
-    /// The console is running behind the dashboard (Ctrl-]).
+    /// The console is running behind the dashboard (Esc).
     exec_hidden: bool,
     /// The last update's outcome line, and whether it failed (#21).
     last_run: Option<(String, bool)>,
