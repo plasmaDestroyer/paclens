@@ -1159,7 +1159,7 @@ impl App {
             .collect();
         let executed = report.executed();
         self.last_run = Some(if executed == 0 {
-            ("nothing ran".to_string(), false)
+            ("cancelled — nothing ran".to_string(), false)
         } else if failed.is_empty() {
             (format!("{executed} ok"), false)
         } else {

@@ -104,8 +104,10 @@ fn run_session(
             source_id: step.source_id.clone(),
             label: step.label.clone(),
             targets: step.targets.len(),
-            status: StepStatus::Failed {
-                detail: "did not run (run interrupted)".to_string(),
+            // Overwritten by the step's recorded exit code; a step with none
+            // never started, because the run was cancelled before it.
+            status: StepStatus::Skipped {
+                reason: "cancelled".to_string(),
             },
         });
         match skip_reason(step, tool) {
@@ -193,9 +195,11 @@ fn session_script(
     status_file: &std::path::Path,
 ) -> String {
     let file = sh_quote(&status_file.to_string_lossy());
-    let mut script = String::new();
+    // Ctrl-C anywhere stops the run, not just the step it lands in.
+    let mut script = String::from("trap 'exit 130' INT\n");
     if prime {
-        script.push_str("sudo -v || printf 'could not authenticate; each step will ask\\n'\n");
+        // No password, no run: a cancelled or failed prompt ends it here.
+        script.push_str("sudo -v || exit 1\n");
         if let Some(every) = keepalive {
             script.push_str(&format!(
                 "(while sleep {}; do sudo -n -v 2>/dev/null; done) & ka=$!\ntrap 'kill $ka 2>/dev/null' EXIT INT TERM\n",
@@ -429,6 +433,11 @@ mod tests {
             std::path::Path::new("/tmp/s"),
         );
         assert_eq!(script.matches("sudo -v").count(), 1, "{script}");
+        assert!(
+            script.contains("sudo -v || exit 1"),
+            "a cancelled prompt must stop the run"
+        );
+        assert!(script.starts_with("trap 'exit 130' INT"), "{script}");
         assert!(script.contains("echo \"0 $?\" >> '/tmp/s'"), "{script}");
         assert!(script.contains("echo \"2 $?\" >> '/tmp/s'"), "{script}");
     }
@@ -436,6 +445,25 @@ mod tests {
     /// The bug this pins: each step got a fresh pty, and sudo caches a
     /// password per terminal session, so pacman and paru each asked again.
     /// Every step now shares one terminal.
+    #[test]
+    fn a_step_that_never_started_reads_as_cancelled() {
+        let dir = std::env::temp_dir().join(format!("paclens-exec-cancel-{}", std::process::id()));
+        // The first step ends the shell, the way a refused sudo prompt does.
+        let mut plan = plan_for("kill -INT $PPID; sleep 1");
+        let mut second = plan.steps[0].clone();
+        second.command = vec!["sh".into(), "-c".into(), "echo SECOND-RAN".into()];
+        plan.steps.push(second);
+        let session = start(plan, None, (24, 80), Some(dir.clone()), None);
+        let (text, report) = drain(&session, None);
+        assert!(!text.contains("SECOND-RAN"), "the run carried on:\n{text}");
+        assert!(
+            matches!(&report.steps[1].status, StepStatus::Skipped { reason } if reason == "cancelled"),
+            "{:?}",
+            report.steps[1].status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_step_runs_on_the_same_terminal() {
         let dir = std::env::temp_dir().join(format!("paclens-exec-onetty-{}", std::process::id()));

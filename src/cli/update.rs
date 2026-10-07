@@ -80,7 +80,11 @@ fn execute_flow(
     }
 
     // A warm timestamp only once there is one to keep warm (#24).
-    let _keepalive = (prime_privilege(plan, tool, styles) && sudo_loop.is_some())
+    let primed = prime_privilege(plan, tool);
+    if executor::sudo::worth_priming(plan, tool) && !primed {
+        anyhow::bail!("not authenticated — nothing ran");
+    }
+    let _keepalive = (primed && sudo_loop.is_some())
         .then(|| sudo_loop.map(executor::sudo::Keepalive::start))
         .flatten();
 
@@ -111,29 +115,23 @@ fn execute_flow(
 /// One `sudo -v` up front satisfies both, because they share the terminal's
 /// sudo timestamp (user decision 2026-09-21).
 ///
-/// Failure is not fatal: the steps ask for themselves, exactly as before.
+/// A cancelled or failed prompt stops the run: nothing has been changed yet,
+/// and carrying on would only ask again at every privileged step.
 /// A build long enough to outlive sudo's timeout will still stop for a second
 /// prompt — `sudo_loop` in the config is the opt-in for that, and it stays
 /// opt-in because keeping the timestamp warm lets anything running as this
 /// user use sudo unasked.
-fn prime_privilege(plan: &ActionPlan, tool: Option<&str>, s: &Styles) -> bool {
+fn prime_privilege(plan: &ActionPlan, tool: Option<&str>) -> bool {
     if !executor::sudo::worth_priming(plan, tool) {
         return false;
     }
 
     let argv = executor::sudo::prime_command();
-    let ok = std::process::Command::new(&argv[0])
+    std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .status()
         .map(|st| st.success())
-        .unwrap_or(false);
-    if !ok {
-        println!(
-            "  {}",
-            s.dim("could not authenticate — each step will ask for itself")
-        );
-    }
-    ok
+        .unwrap_or(false)
 }
 
 /// The plan, once: each step's label and the exact command that will run,

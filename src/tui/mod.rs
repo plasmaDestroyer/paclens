@@ -156,7 +156,13 @@ fn run_loop(
                         exec_session = None;
                         // Hidden: nobody is looking at the console to
                         // dismiss it, so the run lands on its own.
-                        if app.exec_hidden() {
+                        // Cancelled before anything ran (say, at the sudo
+                        // prompt): nothing to read, straight back.
+                        let nothing_ran = app
+                            .exec()
+                            .and_then(|v| v.done.as_ref())
+                            .is_some_and(|r| r.executed() == 0);
+                        if app.exec_hidden() || nothing_ran {
                             finish_exec(app, &mut job, config);
                         }
                         break;
