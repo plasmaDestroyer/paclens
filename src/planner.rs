@@ -106,13 +106,17 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                 label: source.id.to_string(),
             }],
             // Toolchains under `$HOME`; `rustup update` asks nothing.
-            SourceKind::Rustup => vec![Built {
-                command: crate::providers::rustup::update_command(),
-                privileged: false,
-                interactive: false,
-                targets,
-                label: source.id.to_string(),
-            }],
+            // A simple-source row: unprivileged, and it asks nothing.
+            kind @ SourceKind::Rustup => match crate::providers::simple::for_kind(kind) {
+                Some(row) => vec![Built {
+                    command: (row.update)(),
+                    privileged: false,
+                    interactive: false,
+                    targets,
+                    label: source.id.to_string(),
+                }],
+                None => continue,
+            },
             // One tool, two installations, two commands with different
             // privilege. Which scope an update belongs to is the installed
             // package's answer — `flatpak remote-ls` does not say, and the

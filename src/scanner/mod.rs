@@ -16,10 +16,11 @@ use crate::model::{
     CacheSizes, FlatpakScope, Package, PendingUpdate, SCHEMA_VERSION, ScanResult, Source, SourceId,
     SourceKind,
 };
-use crate::providers::CommandRunner;
 use crate::providers::aur;
 use crate::providers::flatpak::FlatpakProvider;
 use crate::providers::pacman::{self, PacmanProvider};
+use crate::providers::simple::{SIMPLE, SimpleSource};
+use crate::providers::{CommandRunner, binary_on_path};
 
 /// pacman's package cache; its size is reported under cleanup advisories.
 const PACMAN_CACHE_DIR: &str = "/var/cache/pacman/pkg/";
@@ -293,8 +294,7 @@ pub fn detect_sources(runner: &dyn CommandRunner, config: &Config) -> ScanResult
         aur: config.sources.aur && config.sources.pacman && pacman_available,
         cargo: config.sources.cargo
             && crate::providers::binary_on_path(crate::providers::cargo::CARGO_BIN),
-        rustup: config.sources.rustup
-            && crate::providers::binary_on_path(crate::providers::rustup::RUSTUP_BIN),
+        simple: simple_mask(|s| (s.enabled)(config) && binary_on_path(s.bin)),
     };
     compose(
         &Parts::default(),
@@ -306,7 +306,7 @@ pub fn detect_sources(runner: &dyn CommandRunner, config: &Config) -> ScanResult
             flatpak_available,
             checkupdates_available: crate::providers::binary_on_path(pacman::CHECKUPDATES_BIN),
             cargo_available: lanes.cargo,
-            rustup_available: lanes.rustup,
+            simple_available: lanes.simple,
             aur_helper: &aur_helper,
         },
     )
@@ -331,7 +331,7 @@ pub fn scan_with_progress(
     // update or remove what it lists — the source is only meaningful with the
     // tool that owns it.
     let cargo_available = crate::providers::binary_on_path(crate::providers::cargo::CARGO_BIN);
-    let rustup_available = crate::providers::binary_on_path(crate::providers::rustup::RUSTUP_BIN);
+    let simple_available = simple_mask(|s| binary_on_path(s.bin));
     let helper = aur::detect(&config.general.aur_helper);
     // Say so when the config asked for something else. A stale pin is not an
     // error, but silently using a different helper than the one configured is
@@ -357,7 +357,7 @@ pub fn scan_with_progress(
             flatpak: flatpak_available,
             checkupdates,
             cargo: cargo_available,
-            rustup: rustup_available,
+            simple: simple_available,
         },
         helper,
         home_dir.as_deref(),
@@ -385,7 +385,17 @@ struct Availability {
     flatpak: bool,
     checkupdates: bool,
     cargo: bool,
-    rustup: bool,
+    /// One bit per row of `providers::simple::SIMPLE`.
+    simple: u32,
+}
+
+/// One bit per row of the simple-source table that `pick` accepts.
+fn simple_mask(pick: impl Fn(&SimpleSource) -> bool) -> u32 {
+    SIMPLE
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| pick(s))
+        .fold(0, |m, (i, _)| m | (1 << i))
 }
 
 /// What the flatpak lane produces: its packages, its updates, and the sizes
@@ -406,7 +416,8 @@ enum LaneResult {
     /// What every configured repo offers — `pacman -Sl`, local and cheap.
     RepoOffers(Vec<pacman::RepoOffer>),
     Cargo(Vec<Package>, Vec<PendingUpdate>),
-    Rustup(Vec<Package>, Vec<PendingUpdate>),
+    /// A row of the simple-source table has reported.
+    Simple(usize, Vec<Package>, Vec<PendingUpdate>),
     Flatpak(FlatpakLane),
     Sizes(CacheSizes),
     /// `pacman -Qm`, which is fast — and which pacman's own package list has
@@ -424,7 +435,8 @@ struct Parts {
     pacman: Option<(Vec<Package>, Vec<PendingUpdate>)>,
     flatpak: Option<FlatpakLane>,
     cargo: Option<(Vec<Package>, Vec<PendingUpdate>)>,
-    rustup: Option<(Vec<Package>, Vec<PendingUpdate>)>,
+    /// Simple sources that have reported, by table row.
+    simple: std::collections::HashMap<usize, (Vec<Package>, Vec<PendingUpdate>)>,
     offers: Option<Vec<pacman::RepoOffer>>,
     sizes: Option<CacheSizes>,
     foreign: Option<std::collections::HashSet<String>>,
@@ -439,7 +451,7 @@ struct Lanes {
     aur: bool,
     flatpak: bool,
     cargo: bool,
-    rustup: bool,
+    simple: u32,
 }
 
 impl Parts {
@@ -462,8 +474,8 @@ impl Parts {
     fn cargo_done(&self, lanes: Lanes) -> bool {
         !lanes.cargo || self.cargo.is_some()
     }
-    fn rustup_done(&self, lanes: Lanes) -> bool {
-        !lanes.rustup || self.rustup.is_some()
+    fn simple_done(&self, lanes: Lanes, i: usize) -> bool {
+        lanes.simple & (1 << i) == 0 || self.simple.contains_key(&i)
     }
 }
 
@@ -490,7 +502,7 @@ fn assemble(
         flatpak: flatpak_available,
         checkupdates: checkupdates_available,
         cargo: cargo_available,
-        rustup: rustup_available,
+        simple: simple_available,
     } = found;
     let now = Utc::now();
     let flatpak_profile_dir = home_dir.map(|h| h.join(".var").join("app"));
@@ -500,7 +512,7 @@ fn assemble(
         flatpak: config.sources.flatpak && flatpak_available,
         aur: config.sources.aur && config.sources.pacman && pacman_available,
         cargo: config.sources.cargo && cargo_available,
-        rustup: config.sources.rustup && rustup_available,
+        simple: simple_available & simple_mask(|s| (s.enabled)(config)),
     };
 
     if config.sources.pacman && !pacman_available {
@@ -523,7 +535,7 @@ fn assemble(
             flatpak_available,
             checkupdates_available,
             cargo_available,
-            rustup_available,
+            simple_available,
             aur_helper: &aur_helper,
         },
     ));
@@ -619,21 +631,24 @@ fn assemble(
             let _ = cargo_tx.send(LaneResult::Cargo(packages, updates));
         });
 
-        let rustup_tx = tx.clone();
-        s.spawn(move || {
-            if !lanes.rustup {
-                return;
+        for (i, source) in SIMPLE.iter().enumerate() {
+            if lanes.simple & (1 << i) == 0 {
+                continue;
             }
-            let (pkgs, ups) = match crate::providers::rustup::scan(runner) {
-                Ok(found) => found,
-                Err(err) => {
-                    tracing::error!(error = %err, "rustup check failed");
-                    let _ = rustup_tx.send(LaneResult::Error(SourceId::rustup(), err.to_string()));
-                    Default::default()
-                }
-            };
-            let _ = rustup_tx.send(LaneResult::Rustup(pkgs, ups));
-        });
+            let simple_tx = tx.clone();
+            s.spawn(move || {
+                let (pkgs, ups) = match (source.scan)(runner) {
+                    Ok(found) => found,
+                    Err(err) => {
+                        tracing::error!(source = source.id, error = %err, "scan failed");
+                        let _ =
+                            simple_tx.send(LaneResult::Error(source.source_id(), err.to_string()));
+                        Default::default()
+                    }
+                };
+                let _ = simple_tx.send(LaneResult::Simple(i, pkgs, ups));
+            });
+        }
 
         let du_tx = tx.clone();
         let helper = aur_helper.helper();
@@ -692,7 +707,9 @@ fn assemble(
                 LaneResult::Pacman(pkgs, ups) => parts.pacman = Some((pkgs, ups)),
                 LaneResult::Flatpak(lane) => parts.flatpak = Some(lane),
                 LaneResult::Cargo(pkgs, ups) => parts.cargo = Some((pkgs, ups)),
-                LaneResult::Rustup(pkgs, ups) => parts.rustup = Some((pkgs, ups)),
+                LaneResult::Simple(i, pkgs, ups) => {
+                    parts.simple.insert(i, (pkgs, ups));
+                }
                 LaneResult::RepoOffers(offers) => parts.offers = Some(offers),
                 LaneResult::Sizes(sizes) => parts.sizes = Some(sizes),
                 LaneResult::AurForeign(names) => parts.foreign = Some(names),
@@ -708,7 +725,7 @@ fn assemble(
                     flatpak_available,
                     checkupdates_available,
                     cargo_available,
-                    rustup_available,
+                    simple_available,
                     aur_helper: &aur_helper,
                 },
             ));
@@ -725,7 +742,7 @@ fn assemble(
             flatpak_available,
             checkupdates_available,
             cargo_available,
-            rustup_available,
+            simple_available,
             aur_helper: &aur_helper,
         },
     );
@@ -777,7 +794,7 @@ struct ComposeInput<'a> {
     flatpak_available: bool,
     checkupdates_available: bool,
     cargo_available: bool,
-    rustup_available: bool,
+    simple_available: u32,
     aur_helper: &'a aur::HelperChoice,
 }
 
@@ -800,7 +817,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         flatpak_available,
         checkupdates_available,
         cargo_available,
-        rustup_available,
+        simple_available,
         aur_helper,
     } = *input;
 
@@ -860,14 +877,19 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             scan_error: parts.errors.get(&SourceId::cargo()).cloned(),
         });
     }
-    if config.sources.rustup {
+    for (i, simple) in SIMPLE.iter().enumerate() {
+        if !(simple.enabled)(config) {
+            continue;
+        }
+        let id = simple.source_id();
         sources.push(Source {
-            id: SourceId::rustup(),
-            kind: SourceKind::Rustup,
-            available: rustup_available,
-            last_scanned: (lanes.rustup && parts.rustup_done(lanes)).then_some(now),
+            kind: simple.kind.clone(),
+            available: simple_available & (1 << i) != 0,
+            last_scanned: (lanes.simple & (1 << i) != 0 && parts.simple_done(lanes, i))
+                .then_some(now),
             accurate_updates: true,
-            scan_error: parts.errors.get(&SourceId::rustup()).cloned(),
+            scan_error: parts.errors.get(&id).cloned(),
+            id,
         });
     }
 
@@ -935,9 +957,11 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         packages.extend(pkgs.iter().cloned());
         updates.extend(ups.iter().cloned());
     }
-    if let Some((pkgs, ups)) = &parts.rustup {
-        packages.extend(pkgs.iter().cloned());
-        updates.extend(ups.iter().cloned());
+    for i in 0..SIMPLE.len() {
+        if let Some((pkgs, ups)) = parts.simple.get(&i) {
+            packages.extend(pkgs.iter().cloned());
+            updates.extend(ups.iter().cloned());
+        }
     }
 
     let mut flatpak_profile_sizes = Default::default();
@@ -1205,7 +1229,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             Some(Path::new("/home/t")),
@@ -1265,7 +1289,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             Some(Path::new("/home/t")),
@@ -1297,7 +1321,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1314,7 +1338,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             Some(Path::new("/home/t")),
@@ -1333,7 +1357,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1365,7 +1389,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1421,7 +1445,7 @@ mod tests {
                 flatpak: false,
                 checkupdates: false,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::Detected(aur::AurHelper::Yay),
             None,
@@ -1448,7 +1472,7 @@ mod tests {
                 flatpak: false,
                 checkupdates: false,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1477,7 +1501,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1515,7 +1539,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1540,7 +1564,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1570,7 +1594,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1616,7 +1640,7 @@ mod tests {
             aur: true,
             flatpak: true,
             cargo: false,
-            rustup: false,
+            simple: 0,
         };
         let mut parts = Parts::default();
         assert!(!parts.pacman_done(lanes), "nothing has landed");
@@ -1653,7 +1677,7 @@ mod tests {
             aur: false,
             flatpak: false,
             cargo: false,
-            rustup: false,
+            simple: 0,
         };
         let parts = Parts {
             pacman: Some((Vec::new(), Vec::new())),
@@ -1675,7 +1699,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1709,7 +1733,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1730,7 +1754,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: false,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1766,7 +1790,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1796,7 +1820,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1846,7 +1870,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1885,7 +1909,7 @@ mod tests {
                 flatpak: false,
                 checkupdates: false,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             None,
@@ -1939,7 +1963,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::Detected(aur::AurHelper::Paru),
             Some(Path::new("/home/t")),
@@ -1960,7 +1984,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::Detected(aur::AurHelper::Paru),
             None,
@@ -1990,7 +2014,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::Detected(aur::AurHelper::Yay),
             Some(Path::new("/home/t")),
@@ -2017,7 +2041,7 @@ mod tests {
                 flatpak: true,
                 checkupdates: true,
                 cargo: false,
-                rustup: false,
+                simple: 0,
             },
             HC::None,
             Some(Path::new("/home/t")),

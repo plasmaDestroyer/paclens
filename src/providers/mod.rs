@@ -10,6 +10,7 @@ pub mod flatpak;
 pub mod news;
 pub mod pacman;
 pub mod rustup;
+pub mod simple;
 
 /// Captured result of running a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
