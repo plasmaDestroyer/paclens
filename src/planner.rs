@@ -105,20 +105,6 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                 targets,
                 label: source.id.to_string(),
             }],
-            // Toolchains under `$HOME`; `rustup update` asks nothing.
-            // A simple-source row: unprivileged, and it asks nothing.
-            kind @ (SourceKind::Rustup | SourceKind::Brew | SourceKind::Uv) => {
-                match crate::providers::simple::for_kind(kind) {
-                    Some(row) => vec![Built {
-                        command: (row.update)(),
-                        privileged: false,
-                        interactive: false,
-                        targets,
-                        label: source.id.to_string(),
-                    }],
-                    None => continue,
-                }
-            }
             // One tool, two installations, two commands with different
             // privilege. Which scope an update belongs to is the installed
             // package's answer — `flatpak remote-ls` does not say, and the
@@ -177,6 +163,18 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                     })
                     .collect()
             }
+            // A simple-source row: unprivileged, and it asks nothing.
+            // Every other kind is a row of the simple-source table.
+            kind => match crate::providers::simple::for_kind(kind) {
+                Some(row) => vec![Built {
+                    command: (row.update)(),
+                    privileged: false,
+                    interactive: false,
+                    targets,
+                    label: source.id.to_string(),
+                }],
+                None => continue,
+            },
         };
         for b in built {
             steps.push(ActionStep {

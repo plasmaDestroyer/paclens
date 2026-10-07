@@ -41,6 +41,10 @@ impl SourceId {
         SourceId("uv".to_string())
     }
 
+    pub fn gobin() -> Self {
+        SourceId("gobin".to_string())
+    }
+
     pub fn brew() -> Self {
         SourceId("brew".to_string())
     }
@@ -171,6 +175,8 @@ pub enum SourceKind {
     Rustup,
     /// Homebrew formulae (#17).
     Brew,
+    /// Binaries installed with `go install` (#16).
+    GoBin,
     /// Python tools installed with `uv tool install` (#14).
     Uv,
 }
@@ -269,6 +275,13 @@ impl SourceKind {
                 install_reason: true,
                 orphans: false,
                 removal_hint: Some("uv tool uninstall"),
+            },
+            // Removal is deleting the file from the bin dir — no tool to name.
+            SourceKind::GoBin => SourceCapabilities {
+                dependency_graph: false,
+                install_reason: true,
+                orphans: false,
+                removal_hint: None,
             },
             SourceKind::Rustup => SourceCapabilities {
                 dependency_graph: false,

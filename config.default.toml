@@ -62,6 +62,10 @@ brew    = true
 # Python tools installed with `uv tool install`. `uv tool list --outdated` finds updates, `uv tool upgrade --all` applies them.
 uv      = true
 
+# Binaries installed with `go install`, read from the module info Go embeds in
+# each. Local (devel) builds are listed but never updated.
+gobin   = true
+
 
 [scan]
 

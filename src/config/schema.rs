@@ -47,6 +47,7 @@ pub struct Sources {
     pub rustup: bool,
     pub brew: bool,
     pub uv: bool,
+    pub gobin: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -173,6 +174,7 @@ impl Default for Sources {
             rustup: true,
             brew: true,
             uv: true,
+            gobin: true,
         }
     }
 }

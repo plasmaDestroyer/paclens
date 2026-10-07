@@ -8,6 +8,7 @@ pub mod aur;
 pub mod brew;
 pub mod cargo;
 pub mod flatpak;
+pub mod gobin;
 pub mod news;
 pub mod pacman;
 pub mod rustup;

@@ -53,6 +53,14 @@ pub const SIMPLE: &[SimpleSource] = &[
         scan: super::uv::scan,
         update: super::uv::update_command,
     },
+    SimpleSource {
+        id: "gobin",
+        kind: SourceKind::GoBin,
+        bin: super::gobin::GO_BIN,
+        enabled: |c| c.sources.gobin,
+        scan: super::gobin::scan,
+        update: super::gobin::update_command,
+    },
 ];
 
 /// The row for a source kind, if it is one of these.
