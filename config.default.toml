@@ -59,6 +59,9 @@ rustup  = true
 # them, unprivileged.
 brew    = true
 
+# Python tools installed with `uv tool install`. `uv tool list --outdated` finds updates, `uv tool upgrade --all` applies them.
+uv      = true
+
 
 [scan]
 

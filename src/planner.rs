@@ -107,7 +107,7 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
             }],
             // Toolchains under `$HOME`; `rustup update` asks nothing.
             // A simple-source row: unprivileged, and it asks nothing.
-            kind @ (SourceKind::Rustup | SourceKind::Brew) => {
+            kind @ (SourceKind::Rustup | SourceKind::Brew | SourceKind::Uv) => {
                 match crate::providers::simple::for_kind(kind) {
                     Some(row) => vec![Built {
                         command: (row.update)(),

@@ -45,6 +45,14 @@ pub const SIMPLE: &[SimpleSource] = &[
         scan: super::brew::scan,
         update: super::brew::update_command,
     },
+    SimpleSource {
+        id: "uv",
+        kind: SourceKind::Uv,
+        bin: super::uv::UV_BIN,
+        enabled: |c| c.sources.uv,
+        scan: super::uv::scan,
+        update: super::uv::update_command,
+    },
 ];
 
 /// The row for a source kind, if it is one of these.

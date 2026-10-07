@@ -37,6 +37,10 @@ impl SourceId {
         SourceId("rustup".to_string())
     }
 
+    pub fn uv() -> Self {
+        SourceId("uv".to_string())
+    }
+
     pub fn brew() -> Self {
         SourceId("brew".to_string())
     }
@@ -167,6 +171,8 @@ pub enum SourceKind {
     Rustup,
     /// Homebrew formulae (#17).
     Brew,
+    /// Python tools installed with `uv tool install` (#14).
+    Uv,
 }
 
 /// What a screen may ask a source about (design §13, 2026-09-07).
@@ -257,6 +263,12 @@ impl SourceKind {
                 install_reason: false,
                 orphans: false,
                 removal_hint: Some("brew uninstall"),
+            },
+            SourceKind::Uv => SourceCapabilities {
+                dependency_graph: false,
+                install_reason: true,
+                orphans: false,
+                removal_hint: Some("uv tool uninstall"),
             },
             SourceKind::Rustup => SourceCapabilities {
                 dependency_graph: false,
