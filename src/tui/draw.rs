@@ -347,10 +347,16 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     );
     let cols =
         Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[0]);
-    // The sources pane is as tall as its rows (plus header and borders); the
-    // space left over goes to what needs attention.
+    // Sources and attention split the left column evenly (user decision
+    // 2026-10-08) — the table never needs less than its rows.
     let table_h = (app.scan().sources.len() as u16 + 3).max(5);
-    let left = Layout::vertical([Constraint::Length(table_h), Constraint::Min(5)]).split(cols[0]);
+    let left =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(cols[0]);
+    let left = if left[0].height < table_h {
+        Layout::vertical([Constraint::Length(table_h), Constraint::Min(5)]).split(cols[0])
+    } else {
+        left
+    };
 
     let sources_focused = app.dash_focus() == crate::tui::app::DashPane::Sources;
     let sources_pane = subpane(theme, " sources ").border_style(if sources_focused {
