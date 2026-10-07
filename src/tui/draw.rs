@@ -38,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // (design §13, 2026-09-09).
     // Overlays cover whatever screen is active (the dashboard owns the
     // update flow — the console and log viewer draw on top of it).
-    if let Some(view) = app.exec() {
+    if let Some(view) = app.exec().filter(|_| !app.exec_hidden()) {
         draw_exec(frame, area, app, view);
         return;
     }
@@ -74,7 +74,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "dashboard",
         &[
-            ("u", "run the update"),
+            ("u", "run the update, or show it"),
+            ("ctrl+]", "hide a running update"),
             ("space", "toggle a source"),
             ("h/l ←/→", "switch pane"),
             ("r", "refresh"),
@@ -167,7 +168,14 @@ fn draw_exec(frame: &mut Frame, area: Rect, app: &App, view: &crate::tui::app::E
     frame.render_widget(Paragraph::new(screen_lines(screen, cursor)), chunks[0]);
 
     let footer = if running {
-        keys_line(theme, &[("keys", "pass through"), ("ctrl+c", "interrupt")])
+        keys_line(
+            theme,
+            &[
+                ("keys", "pass through"),
+                ("ctrl+c", "interrupt"),
+                ("ctrl+]", "hide, keep running"),
+            ],
+        )
     } else {
         keys_line(theme, &[("any key", "back to the dashboard")])
     };
@@ -636,6 +644,13 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         found.push(kv("overlaps", overlaps.to_string(), theme.primary));
     }
     let mut lines = vec![plan_line];
+    if app.exec_hidden() {
+        lines.push(kv(
+            "update",
+            "running · u to show".to_string(),
+            theme.accent,
+        ));
+    }
     if let Some((outcome, failed)) = app.last_run() {
         let style = if failed { theme.error } else { theme.success };
         lines.push(kv("last run", outcome.to_string(), style));

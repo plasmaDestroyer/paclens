@@ -68,6 +68,8 @@ pub enum Action {
     FilterCancel,
     /// `?` on any screen → open or close the full key reference.
     ToggleHelp,
+    /// Running console → hide it; the run carries on behind the dashboard.
+    HideExec,
     Ignore,
 }
 
@@ -237,6 +239,14 @@ pub fn map_exec_key(key: KeyEvent, done: bool) -> Action {
         }
         return Action::ExecDismiss;
     }
+    // Ctrl-] hides the console and lets the run carry on. It is no key a
+    // pacman prompt or the helper's pager answers. Terminals report it as
+    // Ctrl-] or, in legacy encoding, as Ctrl-5.
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
+    {
+        return Action::HideExec;
+    }
     Action::ExecKey(key)
 }
 
@@ -277,6 +287,18 @@ pub fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ctrl_bracket_hides_a_running_console_in_either_encoding() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for c in [']', '5'] {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+            assert_eq!(map_exec_key(key, false), Action::HideExec);
+        }
+        // A finished console has nothing to hide behind: any key dismisses.
+        let key = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        assert_eq!(map_exec_key(key, true), Action::ExecDismiss);
+    }
     use super::*;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {

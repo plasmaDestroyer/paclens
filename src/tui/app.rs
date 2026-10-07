@@ -235,6 +235,8 @@ pub struct App {
     log_view: Option<LogView>,
     /// The `?` key reference is open (any screen).
     help: bool,
+    /// The console is running behind the dashboard (Ctrl-]).
+    exec_hidden: bool,
     /// The last update's outcome line, and whether it failed (#21).
     last_run: Option<(String, bool)>,
     /// Inline execution console overlay (any screen).
@@ -404,6 +406,7 @@ impl App {
             started: std::time::Instant::now(),
             log_view: None,
             help: false,
+            exec_hidden: false,
             last_run: None,
             exec: None,
             dash_focus: DashPane::Sources,
@@ -559,7 +562,7 @@ impl App {
     pub fn input_mode(&self) -> InputMode {
         // Overlays outrank the screen: the console and the log viewer can
         // cover any screen (the dashboard owns the update flow now).
-        if self.exec.is_some() {
+        if self.exec.is_some() && !self.exec_hidden {
             return InputMode::Exec;
         }
         if self.log_view.is_some() {
@@ -1065,6 +1068,19 @@ impl App {
         self.enabled.insert(id, now);
     }
 
+    // --- console in the background ---
+    /// Is a run going on behind the screens?
+    pub fn exec_hidden(&self) -> bool {
+        self.exec.is_some() && self.exec_hidden
+    }
+    pub fn hide_exec(&mut self) {
+        self.exec_hidden = true;
+        self.screen = Screen::Dashboard;
+    }
+    pub fn show_exec(&mut self) {
+        self.exec_hidden = false;
+    }
+
     // --- key reference ---
     pub fn is_help_open(&self) -> bool {
         self.help
@@ -1099,6 +1115,7 @@ impl App {
     }
     /// Open the console with a vt100 screen matching the pty size.
     pub fn start_exec(&mut self, rows: u16, cols: u16, kind: ExecKind) {
+        self.exec_hidden = false;
         self.exec_kind = kind;
         self.exec = Some(ExecView {
             parser: vt100::Parser::new(rows.max(2), cols.max(20), 0),
@@ -1917,6 +1934,18 @@ mod tests {
         app.back_packages(); // closes the pane
         app.back_packages();
         assert_eq!(app.input_mode(), InputMode::Dashboard);
+    }
+
+    #[test]
+    fn a_hidden_console_hands_the_keys_back_and_says_it_is_running() {
+        let mut app = app();
+        app.start_exec(24, 80, ExecKind::Update);
+        assert_eq!(app.input_mode(), InputMode::Exec);
+        app.hide_exec();
+        assert!(app.exec_hidden());
+        assert_eq!(app.input_mode(), InputMode::Dashboard);
+        app.show_exec();
+        assert_eq!(app.input_mode(), InputMode::Exec);
     }
 
     #[test]

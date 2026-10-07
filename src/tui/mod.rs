@@ -154,6 +154,11 @@ fn run_loop(
                         app.exec_feed(b"\r\n\x1b[2mdone - press any key to continue\x1b[0m\r\n");
                         app.exec_finish(report);
                         exec_session = None;
+                        // Hidden: nobody is looking at the console to
+                        // dismiss it, so the run lands on its own.
+                        if app.exec_hidden() {
+                            finish_exec(app, &mut job, config);
+                        }
                         break;
                     }
                     Ok(exec::ExecEvent::Failed(err)) => {
@@ -182,6 +187,10 @@ fn run_loop(
         app.clear_flash();
 
         match action {
+            // Quitting would kill a run going on in the background.
+            Action::Quit if app.exec_hidden() => {
+                app.set_flash("an update is running — u to show it");
+            }
             Action::Quit => return Ok(()),
             Action::Next => {
                 if app.log_view().is_some() {
@@ -266,6 +275,7 @@ fn run_loop(
                 Some(id) => app.set_flash(format!("still counting {id}…")),
                 None => {}
             },
+            Action::Execute if app.exec_hidden() => app.show_exec(),
             Action::Execute => {
                 // Enter runs directly — the plan view is the confirmation
                 // (user decision 2026-07-08); pacman/sudo prompt for
@@ -361,22 +371,8 @@ fn run_loop(
                     session.forward(bytes);
                 }
             }
-            Action::ExecDismiss => {
-                if let Some(report) = app.take_exec_report() {
-                    // Every console lands on a refreshing screen — no result
-                    // modal (user decision 2026-07-08). Migrations return to
-                    // the overlap screen for the verify/remove step.
-                    if job.is_none() {
-                        app.set_scanning(true);
-                        job = Some(spawn_scan(config.clone()));
-                    }
-                    match app.exec_kind() {
-                        app::ExecKind::Update => app.finish_update(&report),
-                        app::ExecKind::Migrate => app.finish_migration(&report),
-                        app::ExecKind::Removal => app.finish_removal(&report),
-                    }
-                }
-            }
+            Action::ExecDismiss => finish_exec(app, &mut job, config),
+            Action::HideExec => app.hide_exec(),
             Action::CloseLog => app.close_log(),
             Action::ToggleHelp => app.toggle_help(),
             Action::OpenLog => match UpdateLog::latest_path() {
@@ -389,6 +385,24 @@ fn run_loop(
             Action::ResizePane(delta) => app.resize_pane(delta),
             Action::Ignore => {}
         }
+    }
+}
+
+/// Close a finished console: every console lands on a refreshing screen — no
+/// result modal (user decision 2026-07-08). Migrations return to the overlap
+/// screen for the verify/remove step.
+fn finish_exec(app: &mut App, job: &mut Option<ScanJob>, config: &Config) {
+    let Some(report) = app.take_exec_report() else {
+        return;
+    };
+    if job.is_none() {
+        app.set_scanning(true);
+        *job = Some(spawn_scan(config.clone()));
+    }
+    match app.exec_kind() {
+        app::ExecKind::Update => app.finish_update(&report),
+        app::ExecKind::Migrate => app.finish_migration(&report),
+        app::ExecKind::Removal => app.finish_removal(&report),
     }
 }
 
