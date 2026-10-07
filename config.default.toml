@@ -55,6 +55,10 @@ cargo   = true
 # `rustup update` applies them, unprivileged.
 rustup  = true
 
+# Homebrew formulae. `brew outdated` finds updates, `brew upgrade` applies
+# them, unprivileged.
+brew    = true
+
 
 [scan]
 

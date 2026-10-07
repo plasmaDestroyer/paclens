@@ -28,14 +28,24 @@ impl SimpleSource {
     }
 }
 
-pub const SIMPLE: &[SimpleSource] = &[SimpleSource {
-    id: "rustup",
-    kind: SourceKind::Rustup,
-    bin: super::rustup::RUSTUP_BIN,
-    enabled: |c| c.sources.rustup,
-    scan: super::rustup::scan,
-    update: super::rustup::update_command,
-}];
+pub const SIMPLE: &[SimpleSource] = &[
+    SimpleSource {
+        id: "rustup",
+        kind: SourceKind::Rustup,
+        bin: super::rustup::RUSTUP_BIN,
+        enabled: |c| c.sources.rustup,
+        scan: super::rustup::scan,
+        update: super::rustup::update_command,
+    },
+    SimpleSource {
+        id: "brew",
+        kind: SourceKind::Brew,
+        bin: super::brew::BREW_BIN,
+        enabled: |c| c.sources.brew,
+        scan: super::brew::scan,
+        update: super::brew::update_command,
+    },
+];
 
 /// The row for a source kind, if it is one of these.
 pub fn for_kind(kind: &SourceKind) -> Option<&'static SimpleSource> {

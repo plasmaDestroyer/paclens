@@ -5,6 +5,7 @@
 //! (design §6).
 
 pub mod aur;
+pub mod brew;
 pub mod cargo;
 pub mod flatpak;
 pub mod news;

@@ -37,6 +37,10 @@ impl SourceId {
         SourceId("rustup".to_string())
     }
 
+    pub fn brew() -> Self {
+        SourceId("brew".to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -161,6 +165,8 @@ pub enum SourceKind {
     Cargo,
     /// Rust toolchains, installed and updated by rustup (#12).
     Rustup,
+    /// Homebrew formulae (#17).
+    Brew,
 }
 
 /// What a screen may ask a source about (design §13, 2026-09-07).
@@ -244,6 +250,14 @@ impl SourceKind {
                 removal_hint: Some("cargo uninstall"),
             },
             // Toolchains: asked for by name, depended on by nothing.
+            // brew knows dependencies and "on request", but paclens does not
+            // ask yet — so it claims neither.
+            SourceKind::Brew => SourceCapabilities {
+                dependency_graph: false,
+                install_reason: false,
+                orphans: false,
+                removal_hint: Some("brew uninstall"),
+            },
             SourceKind::Rustup => SourceCapabilities {
                 dependency_graph: false,
                 install_reason: true,

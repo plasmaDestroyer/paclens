@@ -1617,7 +1617,9 @@ mod tests {
         assert!(
             last.sources
                 .iter()
-                .filter(|s| s.id != SourceId::cargo() && s.id != SourceId::rustup())
+                .filter(
+                    |s| s.id != SourceId::cargo() && !SIMPLE.iter().any(|r| r.id == s.id.as_str())
+                )
                 .all(|s| s.last_scanned.is_some()),
             "a scanned source failed to report"
         );
@@ -1705,15 +1707,17 @@ mod tests {
             None,
             &|_| {},
         );
-        // pacman + aur + flatpak + cargo + rustup. Flatpak is one source: one
-        // tool updates both installations (design §13).
-        assert_eq!(scan.sources.len(), 5);
+        // pacman + aur + flatpak + cargo, plus one row per simple source.
+        // Flatpak is one source: one tool updates both installations.
+        assert_eq!(scan.sources.len(), 4 + SIMPLE.len());
         // Everything available except aur (no paru in this fixture).
         // Everything available except aur (no helper in this fixture) and
         // cargo (the fixture does not enable it, so its binary was never
         // probed for).
         assert!(scan.sources.iter().all(|s| {
-            s.available || [SourceId::aur(), SourceId::cargo(), SourceId::rustup()].contains(&s.id)
+            s.available
+                || [SourceId::aur(), SourceId::cargo()].contains(&s.id)
+                || SIMPLE.iter().any(|r| r.id == s.id.as_str())
         }));
         // 3 pacman packages + 3 flatpak apps
         assert_eq!(scan.packages.len(), 6);
