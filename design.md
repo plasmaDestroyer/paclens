@@ -1943,6 +1943,16 @@ YYYY-MM-DD | no --noconfirm for pacman
            | `status` line per post with its link, one attention row in the
            | TUI. Off with `scan.arch_news = false`; offline it shows nothing.
 
+2026-10-08 | npm and fwupd are report-only sources (#13, #15)
+           | Both show what is installed and pending; neither gets a plan
+           | step. npm's global prefix is `/usr`, shared with modules pacman
+           | owns (those are left out of the list); `npm update -g` there
+           | needs root and would overwrite pacman's files. Firmware can
+           | brick hardware, often needs a reboot into a special mode, and
+           | some flashes cannot be undone — not something "update
+           | everything" may carry. `status` says so on one line per source;
+           | the user runs `fwupdmgr update` themselves.
+
 ```
 
 ---

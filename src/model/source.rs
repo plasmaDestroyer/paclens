@@ -49,6 +49,10 @@ impl SourceId {
         SourceId("npm".to_string())
     }
 
+    pub fn fwupd() -> Self {
+        SourceId("fwupd".to_string())
+    }
+
     pub fn brew() -> Self {
         SourceId("brew".to_string())
     }
@@ -179,6 +183,8 @@ pub enum SourceKind {
     Rustup,
     /// Homebrew formulae (#17).
     Brew,
+    /// Firmware through fwupd/LVFS (#15), report-only.
+    Fwupd,
     /// Global npm packages you installed (#13); pacman's are left out.
     Npm,
     /// Binaries installed with `go install` (#16).
@@ -294,6 +300,12 @@ impl SourceKind {
                 install_reason: true,
                 orphans: false,
                 removal_hint: Some("npm uninstall -g"),
+            },
+            SourceKind::Fwupd => SourceCapabilities {
+                dependency_graph: false,
+                install_reason: false,
+                orphans: false,
+                removal_hint: None,
             },
             SourceKind::Rustup => SourceCapabilities {
                 dependency_graph: false,

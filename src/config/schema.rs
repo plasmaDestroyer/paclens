@@ -49,6 +49,7 @@ pub struct Sources {
     pub uv: bool,
     pub gobin: bool,
     pub npm: bool,
+    pub fwupd: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -177,6 +178,7 @@ impl Default for Sources {
             uv: true,
             gobin: true,
             npm: true,
+            fwupd: true,
         }
     }
 }

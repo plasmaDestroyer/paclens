@@ -69,6 +69,9 @@ gobin   = true
 # Global npm packages you installed — pacman's are left out. Report-only: updating the /usr prefix needs root, so the plan carries no npm step.
 npm     = true
 
+# Firmware through fwupd: reported, never in the update plan. Run fwupdmgr update yourself.
+fwupd   = true
+
 [scan]
 
 # Include system-wide Flatpak installs. Flatpak is one source (one tool keeps

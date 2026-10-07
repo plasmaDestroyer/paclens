@@ -71,6 +71,14 @@ pub const SIMPLE: &[SimpleSource] = &[
         scan: super::npm::scan,
         update: None,
     },
+    SimpleSource {
+        id: "fwupd",
+        kind: SourceKind::Fwupd,
+        bin: super::fwupd::FWUPD_BIN,
+        enabled: |c| c.sources.fwupd,
+        scan: super::fwupd::scan,
+        update: None,
+    },
 ];
 
 /// The row for a source kind, if it is one of these.
