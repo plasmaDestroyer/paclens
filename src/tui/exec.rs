@@ -94,76 +94,69 @@ fn run_session(
         .collect();
     log.line(&format!("sources: [{}]", run_ids.join(", ")));
 
-    // Authenticate once, here, where the reader is looking: pacman and the
-    // AUR helper then share the timestamp instead of each asking. With
-    // `sudo_loop` on, keep it warm so a long build does not stop for a second
-    // prompt (#24); the value's Drop stops the loop on every exit path.
-    let _keepalive = if executor::sudo::worth_priming(&plan, tool) {
-        let argv = executor::sudo::prime_command();
-        let _ = events.send(ExecEvent::Bytes(
-            format!(
-                "\x1b[1m:: {} \x1b[0m\x1b[2m(once, for the whole run)\x1b[0m\r\n",
-                argv.join(" ")
-            )
-            .into_bytes(),
-        ));
-        match run_step(&argv, size, &events, &input) {
-            StepStatus::Succeeded => {
-                log.line("sudo timestamp primed");
-                sudo_loop.map(executor::sudo::Keepalive::start)
-            }
-            // Not fatal: the steps themselves will ask.
-            _ => {
-                log.line("sudo priming failed; steps will authenticate on their own");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let mut steps = Vec::new();
-    for step in &plan.steps {
-        let targets = step.targets.len();
-        if let Some(reason) = skip_reason(step, tool) {
-            log.line(&format!("{}: skipped — {reason}", step.label));
-            let _ = events.send(ExecEvent::Bytes(
-                format!("\x1b[2m:: {} skipped — {reason}\x1b[0m\r\n", step.label).into_bytes(),
-            ));
-            steps.push(StepReport {
-                source_id: step.source_id.clone(),
-                label: step.label.clone(),
-                targets,
-                status: StepStatus::Skipped {
-                    reason: reason.to_string(),
-                },
-            });
-            continue;
-        }
-
-        let argv = executor::effective_command(step, tool);
-        let cmd = argv.join(" ");
-        log.line(&format!("{}: running {cmd}", step.label));
-        tracing::info!(source = %step.source_id, command = %cmd, "executing update step (pty)");
-        let _ = events.send(ExecEvent::Bytes(
-            format!("\x1b[1m:: {cmd}\x1b[0m\r\n").into_bytes(),
-        ));
-
-        let status = run_step(&argv, size, &events, &input);
-        match &status {
-            StepStatus::Succeeded => log.line(&format!("{}: completed, exit 0", step.label)),
-            StepStatus::Failed { detail } => {
-                log.line(&format!("{}: failed, {detail}", step.label));
-                tracing::error!(source = %step.source_id, detail, "update step failed");
-            }
-            StepStatus::Skipped { .. } => {}
-        }
+    // The whole run is one shell session on one pty. sudo caches a password
+    // per terminal session, so a fresh pty per step asked again for pacman
+    // and again for the AUR helper; one session asks once (2026-10-08).
+    let mut steps: Vec<StepReport> = Vec::new();
+    let mut runnable: Vec<(usize, Vec<String>)> = Vec::new();
+    for (i, step) in plan.steps.iter().enumerate() {
         steps.push(StepReport {
             source_id: step.source_id.clone(),
             label: step.label.clone(),
-            targets,
-            status,
+            targets: step.targets.len(),
+            status: StepStatus::Failed {
+                detail: "did not run (run interrupted)".to_string(),
+            },
         });
+        match skip_reason(step, tool) {
+            Some(reason) => {
+                log.line(&format!("{}: skipped — {reason}", step.label));
+                steps[i].status = StepStatus::Skipped {
+                    reason: reason.to_string(),
+                };
+            }
+            None => {
+                let argv = executor::effective_command(step, tool);
+                log.line(&format!("{}: running {}", step.label, argv.join(" ")));
+                runnable.push((i, argv));
+            }
+        }
+    }
+
+    let status_file = log
+        .path()
+        .with_extension(format!("status-{}", std::process::id()));
+    let _ = std::fs::remove_file(&status_file);
+    let script = session_script(
+        &runnable,
+        executor::sudo::worth_priming(&plan, tool),
+        sudo_loop,
+        &status_file,
+    );
+    tracing::info!(script = %script, "executing update session (pty)");
+    let _ = run_step(
+        &["sh".to_string(), "-c".to_string(), script],
+        size,
+        &events,
+        &input,
+    );
+
+    let recorded = std::fs::read_to_string(&status_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&status_file);
+    for (i, code) in parse_statuses(&recorded) {
+        let Some(step) = steps.get_mut(i) else {
+            continue;
+        };
+        step.status = if code == 0 {
+            log.line(&format!("{}: completed, exit 0", step.label));
+            StepStatus::Succeeded
+        } else {
+            log.line(&format!("{}: failed, exit {code}", step.label));
+            tracing::error!(source = %step.source_id, code, "update step failed");
+            StepStatus::Failed {
+                detail: format!("exit {code}"),
+            }
+        };
     }
 
     let report = ExecutionReport {
@@ -183,6 +176,52 @@ fn run_session(
         }
     ));
     let _ = events.send(ExecEvent::Done(report));
+}
+
+/// Quote one argument for `sh`.
+fn sh_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+/// The shell script for one run: optionally one `sudo -v` (and a keepalive
+/// loop that dies with the script), then each step behind a `::` header,
+/// appending `<index> <exit code>` to `status_file` as it finishes.
+fn session_script(
+    steps: &[(usize, Vec<String>)],
+    prime: bool,
+    keepalive: Option<std::time::Duration>,
+    status_file: &std::path::Path,
+) -> String {
+    let file = sh_quote(&status_file.to_string_lossy());
+    let mut script = String::new();
+    if prime {
+        script.push_str("sudo -v || printf 'could not authenticate; each step will ask\\n'\n");
+        if let Some(every) = keepalive {
+            script.push_str(&format!(
+                "(while sleep {}; do sudo -n -v 2>/dev/null; done) & ka=$!\ntrap 'kill $ka 2>/dev/null' EXIT INT TERM\n",
+                every.as_secs().max(1)
+            ));
+        }
+    }
+    for (i, argv) in steps {
+        let cmd: Vec<String> = argv.iter().map(|a| sh_quote(a)).collect();
+        script.push_str(&format!(
+            "printf '\\033[1m:: %s\\033[0m\\n' {}\n{}\necho \"{i} $?\" >> {file}\n",
+            sh_quote(&argv.join(" ")),
+            cmd.join(" ")
+        ));
+    }
+    script
+}
+
+/// `<index> <exit code>` lines, as `session_script` writes them.
+fn parse_statuses(text: &str) -> Vec<(usize, i32)> {
+    text.lines()
+        .filter_map(|l| {
+            let (i, code) = l.split_once(' ')?;
+            Some((i.parse().ok()?, code.trim().parse().ok()?))
+        })
+        .collect()
 }
 
 /// Spawn one command on a fresh pty; pump its output bytes to `events` and
@@ -364,6 +403,52 @@ mod tests {
             "primed a run with nothing privileged in it:\n{text}"
         );
         assert_eq!(report.succeeded(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quoting_survives_spaces_and_single_quotes() {
+        assert_eq!(sh_quote("a b"), "'a b'");
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn statuses_parse_and_garbage_is_skipped() {
+        assert_eq!(parse_statuses("0 0\n1 2\nnope\n"), vec![(0, 0), (1, 2)]);
+    }
+
+    #[test]
+    fn the_script_primes_once_and_records_every_step() {
+        let script = session_script(
+            &[
+                (0, vec!["sudo".into(), "pacman".into(), "-Syu".into()]),
+                (2, vec!["paru".into(), "-Sua".into()]),
+            ],
+            true,
+            None,
+            std::path::Path::new("/tmp/s"),
+        );
+        assert_eq!(script.matches("sudo -v").count(), 1, "{script}");
+        assert!(script.contains("echo \"0 $?\" >> '/tmp/s'"), "{script}");
+        assert!(script.contains("echo \"2 $?\" >> '/tmp/s'"), "{script}");
+    }
+
+    /// The bug this pins: each step got a fresh pty, and sudo caches a
+    /// password per terminal session, so pacman and paru each asked again.
+    /// Every step now shares one terminal.
+    #[test]
+    fn every_step_runs_on_the_same_terminal() {
+        let dir = std::env::temp_dir().join(format!("paclens-exec-onetty-{}", std::process::id()));
+        let mut plan = plan_for("tty");
+        let mut second = plan.steps[0].clone();
+        second.label = "second".to_string();
+        plan.steps.push(second);
+        let session = start(plan, None, (24, 80), Some(dir.clone()), None);
+        let (text, report) = drain(&session, None);
+        assert_eq!(report.succeeded(), 2, "{text}");
+        let ttys: Vec<&str> = text.lines().filter(|l| l.contains("/dev/pts/")).collect();
+        assert_eq!(ttys.len(), 2, "{text}");
+        assert_eq!(ttys[0].trim(), ttys[1].trim(), "two terminals:\n{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
