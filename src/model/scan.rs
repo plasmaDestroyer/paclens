@@ -139,6 +139,9 @@ impl ScanResult {
         if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
             return Some("cargo: install cargo-update for update detection".to_string());
         }
+        if Self::report_only(id) {
+            return Some(format!("{id}: report-only - paclens does not update it"));
+        }
         None
     }
 
@@ -159,6 +162,9 @@ impl ScanResult {
         if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
             return Some("cargo: inventory only - install cargo-update".to_string());
         }
+        if Self::report_only(id) {
+            return Some(format!("{id}: report-only, not in the plan"));
+        }
         None
     }
 
@@ -170,6 +176,13 @@ impl ScanResult {
     /// went wrong when nothing did (user decision 2026-09-12).
     pub fn source_warning(&self, id: &super::SourceId) -> bool {
         id == &super::SourceId::aur() && self.aur_helper.differs_from_config()
+    }
+
+    /// A simple-source row with no update command (npm's `/usr` prefix).
+    fn report_only(id: &super::SourceId) -> bool {
+        crate::providers::simple::SIMPLE
+            .iter()
+            .any(|r| r.id == id.as_str() && r.update.is_none())
     }
 
     fn cargo_cannot_update(&self) -> bool {

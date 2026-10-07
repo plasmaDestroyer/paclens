@@ -19,7 +19,9 @@ pub struct SimpleSource {
     pub bin: &'static str,
     pub enabled: fn(&Config) -> bool,
     pub scan: Scan,
-    pub update: fn() -> Vec<String>,
+    /// The update command; `None` for a report-only source, which the plan
+    /// skips.
+    pub update: Option<fn() -> Vec<String>>,
 }
 
 impl SimpleSource {
@@ -35,7 +37,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         bin: super::rustup::RUSTUP_BIN,
         enabled: |c| c.sources.rustup,
         scan: super::rustup::scan,
-        update: super::rustup::update_command,
+        update: Some(super::rustup::update_command),
     },
     SimpleSource {
         id: "brew",
@@ -43,7 +45,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         bin: super::brew::BREW_BIN,
         enabled: |c| c.sources.brew,
         scan: super::brew::scan,
-        update: super::brew::update_command,
+        update: Some(super::brew::update_command),
     },
     SimpleSource {
         id: "uv",
@@ -51,7 +53,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         bin: super::uv::UV_BIN,
         enabled: |c| c.sources.uv,
         scan: super::uv::scan,
-        update: super::uv::update_command,
+        update: Some(super::uv::update_command),
     },
     SimpleSource {
         id: "gobin",
@@ -59,7 +61,15 @@ pub const SIMPLE: &[SimpleSource] = &[
         bin: super::gobin::GO_BIN,
         enabled: |c| c.sources.gobin,
         scan: super::gobin::scan,
-        update: super::gobin::update_command,
+        update: Some(super::gobin::update_command),
+    },
+    SimpleSource {
+        id: "npm",
+        kind: SourceKind::Npm,
+        bin: super::npm::NPM_BIN,
+        enabled: |c| c.sources.npm,
+        scan: super::npm::scan,
+        update: None,
     },
 ];
 

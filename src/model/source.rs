@@ -45,6 +45,10 @@ impl SourceId {
         SourceId("gobin".to_string())
     }
 
+    pub fn npm() -> Self {
+        SourceId("npm".to_string())
+    }
+
     pub fn brew() -> Self {
         SourceId("brew".to_string())
     }
@@ -175,6 +179,8 @@ pub enum SourceKind {
     Rustup,
     /// Homebrew formulae (#17).
     Brew,
+    /// Global npm packages you installed (#13); pacman's are left out.
+    Npm,
     /// Binaries installed with `go install` (#16).
     GoBin,
     /// Python tools installed with `uv tool install` (#14).
@@ -282,6 +288,12 @@ impl SourceKind {
                 install_reason: true,
                 orphans: false,
                 removal_hint: None,
+            },
+            SourceKind::Npm => SourceCapabilities {
+                dependency_graph: false,
+                install_reason: true,
+                orphans: false,
+                removal_hint: Some("npm uninstall -g"),
             },
             SourceKind::Rustup => SourceCapabilities {
                 dependency_graph: false,

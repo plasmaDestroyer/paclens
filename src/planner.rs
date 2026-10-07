@@ -165,9 +165,10 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
             }
             // A simple-source row: unprivileged, and it asks nothing.
             // Every other kind is a row of the simple-source table.
-            kind => match crate::providers::simple::for_kind(kind) {
-                Some(row) => vec![Built {
-                    command: (row.update)(),
+            // A row with no update command is report-only: no step.
+            kind => match crate::providers::simple::for_kind(kind).and_then(|r| r.update) {
+                Some(update) => vec![Built {
+                    command: update(),
                     privileged: false,
                     interactive: false,
                     targets,

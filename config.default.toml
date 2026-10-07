@@ -66,6 +66,8 @@ uv      = true
 # each. Local (devel) builds are listed but never updated.
 gobin   = true
 
+# Global npm packages you installed — pacman's are left out. Report-only: updating the /usr prefix needs root, so the plan carries no npm step.
+npm     = true
 
 [scan]
 
