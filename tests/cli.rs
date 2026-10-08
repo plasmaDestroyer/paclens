@@ -65,8 +65,10 @@ fn cleanup_prints_a_report_and_succeeds() {
     // machine has. `cleanup` was the last stubbed subcommand — every one now
     // has a headless equivalent, so nothing here should print "not
     // implemented" ever again.
+    // `--all`: the compact form is one line on a machine with nothing to
+    // clean (CI), so only the full report always names every section.
     let home = sandbox("cleanup");
-    let out = run(&home, &["cleanup", "--no-color"]);
+    let out = run(&home, &["cleanup", "--all", "--no-color"]);
     assert!(out.status.success(), "cleanup should exit 0");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
