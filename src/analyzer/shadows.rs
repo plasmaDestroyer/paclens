@@ -166,6 +166,44 @@ pub fn lines(shadows: &[Shadow]) -> Vec<String> {
         .collect()
 }
 
+/// For `why`: this package's commands that another source also installed,
+/// one line per set of other copies, saying which copy runs.
+pub fn for_package(shadows: &[Shadow], pkg: &crate::model::Package) -> Vec<String> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for s in shadows {
+        let mine = |c: &Copy| {
+            c.source == pkg.source_id.as_str()
+                && match &c.package {
+                    Some(p) => *p == pkg.name,
+                    None => pkg.provides.contains(&s.bin),
+                }
+        };
+        let Some(me) = s.copies.iter().position(mine) else {
+            continue;
+        };
+        let others: Vec<String> = s
+            .copies
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != me)
+            .map(|(_, c)| c.label())
+            .collect();
+        let runs = match s.runs() {
+            None => "none on PATH".to_string(),
+            Some(_) if me == 0 => "this copy runs first".to_string(),
+            Some(c) => format!("{} runs first", c.label()),
+        };
+        let key = format!("also from {}; {runs}", others.join(", "));
+        match out.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, bins)) => bins.push(s.bin.clone()),
+            None => out.push((key, vec![s.bin.clone()])),
+        }
+    }
+    out.into_iter()
+        .map(|(key, bins)| format!("{} {key}", list(&bins)))
+        .collect()
+}
+
 /// One line for `status`; `overlaps` carries the detail.
 pub fn summary(shadows: &[Shadow]) -> Option<String> {
     let groups = groups(shadows).len();
@@ -206,6 +244,33 @@ mod tests {
                 ("rustc".to_string(), "rust".to_string()),
                 ("cargo".to_string(), "rust".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn why_names_the_other_copies_and_the_winner() {
+        let s = find(
+            &[dir(
+                "brew",
+                "/brew/bin",
+                &[("as", Some("binutils")), ("ar", Some("binutils"))],
+            )],
+            &[
+                ("as".to_string(), "binutils".to_string()),
+                ("ar".to_string(), "binutils".to_string()),
+            ],
+            &path(&["/brew/bin", "/usr/bin"]),
+        );
+        let mut pkg = crate::providers::brew::parse_list("binutils 2.45\n").remove(0);
+        pkg.source_id = crate::model::SourceId::pacman();
+        assert_eq!(
+            for_package(&s, &pkg),
+            vec!["ar, as also from brew binutils; brew binutils runs first"]
+        );
+        pkg.source_id = crate::model::SourceId::brew();
+        assert_eq!(
+            for_package(&s, &pkg),
+            vec!["ar, as also from pacman binutils; this copy runs first"]
         );
     }
 

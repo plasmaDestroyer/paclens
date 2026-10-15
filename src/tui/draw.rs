@@ -2525,6 +2525,12 @@ fn why_pane_lines(
                     Span::styled(caveat.clone(), theme.accent),
                 ]));
             }
+            if !p.commands.is_empty() {
+                lines.push(kv("commands", p.commands.join(", "), theme.primary));
+            }
+            for line in &p.copies {
+                lines.push(kv("duplicate", line.clone(), theme.accent));
+            }
             // "needed by" doubles as the breakage list — removing this
             // package breaks exactly what requires it.
             lines.push(kv("needed by", names(&p.required_by), theme.primary));

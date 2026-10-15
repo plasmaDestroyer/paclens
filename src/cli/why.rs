@@ -131,6 +131,12 @@ fn render_detail(
     for caveat in &p.caveats {
         out.push_str(&field(s, "caveat", &s.summary_updates(caveat)));
     }
+    if !p.commands.is_empty() {
+        out.push_str(&field(s, "commands", &p.commands.join(", ")));
+    }
+    for line in &p.copies {
+        out.push_str(&field(s, "duplicate", &s.summary_updates(line)));
+    }
 
     let tree = show_transitive && !p.tree.is_empty();
     let needed = if p.required_by.is_empty() {
@@ -230,6 +236,8 @@ mod tests {
             caps: crate::model::SourceKind::Pacman.capabilities(),
             runtime: false,
             caveats: Vec::new(),
+            commands: Vec::new(),
+            copies: Vec::new(),
             reason: InstallReason::Explicit,
             required_by: Vec::new(),
             transitive_required_by: Vec::new(),
@@ -368,6 +376,21 @@ mod tests {
         assert!(text.contains("pkg7"), "{text}");
         assert!(!text.contains("pkg8,"), "{text}");
         assert!(text.contains("… 4 more"), "{text}");
+    }
+
+    #[test]
+    fn a_graphless_source_lists_its_commands_and_duplicates() {
+        let p = WhyDetail {
+            commands: vec!["graphify".to_string(), "graphify-mcp".to_string()],
+            copies: vec!["graphify also from brew; brew runs first".to_string()],
+            ..base()
+        };
+        let out = render_detail(&p, true, None, &plain());
+        assert!(out.contains("commands   graphify, graphify-mcp"), "{out}");
+        assert!(
+            out.contains("duplicate  graphify also from brew; brew runs first"),
+            "{out}"
+        );
     }
 
     #[test]

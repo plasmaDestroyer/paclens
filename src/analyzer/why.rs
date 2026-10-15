@@ -30,6 +30,9 @@ impl std::fmt::Display for Verdict {
 
 /// The two shapes a `why` answer takes (unified across sources);
 /// an unknown name gets a fuzzy suggestion.
+// ponytail: one report per call, so the size gap costs nothing; box if a
+// Vec<WhyReport> ever appears.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WhyReport {
     Found(WhyDetail),
@@ -63,6 +66,11 @@ pub struct WhyDetail {
     /// Source-specific warnings: AUR PKGBUILD review, VCS
     /// build-snapshot versions. Rendered verbatim by the CLI and the TUI.
     pub caveats: Vec<String>,
+    /// The commands it installs, for a source with no dependency graph —
+    /// where they are most of what there is to say (#18).
+    pub commands: Vec<String>,
+    /// Its commands that another source installed too, and which runs (#18).
+    pub copies: Vec<String>,
     pub verdict: Verdict,
     pub confidence: Confidence,
 }
@@ -252,6 +260,12 @@ pub fn why(scan: &ScanResult, graph: &DepGraph, name: &str, max_depth: u32) -> W
         caps,
         runtime: pkg.runtime,
         caveats: caveats_for(pkg),
+        commands: if caps.dependency_graph {
+            Vec::new()
+        } else {
+            pkg.provides.clone()
+        },
+        copies: crate::analyzer::shadows::for_package(&scan.shadows, pkg),
         reason: pkg.install_reason,
         transitive_required_by: graph.transitive_required_by(name, max_depth),
         depth_from_explicit: graph.depth_from_explicit(scan, name),
