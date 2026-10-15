@@ -6,7 +6,7 @@ paclens is **not** a package manager. It wraps pacman, whichever AUR helper you 
 
 ## Status
 
-**0.5.1 — working tool, daily-driveable.** ~18k lines of Rust across `src/`. 615 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+**0.6.0 — working tool, daily-driveable.** ~19k lines of Rust across `src/`. 650 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
 
 Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, history screen, pty exec console, log viewer), pacman + AUR + Flatpak + cargo providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. The dashboard opens before the first scan finishes and fills in as each source reports.
 
@@ -109,6 +109,9 @@ Three capability blocks, one minor each:
                   one source and privilege is declared per step (#10), and
                   the dashboard opens before the scan finishes instead of
                   behind a splash
+0.6.0  reach      beyond pacman: rustup, Homebrew, uv tools and go binaries
+                  join the plan from one source table; npm globals and fwupd
+                  firmware are listed but report-only (#13–#17)
 ```
 
 **Renumbered 2026-08-24.** The old scheme mixed granularities — 0.1.x took a
