@@ -579,7 +579,7 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         };
         found.push(kv("news", format!("{}{more}", first.package), theme.accent));
     }
-    for (labels, bins, runs) in crate::analyzer::shadows::groups(&app.scan().shadows) {
+    for (_, bins, runs) in crate::analyzer::shadows::groups(&app.scan().shadows) {
         found.push(kv(
             "duplicates",
             format!(
@@ -590,10 +590,10 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
                 } else {
                     "commands"
                 },
-                if runs {
-                    format!("{} runs", labels[0])
-                } else {
+                if runs.is_empty() {
                     "none on PATH".to_string()
+                } else {
+                    format!("{runs} runs")
                 }
             ),
             theme.primary,

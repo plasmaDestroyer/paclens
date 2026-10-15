@@ -13,9 +13,11 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shadow {
     pub bin: String,
-    /// In `PATH` order: the first one on `PATH` is the one that runs.
-    /// Copies in a directory `PATH` never reaches come last.
+    /// In `PATH` order; copies in a directory `PATH` never reaches come last.
     pub copies: Vec<Copy>,
+    /// The directory whose `bin` a shell runs: the first on `PATH` holding
+    /// an executable of that name, which need not be any of `copies`.
+    pub runs_dir: Option<String>,
 }
 
 /// One installed copy of a command.
@@ -30,9 +32,19 @@ pub struct Copy {
 }
 
 impl Shadow {
-    /// The copy a shell runs, if any copy is on `PATH` at all.
+    /// The copy a shell runs; `None` when what runs is none of them.
     pub fn runs(&self) -> Option<&Copy> {
-        self.copies.first().filter(|c| c.on_path)
+        let dir = self.runs_dir.as_ref()?;
+        self.copies.iter().find(|c| &c.dir == dir)
+    }
+
+    /// Who runs, in words: a copy, something else on `PATH`, or nothing.
+    fn runner(&self) -> String {
+        match (self.runs(), &self.runs_dir) {
+            (Some(c), _) => c.label(),
+            (None, Some(d)) => format!("{d}/{}", self.bin),
+            (None, None) => String::new(),
+        }
     }
 }
 
@@ -77,8 +89,16 @@ pub fn parse_owners(stdout: &str) -> Vec<(String, String)> {
 
 /// Every command found in two or more places. `pacman` holds the
 /// `/usr/bin` copies pacman owns, as `(command, package)`; a `/usr/bin`
-/// file pacman does not own is nobody's and not counted.
-pub fn find(dirs: &[BinDir], pacman: &[(String, String)], path: &[PathBuf]) -> Vec<Shadow> {
+/// file pacman does not own is nobody's and not counted. `path` is `PATH`
+/// with each entry resolved, and `exec(dir, bin)` says whether `dir/bin` is
+/// an executable a shell would run — it decides the winner over the whole
+/// `PATH`, not only over the copies found.
+pub fn find(
+    dirs: &[BinDir],
+    pacman: &[(String, String)],
+    path: &[PathBuf],
+    exec: impl Fn(&Path, &str) -> bool,
+) -> Vec<Shadow> {
     let usr = Path::new("/usr/bin");
     let pos = |d: &Path| path.iter().position(|p| p == d);
     let mut out: Vec<Shadow> = Vec::new();
@@ -95,6 +115,7 @@ pub fn find(dirs: &[BinDir], pacman: &[(String, String)], path: &[PathBuf]) -> V
             None => out.push(Shadow {
                 bin: bin.to_string(),
                 copies: vec![copy],
+                runs_dir: None,
             }),
         }
     };
@@ -110,21 +131,31 @@ pub fn find(dirs: &[BinDir], pacman: &[(String, String)], path: &[PathBuf]) -> V
     for s in &mut out {
         s.copies
             .sort_by_key(|c| pos(Path::new(&c.dir)).unwrap_or(usize::MAX));
+        s.runs_dir = path
+            .iter()
+            .find(|d| exec(d, &s.bin))
+            .map(|d| d.to_string_lossy().into_owned());
     }
     out.sort_by(|a, b| a.bin.cmp(&b.bin));
     out
 }
 
 /// Commands grouped by the same set of copies, in `PATH` order:
-/// `(labels, commands, first_runs)`, largest group first. `first_runs` is
-/// false when no copy is on `PATH` at all.
-pub fn groups(shadows: &[Shadow]) -> Vec<(Vec<String>, Vec<String>, bool)> {
-    let mut out: Vec<(Vec<String>, Vec<String>, bool)> = Vec::new();
+/// `(labels, commands, runs)`, largest group first. `runs` is the copy a
+/// shell runs, or the path of whatever else it runs, or empty for nothing.
+pub fn groups(shadows: &[Shadow]) -> Vec<(Vec<String>, Vec<String>, String)> {
+    let mut out: Vec<(Vec<String>, Vec<String>, String)> = Vec::new();
     for s in shadows {
         let labels: Vec<String> = s.copies.iter().map(Copy::label).collect();
-        match out.iter_mut().find(|(l, _, _)| *l == labels) {
+        // Something outside the copies runs: per command, so never grouped.
+        let runs = if s.runs().is_none() && s.runs_dir.is_some() {
+            "elsewhere on PATH".to_string()
+        } else {
+            s.runner()
+        };
+        match out.iter_mut().find(|(l, _, r)| *l == labels && *r == runs) {
             Some((_, bins, _)) => bins.push(s.bin.clone()),
-            None => out.push((labels, vec![s.bin.clone()], s.runs().is_some())),
+            None => out.push((labels, vec![s.bin.clone()], runs)),
         }
     }
     out.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
@@ -148,19 +179,22 @@ pub fn lines(shadows: &[Shadow]) -> Vec<String> {
         .into_iter()
         .map(|(labels, bins, runs)| {
             let n = labels.len();
-            if runs {
-                format!(
-                    "{} installed {n} times: {} runs, then {}",
-                    list(&bins),
-                    labels[0],
-                    labels[1..].join(", ")
-                )
-            } else {
-                format!(
+            match runs.as_str() {
+                "" => format!(
                     "{} installed {n} times: {}, none on PATH",
                     list(&bins),
                     labels.join(", ")
-                )
+                ),
+                r if labels.first() == Some(&runs) => format!(
+                    "{} installed {n} times: {r} runs, then {}",
+                    list(&bins),
+                    labels[1..].join(", ")
+                ),
+                r => format!(
+                    "{} installed {n} times: {}; {r} runs first",
+                    list(&bins),
+                    labels.join(", ")
+                ),
             }
         })
         .collect()
@@ -188,10 +222,10 @@ pub fn for_package(shadows: &[Shadow], pkg: &crate::model::Package) -> Vec<Strin
             .filter(|(i, _)| *i != me)
             .map(|(_, c)| c.label())
             .collect();
-        let runs = match s.runs() {
-            None => "none on PATH".to_string(),
-            Some(_) if me == 0 => "this copy runs first".to_string(),
-            Some(c) => format!("{} runs first", c.label()),
+        let runs = match (s.runs(), &s.runs_dir) {
+            (None, None) => "none on PATH".to_string(),
+            (Some(c), _) if *c == s.copies[me] => "this copy runs first".to_string(),
+            _ => format!("{} runs first", s.runner()),
         };
         let key = format!("also from {}; {runs}", others.join(", "));
         match out.iter_mut().find(|(k, _)| *k == key) {
@@ -231,6 +265,35 @@ mod tests {
         }
     }
 
+    /// `find`, with an executable `bin` in exactly the copies' directories.
+    fn find_t(dirs: &[BinDir], pacman: &[(String, String)], path: &[PathBuf]) -> Vec<Shadow> {
+        let has = |d: &Path, b: &str| {
+            (d == Path::new("/usr/bin") && pacman.iter().any(|(p, _)| p == b))
+                || dirs
+                    .iter()
+                    .any(|x| x.dir == d && x.bins.iter().any(|(n, _)| n == b))
+        };
+        find(dirs, pacman, path, has)
+    }
+
+    #[test]
+    fn something_earlier_on_path_runs_instead_of_any_copy() {
+        let s = find(
+            &[dir("brew", "/brew/bin", &[("rg", Some("ripgrep"))])],
+            &[("rg".to_string(), "ripgrep".to_string())],
+            &path(&["/h/.local/bin", "/brew/bin", "/usr/bin"]),
+            |_, _| true,
+        );
+        assert_eq!(s[0].runs(), None);
+        assert_eq!(s[0].runs_dir.as_deref(), Some("/h/.local/bin"));
+        assert_eq!(
+            lines(&s),
+            vec![
+                "rg installed 2 times: brew ripgrep, pacman ripgrep; elsewhere on PATH runs first"
+            ]
+        );
+    }
+
     fn path(dirs: &[&str]) -> Vec<PathBuf> {
         dirs.iter().map(PathBuf::from).collect()
     }
@@ -249,7 +312,7 @@ mod tests {
 
     #[test]
     fn why_names_the_other_copies_and_the_winner() {
-        let s = find(
+        let s = find_t(
             &[dir(
                 "brew",
                 "/brew/bin",
@@ -285,7 +348,7 @@ mod tests {
 
     #[test]
     fn a_command_in_one_place_is_not_a_duplicate() {
-        let s = find(
+        let s = find_t(
             &[dir("cargo", "/h/.cargo/bin", &[("rg", None)])],
             &[("fd".to_string(), "fd".to_string())],
             &path(&["/usr/bin"]),
@@ -295,7 +358,7 @@ mod tests {
 
     #[test]
     fn copies_follow_path_order_and_the_first_runs() {
-        let s = find(
+        let s = find_t(
             &[
                 dir("cargo", "/h/.cargo/bin", &[("rg", None)]),
                 dir("brew", "/brew/bin", &[("rg", None)]),
@@ -312,7 +375,7 @@ mod tests {
 
     #[test]
     fn two_user_sources_without_pacman_still_count() {
-        let s = find(
+        let s = find_t(
             &[
                 dir("uv", "/h/.local/bin", &[("ruff", Some("ruff"))]),
                 dir("brew", "/brew/bin", &[("ruff", None)]),
@@ -325,7 +388,7 @@ mod tests {
 
     #[test]
     fn nothing_on_path_means_nothing_runs() {
-        let s = find(
+        let s = find_t(
             &[
                 dir("cargo", "/a", &[("x", None)]),
                 dir("brew", "/b", &[("x", None)]),
@@ -350,7 +413,7 @@ mod tests {
             .iter()
             .map(|(b, _)| (b.to_string(), "rust".to_string()))
             .collect();
-        let s = find(
+        let s = find_t(
             &[dir("cargo", "/h/.cargo/bin", &bins)],
             &pac,
             &path(&["/h/.cargo/bin", "/usr/bin"]),

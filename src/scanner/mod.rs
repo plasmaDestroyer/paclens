@@ -88,85 +88,111 @@ fn find_stale_processes() -> Vec<crate::analyzer::services::StaleProcess> {
 }
 
 /// Commands installed by more than one source, and which copy `PATH` runs
-/// (#18). Each user-space source's bin directory is listed; one `pacman -Qo`
-/// over the `/usr/bin` namesakes says which of those pacman owns.
+/// (#18). A copy counts only when its source vouches for it — the tool's
+/// own inventory, a brew link into its Cellar, a rustup proxy — never for
+/// sitting in a directory; one `pacman -Qo` says which `/usr/bin` namesakes
+/// pacman owns.
 fn find_shadows(
     runner: &dyn CommandRunner,
     home: Option<&Path>,
     packages: &[crate::model::Package],
     pacman_present: bool,
 ) -> Vec<crate::analyzer::shadows::Shadow> {
-    use crate::analyzer::shadows::{BinDir, find, parse_owners};
+    use crate::analyzer::shadows::{BinDir, cellar_formula, find, parse_owners};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // An executable a shell would run: following links, a file with an
+    // execute bit. A broken link or a directory is nothing.
+    let exec = |d: &Path, b: &str| {
+        std::fs::metadata(d.join(b))
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    let real = |d: PathBuf| std::fs::canonicalize(&d).unwrap_or(d);
     let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
     let under = |p: &str| home.map(|h| h.join(p));
-    // A brew command links into `Cellar/<formula>/…`: the link names the
-    // package for free.
-    let listing = |d: &Path| -> Vec<(String, Option<String>)> {
+    let names = |d: &Path| -> Vec<String> {
         std::fs::read_dir(d)
             .map(|es| {
                 es.flatten()
-                    .map(|e| {
-                        let formula = std::fs::read_link(e.path())
-                            .ok()
-                            .and_then(|t| crate::analyzer::shadows::cellar_formula(&t));
-                        (e.file_name().to_string_lossy().into_owned(), formula)
-                    })
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
                     .collect()
             })
             .unwrap_or_default()
     };
+    // What a source's inventory says it put on PATH: `(command, package)`.
+    let declared = |source: &str| -> Vec<(String, Option<String>)> {
+        packages
+            .iter()
+            .filter(|p| p.source_id.as_str() == source)
+            .flat_map(|p| p.provides.iter().map(|b| (b.clone(), Some(p.name.clone()))))
+            .collect()
+    };
     let mut dirs: Vec<BinDir> = Vec::new();
     // ponytail: env and default locations only, not `go env` / `brew
     // --prefix`; a relocated install without its variable set is missed.
-    let listed = [
-        (
-            "cargo",
-            env("CARGO_HOME")
-                .or_else(|| under(".cargo"))
-                .map(|c| c.join("bin")),
-        ),
-        (
-            "brew",
-            env("HOMEBREW_PREFIX")
-                .or_else(|| Some(PathBuf::from("/home/linuxbrew/.linuxbrew")))
-                .map(|p| p.join("bin")),
-        ),
-        (
-            "gobin",
-            env("GOBIN").or_else(|| env("GOPATH").or_else(|| under("go")).map(|g| g.join("bin"))),
-        ),
-    ];
-    for (source, dir) in listed {
-        if let Some(dir) = dir {
-            dirs.push(BinDir {
-                source: source.to_string(),
-                bins: listing(&dir),
-                dir,
-            });
-        }
-    }
-    // uv shares its directory with everything else in ~/.local/bin, so only
-    // the commands its tools declare are its own.
-    if let Some(dir) = env("UV_TOOL_BIN_DIR")
-        .or_else(|| env("XDG_BIN_HOME"))
-        .or_else(|| under(".local/bin"))
+    if let Some(dir) = env("CARGO_HOME")
+        .or_else(|| under(".cargo"))
+        .map(|c| c.join("bin"))
     {
-        let bins = packages
-            .iter()
-            .filter(|p| p.source_id.as_str() == "uv")
-            .flat_map(|p| p.provides.iter().map(|b| (b.clone(), Some(p.name.clone()))))
+        // rustup's proxies are links (or hard links) to rustup itself.
+        let id = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()));
+        let rustup = id(&dir.join("rustup"));
+        let proxies = names(&dir)
+            .into_iter()
+            .filter(|b| b != "rustup" && rustup.is_some() && id(&dir.join(b)) == rustup)
+            .map(|b| (b, None))
+            .collect();
+        let dir = real(dir);
+        dirs.push(BinDir {
+            source: "rustup".to_string(),
+            dir: dir.clone(),
+            bins: proxies,
+        });
+        dirs.push(BinDir {
+            source: "cargo".to_string(),
+            dir,
+            bins: declared("cargo"),
+        });
+    }
+    if let Some(dir) = env("HOMEBREW_PREFIX")
+        .or_else(|| Some(PathBuf::from("/home/linuxbrew/.linuxbrew")))
+        .map(|p| p.join("bin"))
+    {
+        let bins = names(&dir)
+            .into_iter()
+            .filter_map(|b| {
+                let formula = cellar_formula(&std::fs::read_link(dir.join(&b)).ok()?)?;
+                Some((b, Some(formula)))
+            })
             .collect();
         dirs.push(BinDir {
-            source: "uv".to_string(),
-            dir,
+            source: "brew".to_string(),
+            dir: real(dir),
             bins,
         });
     }
+    let gobin =
+        env("GOBIN").or_else(|| env("GOPATH").or_else(|| under("go")).map(|g| g.join("bin")));
+    let uvbin = env("UV_TOOL_BIN_DIR")
+        .or_else(|| env("XDG_BIN_HOME"))
+        .or_else(|| under(".local/bin"));
+    for (source, dir) in [("gobin", gobin), ("uv", uvbin)] {
+        if let Some(dir) = dir {
+            dirs.push(BinDir {
+                source: source.to_string(),
+                dir: real(dir),
+                bins: declared(source),
+            });
+        }
+    }
+    for d in &mut dirs {
+        let dir = d.dir.clone();
+        d.bins.retain(|(b, _)| exec(&dir, b));
+    }
     let usr: Vec<String> = dirs
         .iter()
-        .flat_map(|d| d.bins.iter().map(|(b, _)| Path::new("/usr/bin").join(b)))
-        .filter(|p| p.exists())
-        .map(|p| p.to_string_lossy().into_owned())
+        .flat_map(|d| d.bins.iter().map(|(b, _)| b.clone()))
+        .filter(|b| exec(Path::new("/usr/bin"), b))
+        .map(|b| format!("/usr/bin/{b}"))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -181,12 +207,13 @@ fn find_shadows(
     } else {
         Vec::new()
     };
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    find(
-        &dirs,
-        &owned,
-        &std::env::split_paths(&path).collect::<Vec<_>>(),
-    )
+    // ponytail: a relative PATH entry depends on the shell's working
+    // directory, which paclens cannot know; it is skipped.
+    let path: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .filter(|p| p.is_absolute())
+        .map(real)
+        .collect();
+    find(&dirs, &owned, &path, exec)
 }
 
 /// Walk the config dirs for `.pacnew` / `.pacsave` leftovers (#2).

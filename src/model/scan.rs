@@ -34,7 +34,7 @@ use super::{Package, PendingUpdate, Source};
 /// `flatpak-user` / `flatpak-system` ids that nothing matches any more, so it
 /// must be discarded rather than read.
 /// v17: source scan failures are retained, so an empty failed check is not a zero.
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
