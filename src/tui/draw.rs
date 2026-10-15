@@ -579,10 +579,23 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         };
         found.push(kv("news", format!("{}{more}", first.package), theme.accent));
     }
-    for (pkg, bins, _) in crate::analyzer::shadows::by_package(&app.scan().shadows) {
+    for (labels, bins, runs) in crate::analyzer::shadows::groups(&app.scan().shadows) {
         found.push(kv(
             "duplicates",
-            format!("{pkg} · {} in ~/.cargo/bin", bins.len()),
+            format!(
+                "{} {} · {}",
+                bins.len(),
+                if bins.len() == 1 {
+                    "command"
+                } else {
+                    "commands"
+                },
+                if runs {
+                    format!("{} runs", labels[0])
+                } else {
+                    "none on PATH".to_string()
+                }
+            ),
             theme.primary,
         ));
     }

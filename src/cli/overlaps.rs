@@ -29,7 +29,7 @@ pub fn run(
     );
     let min = config.overlap.min_confidence();
     print!("{}", render_overlaps(&overlaps, &scan, min, styles));
-    // The same command from cargo and pacman (#18): the other kind of
+    // The same command from two sources (#18): the other kind of
     // installed-twice, decided by PATH rather than by which app you launch.
     let shadows = crate::analyzer::shadows::lines(&scan.shadows);
     if !shadows.is_empty() {

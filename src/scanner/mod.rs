@@ -7,7 +7,7 @@
 
 pub mod cache;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
@@ -87,57 +87,106 @@ fn find_stale_processes() -> Vec<crate::analyzer::services::StaleProcess> {
     out
 }
 
-/// Commands in `~/.cargo/bin` that pacman also installed in `/usr/bin`, and
-/// which copy `PATH` runs (#18). One `pacman -Qo` over the doubled paths;
-/// a path pacman does not own is not a duplicate of anything.
+/// Commands installed by more than one source, and which copy `PATH` runs
+/// (#18). Each user-space source's bin directory is listed; one `pacman -Qo`
+/// over the `/usr/bin` namesakes says which of those pacman owns.
 fn find_shadows(
     runner: &dyn CommandRunner,
     home: Option<&Path>,
+    packages: &[crate::model::Package],
+    pacman_present: bool,
 ) -> Vec<crate::analyzer::shadows::Shadow> {
-    let Some(cargo_bin) = std::env::var_os("CARGO_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| home.map(|h| h.join(".cargo")))
-        .map(|c| c.join("bin"))
-    else {
-        return Vec::new();
+    use crate::analyzer::shadows::{BinDir, find, parse_owners};
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let under = |p: &str| home.map(|h| h.join(p));
+    // A brew command links into `Cellar/<formula>/…`: the link names the
+    // package for free.
+    let listing = |d: &Path| -> Vec<(String, Option<String>)> {
+        std::fs::read_dir(d)
+            .map(|es| {
+                es.flatten()
+                    .map(|e| {
+                        let formula = std::fs::read_link(e.path())
+                            .ok()
+                            .and_then(|t| crate::analyzer::shadows::cellar_formula(&t));
+                        (e.file_name().to_string_lossy().into_owned(), formula)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     };
-    let Ok(entries) = std::fs::read_dir(&cargo_bin) else {
-        return Vec::new();
-    };
-    let doubled: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| {
-            let usr = Path::new("/usr/bin").join(e.file_name());
-            usr.exists().then(|| usr.to_string_lossy().into_owned())
-        })
-        .collect();
-    if doubled.is_empty() {
-        return Vec::new();
+    let mut dirs: Vec<BinDir> = Vec::new();
+    // ponytail: env and default locations only, not `go env` / `brew
+    // --prefix`; a relocated install without its variable set is missed.
+    let listed = [
+        (
+            "cargo",
+            env("CARGO_HOME")
+                .or_else(|| under(".cargo"))
+                .map(|c| c.join("bin")),
+        ),
+        (
+            "brew",
+            env("HOMEBREW_PREFIX")
+                .or_else(|| Some(PathBuf::from("/home/linuxbrew/.linuxbrew")))
+                .map(|p| p.join("bin")),
+        ),
+        (
+            "gobin",
+            env("GOBIN").or_else(|| env("GOPATH").or_else(|| under("go")).map(|g| g.join("bin"))),
+        ),
+    ];
+    for (source, dir) in listed {
+        if let Some(dir) = dir {
+            dirs.push(BinDir {
+                source: source.to_string(),
+                bins: listing(&dir),
+                dir,
+            });
+        }
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let dirs: Vec<_> = std::env::split_paths(&path).collect();
-    let first = |d: &Path| dirs.iter().position(|p| p == d);
-    let cargo_wins = match (first(&cargo_bin), first(Path::new("/usr/bin"))) {
-        (Some(c), Some(u)) => c < u,
-        (Some(_), None) => true,
-        _ => false,
-    };
-    let args: Vec<&str> = std::iter::once("-Qo")
-        .chain(doubled.iter().map(String::as_str))
-        .collect();
-    let Ok(out) = runner.run(pacman::PACMAN_BIN, &args) else {
-        return Vec::new();
-    };
-    let mut shadows: Vec<_> = crate::analyzer::shadows::parse_owners(&out.stdout)
+    // uv shares its directory with everything else in ~/.local/bin, so only
+    // the commands its tools declare are its own.
+    if let Some(dir) = env("UV_TOOL_BIN_DIR")
+        .or_else(|| env("XDG_BIN_HOME"))
+        .or_else(|| under(".local/bin"))
+    {
+        let bins = packages
+            .iter()
+            .filter(|p| p.source_id.as_str() == "uv")
+            .flat_map(|p| p.provides.iter().map(|b| (b.clone(), Some(p.name.clone()))))
+            .collect();
+        dirs.push(BinDir {
+            source: "uv".to_string(),
+            dir,
+            bins,
+        });
+    }
+    let usr: Vec<String> = dirs
+        .iter()
+        .flat_map(|d| d.bins.iter().map(|(b, _)| Path::new("/usr/bin").join(b)))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
-        .map(|(bin, pacman_package)| crate::analyzer::shadows::Shadow {
-            bin,
-            pacman_package,
-            cargo_wins,
-        })
         .collect();
-    shadows.sort_by(|a, b| a.bin.cmp(&b.bin));
-    shadows
+    let owned = if pacman_present && !usr.is_empty() {
+        let args: Vec<&str> = std::iter::once("-Qo")
+            .chain(usr.iter().map(String::as_str))
+            .collect();
+        runner
+            .run(pacman::PACMAN_BIN, &args)
+            .map(|o| parse_owners(&o.stdout))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    find(
+        &dirs,
+        &owned,
+        &std::env::split_paths(&path).collect::<Vec<_>>(),
+    )
 }
 
 /// Walk the config dirs for `.pacnew` / `.pacsave` leftovers (#2).
@@ -762,9 +811,7 @@ fn assemble(
     {
         scan.repo_arch = pacman::repo_arch(runner, offers);
     }
-    if lanes.pacman {
-        scan.shadows = find_shadows(runner, home_dir);
-    }
+    scan.shadows = find_shadows(runner, home_dir, &scan.packages, lanes.pacman);
     scan.stale_processes = if config.scan.stale_services {
         find_stale_processes()
     } else {

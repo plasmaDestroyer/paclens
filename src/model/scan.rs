@@ -34,7 +34,7 @@ use super::{Package, PendingUpdate, Source};
 /// `flatpak-user` / `flatpak-system` ids that nothing matches any more, so it
 /// must be discarded rather than read.
 /// v17: source scan failures are retained, so an empty failed check is not a zero.
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -86,7 +86,7 @@ pub struct ScanResult {
     /// Recent Arch news posts (#1); which ones matter is the analyzer's call.
     #[serde(default)]
     pub news: Vec<crate::providers::news::NewsItem>,
-    /// Commands in both `~/.cargo/bin` and pacman's `/usr/bin` (#18).
+    /// Commands installed more than once, across sources (#18).
     #[serde(default)]
     pub shadows: Vec<crate::analyzer::shadows::Shadow>,
 }

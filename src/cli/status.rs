@@ -160,7 +160,7 @@ fn render_status_since(
     }
     // Packages no configured repo can reach: they never update again, and
     // nothing else on this screen would say so (#78).
-    for line in crate::analyzer::shadows::lines(&scan.shadows) {
+    if let Some(line) = crate::analyzer::shadows::summary(&scan.shadows) {
         out.push_str(&s.dim(&format!("  {line}\n")));
     }
     for r in crate::analyzer::news::relevant(scan, since) {
