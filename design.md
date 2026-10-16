@@ -1953,6 +1953,40 @@ YYYY-MM-DD | no --noconfirm for pacman
            | everything" may carry. `status` says so on one line per source;
            | the user runs `fwupdmgr update` themselves.
 
+2026-10-16 | the pacman step gets a live view: paclens watches, pacman acts (#81)
+           | pacman still runs on the pty, unchanged. paclens reads its
+           | settled screen and tails pacman.log, and draws the run from
+           | those two, never from libalpm: owning the transaction would
+           | make paclens the package manager §5 says it is not. That was
+           | weighed and rejected: about 10k lines of pacman's front end to
+           | redo, a TUI running as root, and a bug that breaks a system
+           | instead of a tree. CLI first (`update`, then the TUI console).
+           | Done means out of the way. The live region is rewritten in
+           | place at the cursor and, on exit 0, shrinks to a few lines;
+           | only a non-zero exit keeps pacman's errors on screen. An
+           | `error:` line alone is not failure: a mirror 404 that pacman
+           | retried still exits 0 (seen in a real run).
+           | Because the success path folds pacman's text away, the last
+           | run's raw pty transcript is now kept on disk (0600, replaced
+           | each run). This amends 2026-07-08 ("logs keep commands + exit
+           | codes only"): folded is not hidden only if it can be read back.
+           | The layout and how much Pac-Man are chosen by living with them,
+           | through a replay example and an `[update] layout`/`motif`
+           | setting, not decided here.
+
+2026-10-16 | `paclens pacman <args>`: a passthrough with the rules attached (#81)
+           | pacman's own arguments, for installs and upgrades only, so it
+           | can be aliased. A new door into pacman inherits every rule the
+           | old ones have: `--noconfirm` and `--ask` are refused (§3),
+           | `-y` without `-u` is refused as a partial upgrade (§3), `-R` is
+           | refused because removals go through the dependency report
+           | (§3), `--overwrite` because it clobbers files other packages
+           | own, and anything that is not an install or upgrade is pointed
+           | back at pacman itself. So, for now, are options that aim pacman
+           | at another root or log (`--root`, `--sysroot`, `--dbpath`,
+           | `--logfile`, `--config`): the view would be watching the wrong
+           | log.
+
 ```
 
 ---
