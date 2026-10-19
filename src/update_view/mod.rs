@@ -2,5 +2,6 @@
 
 pub mod log_line;
 pub mod medians;
+pub mod replay;
 pub mod screen;
 pub mod screen_line;
