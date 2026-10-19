@@ -45,17 +45,20 @@ impl Settler {
             .to_string()
     }
 
-    /// The last `n` non-empty visible rows, trimmed, up to the cursor row.
+    /// The last `n` non-empty visible rows, trimmed. Rows below the cursor
+    /// count too: a cursor move up does not erase them.
     pub fn tail(&self, n: usize) -> Vec<String> {
-        let screen = self.parser.screen();
-        let (cursor, _) = screen.cursor_position();
-        let rows: Vec<String> = screen
-            .rows(0, self.cols)
-            .take(usize::from(cursor) + 1)
-            .map(|r| r.trim_end().to_string())
+        let rows: Vec<String> = self.parser.screen().rows(0, self.cols).collect();
+        let mut tail: Vec<String> = rows
+            .iter()
+            .rev()
+            .map(|r| r.trim_end())
             .filter(|r| !r.is_empty())
+            .take(n)
+            .map(str::to_string)
             .collect();
-        rows[rows.len().saturating_sub(n)..].to_vec()
+        tail.reverse();
+        tail
     }
 
     /// The cursor row joined with every row that soft-wrapped into it.
@@ -137,6 +140,13 @@ mod tests {
         let mut s = Settler::new(80);
         s.feed(b" Total ( 3/38)  26.1 MiB  [-c  o ]   3%\r Total ( 7/38)  43.2 MiB  [---Co ]   6%");
         assert!(s.partial().ends_with("6%"));
+    }
+
+    #[test]
+    fn tail_keeps_rows_below_the_cursor() {
+        let mut s = Settler::new(80);
+        s.feed(b"prompt\r\nerror: failed\r\n\x1b[2A");
+        assert_eq!(s.tail(2), vec!["prompt", "error: failed"]);
     }
 
     #[test]
