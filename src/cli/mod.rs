@@ -4,6 +4,8 @@ mod cleanup;
 pub(crate) mod history;
 mod migrate;
 mod overlaps;
+#[cfg_attr(not(test), allow(dead_code))] // wired in Task 11b (#81)
+pub(crate) mod pacman;
 mod status;
 mod style;
 mod update;
