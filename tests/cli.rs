@@ -111,6 +111,19 @@ fn why_unknown_package_errors_cleanly() {
 }
 
 #[test]
+fn transcript_without_a_recorded_run_errors_cleanly() {
+    let home = sandbox("transcript-missing");
+    let out = run(&home, &["transcript", "--no-color"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no pacman run recorded yet"),
+        "stderr was: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn unknown_subcommand_is_rejected() {
     let home = sandbox("unknown");
     let out = run(&home, &["frobnicate"]);

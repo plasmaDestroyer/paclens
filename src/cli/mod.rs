@@ -8,6 +8,7 @@ mod overlaps;
 pub(crate) mod pacman;
 mod status;
 mod style;
+mod transcript;
 mod update;
 mod why;
 
@@ -119,6 +120,8 @@ pub enum Command {
         #[arg(long, default_value_t = 15)]
         limit: usize,
     },
+    /// Show the last pacman run as pacman printed it.
+    Transcript,
 }
 
 /// `--to` values for `migrate`, mapped onto the model's `Direction`.
@@ -302,6 +305,11 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
+        Command::Transcript => report(
+            crate::scanner::cache::cache_dir()
+                .and_then(|dir| transcript::run(&dir, &mut std::io::stdout().lock())),
+            &err_styles,
+        ),
     }
 }
 
@@ -385,6 +393,12 @@ mod tests {
         assert!(Cli::try_parse_from(["paclens", "why"]).is_err());
         let cli = Cli::try_parse_from(["paclens", "why", "firefox"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Why { package }) if package == "firefox"));
+    }
+
+    #[test]
+    fn transcript_parses_with_no_arguments() {
+        let cli = Cli::try_parse_from(["paclens", "transcript"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Transcript)));
     }
 
     #[test]
