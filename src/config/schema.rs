@@ -1,8 +1,8 @@
 //! Configuration schema. Mirrors `config.default.toml`.
 //!
-//! Enum-like fields (`log_level`, `color_theme`, `min_confidence`) are stored as
-//! strings so an invalid value never fails deserialization; they are validated
-//! through typed accessors that fall back to the default. Call
+//! Enum-like fields (`log_level`, `color_theme`, `min_confidence`, `layout`,
+//! `motif`) are stored as strings so an invalid value never fails
+//! deserialization; they are validated through typed accessors that fall back to the default. Call
 //! [`Config::validation_warnings`] to surface invalid values to the user.
 
 use serde::Deserialize;
@@ -82,9 +82,23 @@ pub struct Update {
     /// How often to refresh, in seconds. Comfortably under sudo's 5-minute
     /// default `timestamp_timeout`.
     pub sudo_loop_interval: u64,
+    /// How `paclens pacman` lays out its live view (#81). See [`Layout`].
+    pub layout: String,
+    /// Decoration on top of the layout (#81). See [`Motif`].
+    pub motif: String,
 }
 
 impl Update {
+    /// Validated layout, falling back to the default on an invalid value.
+    pub fn layout(&self) -> Layout {
+        Layout::parse(&self.layout).unwrap_or_default()
+    }
+
+    /// Validated motif, falling back to the default on an invalid value.
+    pub fn motif(&self) -> Motif {
+        Motif::parse(&self.motif).unwrap_or_default()
+    }
+
     /// How often to refresh the sudo timestamp during a run, or `None` when
     /// the loop is off (the default). Never faster than every 30s.
     pub fn loop_interval(&self) -> Option<std::time::Duration> {
@@ -98,6 +112,8 @@ impl Default for Update {
         Self {
             sudo_loop: false,
             sudo_loop_interval: 240,
+            layout: "inline".to_string(),
+            motif: "subtle".to_string(),
         }
     }
 }
@@ -267,6 +283,50 @@ impl ColorTheme {
     }
 }
 
+/// Layout of the live pacman view (#81). Chosen by trial; defaults to `Inline`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    #[default]
+    Inline,
+    InlineGrow,
+    Nom,
+    Receipt,
+}
+
+impl Layout {
+    pub const ALL: [Self; 4] = [Self::Inline, Self::InlineGrow, Self::Nom, Self::Receipt];
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "inline" => Some(Self::Inline),
+            "inline-grow" => Some(Self::InlineGrow),
+            "nom" => Some(Self::Nom),
+            "receipt" => Some(Self::Receipt),
+            _ => None,
+        }
+    }
+}
+
+/// Motif of the live pacman view (#81). Chosen by trial; defaults to `Subtle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Motif {
+    #[default]
+    Subtle,
+    Arcade,
+}
+
+impl Motif {
+    pub const ALL: [Self; 2] = [Self::Subtle, Self::Arcade];
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "subtle" => Some(Self::Subtle),
+            "arcade" => Some(Self::Arcade),
+            _ => None,
+        }
+    }
+}
+
 /// Minimum confidence shown in the overlap report. Defaults to `Inferred`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MinConfidence {
@@ -339,6 +399,18 @@ impl Config {
             warnings.push(format!(
                 "overlap.min_confidence: invalid value {:?}, using default \"Inferred\"",
                 self.overlap.min_confidence
+            ));
+        }
+        if Layout::parse(&self.update.layout).is_none() {
+            warnings.push(format!(
+                "update.layout: invalid value {:?}, using default \"inline\"",
+                self.update.layout
+            ));
+        }
+        if Motif::parse(&self.update.motif).is_none() {
+            warnings.push(format!(
+                "update.motif: invalid value {:?}, using default \"subtle\"",
+                self.update.motif
             ));
         }
         warnings

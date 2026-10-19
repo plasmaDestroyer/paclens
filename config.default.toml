@@ -180,3 +180,9 @@ sudo_loop = false
 
 # How often to refresh, in seconds. Comfortably under the 5-minute default.
 sudo_loop_interval = 240
+
+# Layout of the live `paclens pacman` view: inline | inline-grow | nom | receipt (chosen by trial, #81).
+layout = "inline"
+
+# Motif on top of the layout: subtle | arcade (chosen by trial, #81).
+motif = "subtle"

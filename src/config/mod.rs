@@ -5,7 +5,7 @@
 
 pub mod schema;
 
-pub use schema::{ColorTheme, Config, ExtraMapping, MinConfidence};
+pub use schema::{ColorTheme, Config, ExtraMapping, Layout, MinConfidence, Motif};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -166,6 +166,54 @@ mod tests {
         let warnings = loaded.config.validation_warnings();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("general.log_level"));
+    }
+
+    #[test]
+    fn layout_and_motif_default_to_inline_subtle() {
+        let update = parse_config("").unwrap().config.update;
+        assert_eq!(update.layout(), Layout::Inline);
+        assert_eq!(update.motif(), Motif::Subtle);
+    }
+
+    #[test]
+    fn layout_accepts_each_trial_value() {
+        for (raw, want) in [
+            ("inline", Layout::Inline),
+            ("inline-grow", Layout::InlineGrow),
+            ("nom", Layout::Nom),
+            ("receipt", Layout::Receipt),
+        ] {
+            let text = format!("[update]\nlayout = \"{raw}\"\n");
+            let loaded = parse_config(&text).unwrap();
+            assert_eq!(loaded.config.update.layout(), want, "{raw}");
+            assert!(loaded.config.validation_warnings().is_empty(), "{raw}");
+        }
+        assert_eq!(Layout::ALL.len(), 4);
+    }
+
+    #[test]
+    fn motif_accepts_arcade() {
+        let loaded = parse_config("[update]\nmotif = \"arcade\"\n").unwrap();
+        assert_eq!(loaded.config.update.motif(), Motif::Arcade);
+        assert_eq!(Motif::ALL.len(), 2);
+    }
+
+    #[test]
+    fn invalid_layout_produces_validation_warning() {
+        let loaded = parse_config("[update]\nlayout = \"sideways\"\n").unwrap();
+        assert_eq!(loaded.config.update.layout(), Layout::Inline);
+        let warnings = loaded.config.validation_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("update.layout"));
+    }
+
+    #[test]
+    fn invalid_motif_produces_validation_warning() {
+        let loaded = parse_config("[update]\nmotif = \"neon\"\n").unwrap();
+        assert_eq!(loaded.config.update.motif(), Motif::Subtle);
+        let warnings = loaded.config.validation_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("update.motif"));
     }
 
     #[test]
