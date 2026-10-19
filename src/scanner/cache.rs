@@ -19,6 +19,17 @@ const CACHE_FILENAME: &str = "scan.toml";
 const TMP_FILENAME: &str = "scan.toml.tmp";
 const PACMAN_DB_DIR: &str = "/var/lib/pacman/local/";
 
+/// `~/.cache/paclens`, created (0700) if absent. Home of the scan cache and
+/// the last-run pacman transcript (#81).
+pub fn cache_dir() -> anyhow::Result<PathBuf> {
+    let dir = ProjectDirs::from("", "", "paclens")
+        .ok_or_else(|| anyhow!("could not determine the cache directory for this platform"))?
+        .cache_dir()
+        .to_path_buf();
+    create_dir_private(&dir)?;
+    Ok(dir)
+}
+
 /// A located scan cache. Construct with [`Cache::locate`].
 pub struct Cache {
     path: PathBuf,
@@ -29,11 +40,7 @@ impl Cache {
     /// Resolve `~/.cache/paclens/scan.toml`, create the directory (0700) if
     /// absent, and clear any stale `.tmp` left by an interrupted write.
     pub fn locate() -> anyhow::Result<Self> {
-        let dir = ProjectDirs::from("", "", "paclens")
-            .ok_or_else(|| anyhow!("could not determine the cache directory for this platform"))?
-            .cache_dir()
-            .to_path_buf();
-        create_dir_private(&dir)?;
+        let dir = cache_dir()?;
         let cache = Self {
             path: dir.join(CACHE_FILENAME),
             tmp: dir.join(TMP_FILENAME),
@@ -145,6 +152,14 @@ fn create_dir_private(dir: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::model::{CacheSizes, Source, SourceId, SourceKind};
+
+    #[test]
+    fn cache_dir_is_the_paclens_dir_and_hosts_the_scan_cache() {
+        let dir = cache_dir().unwrap();
+        assert!(dir.ends_with("paclens"), "{}", dir.display());
+        assert!(dir.is_dir());
+        assert_eq!(Cache::locate().unwrap().path(), dir.join(CACHE_FILENAME));
+    }
 
     fn sample_scan(scanned_at: DateTime<Utc>, schema: u32) -> ScanResult {
         ScanResult {

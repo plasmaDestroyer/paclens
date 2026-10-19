@@ -1,5 +1,6 @@
 //! Live view of a pacman run (#81).
 
+pub mod live;
 pub mod log_line;
 pub mod medians;
 pub mod replay;

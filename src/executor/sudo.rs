@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-const CANDIDATES: [&str; 3] = ["sudo", "doas", "pkexec"];
+pub(crate) const CANDIDATES: [&str; 3] = ["sudo", "doas", "pkexec"];
 
 /// Will something in this plan ask for a password? Then one `sudo -v`
 /// before the first step answers it for the whole run (2026-09-21).
