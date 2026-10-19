@@ -13,9 +13,7 @@
 use std::io::{Read, Write};
 use std::sync::mpsc;
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-
-use crate::executor::{self, ExecutionReport, StepReport, StepStatus, UpdateLog, skip_reason};
+use crate::executor::{self, ExecutionReport, StepReport, StepStatus, UpdateLog, pty, skip_reason};
 use crate::model::ActionPlan;
 
 /// What the worker streams back to the event loop.
@@ -238,72 +236,38 @@ fn run_step(
     events: &mpsc::Sender<ExecEvent>,
     input: &mpsc::Receiver<Vec<u8>>,
 ) -> StepStatus {
-    let Some((program, args)) = argv.split_first() else {
-        return StepStatus::Failed {
-            detail: "empty command".to_string(),
-        };
-    };
-
-    let pty = match native_pty_system().openpty(PtySize {
-        rows: rows.max(2),
-        cols: cols.max(20),
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
+    let mut pty = match pty::spawn(argv, rows, cols) {
         Ok(pty) => pty,
         Err(err) => {
             return StepStatus::Failed {
-                detail: format!("failed to open a pty: {err}"),
+                detail: err.to_string(),
             };
         }
     };
-
-    let mut cmd = CommandBuilder::new(program);
-    cmd.args(args);
-    let mut child = match pty.slave.spawn_command(cmd) {
-        Ok(child) => child,
-        Err(err) => {
-            return StepStatus::Failed {
-                detail: format!("failed to launch: {err}"),
-            };
-        }
-    };
-    // The child holds the slave; dropping ours lets the reader see EOF.
-    drop(pty.slave);
-
-    let reader = match pty.master.try_clone_reader() {
-        Ok(reader) => reader,
-        Err(err) => {
-            return StepStatus::Failed {
-                detail: format!("failed to read the pty: {err}"),
-            };
-        }
-    };
-    let mut writer = pty.master.take_writer().ok();
+    let reader = std::mem::replace(&mut pty.reader, Box::new(std::io::empty()));
     let pump = spawn_pump(reader, events.clone());
 
     // Drain forwarded keys into the pty while the child runs.
     let status = loop {
-        match child.try_wait() {
+        match pty.child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {}
             Err(err) => break Err(err),
         }
         match input.recv_timeout(std::time::Duration::from_millis(60)) {
             Ok(bytes) => {
-                if let Some(w) = &mut writer {
+                if let Some(w) = &mut pty.writer {
                     let _ = w.write_all(&bytes);
                     let _ = w.flush();
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break child.wait().map_err(std::io::Error::other);
+                break pty.child.wait().map_err(std::io::Error::other);
             }
         }
     };
-    drop(writer);
-    drop(pty.master); // closes the pty — unblocks the pump on EOF/EIO
+    let _child = pty.close(); // closes the pty — unblocks the pump on EOF/EIO
     let _ = pump.join();
 
     match status {

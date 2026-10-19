@@ -13,6 +13,7 @@
 //! `CommandRunner`.
 
 mod log;
+pub mod pty;
 pub mod sudo;
 
 use std::path::PathBuf;
