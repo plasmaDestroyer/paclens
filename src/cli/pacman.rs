@@ -49,12 +49,23 @@ fn resolve(name: &str) -> Option<(&'static str, bool)> {
 
 /// `Err(reason)` when pacman would run with arguments the passthrough refuses.
 /// The rules apply in a fixed order, so the reason is the first one that holds.
+///
+/// getopt_long reads options anywhere by default, but with `POSIXLY_CORRECT`
+/// set it stops at the first target, so `-Sy foo -u` is a partial upgrade
+/// there. Both readings must pass; the permuting one reports first.
 pub fn check(args: &[String]) -> Result<(), &'static str> {
+    rules(args, false)?;
+    rules(args, true)
+}
+
+/// Parses `args` as getopt_long does (stopping at the first target when
+/// `posix`) and applies the refusal rules to what it found.
+fn rules(args: &[String], posix: bool) -> Result<(), &'static str> {
     let mut longs: Vec<&str> = Vec::new();
     let mut shorts = String::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        if arg == "--" {
+        if arg == "--" || (posix && (arg == "-" || !arg.starts_with('-'))) {
             break;
         }
         if let Some(body) = arg.strip_prefix("--") {
@@ -318,6 +329,26 @@ mod tests {
             Err("the view would watch the wrong system or log")
         );
         assert_eq!(c(&["-Q", "-y"]), Err("only installs and upgrades (-S)"));
+    }
+
+    #[test]
+    fn refuses_what_posixly_correct_reads_as_partial() {
+        // Under POSIXLY_CORRECT pacman stops at `foo`, so `-u` is a target.
+        assert_eq!(
+            c(&["-Sy", "foo", "-u"]),
+            Err("-y without -u is a partial upgrade (design §3)")
+        );
+    }
+
+    #[test]
+    fn refuses_noconfirm_after_a_target() {
+        assert!(c(&["-S", "foo", "--noconfirm"]).is_err());
+    }
+
+    #[test]
+    fn allows_option_after_a_target_when_both_readings_pass() {
+        assert_eq!(c(&["-S", "foo", "--needed"]), Ok(()));
+        assert_eq!(c(&["-Syu", "foo"]), Ok(()));
     }
 
     #[test]
