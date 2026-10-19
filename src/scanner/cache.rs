@@ -22,12 +22,9 @@ const PACMAN_DB_DIR: &str = "/var/lib/pacman/local/";
 /// `~/.cache/paclens`, created (0700) if absent. Home of the scan cache and
 /// the last-run pacman transcript (#81).
 pub fn cache_dir() -> anyhow::Result<PathBuf> {
-    let dir = ProjectDirs::from("", "", "paclens")
-        .ok_or_else(|| anyhow!("could not determine the cache directory for this platform"))?
-        .cache_dir()
-        .to_path_buf();
-    create_dir_private(&dir)?;
-    Ok(dir)
+    let dirs = ProjectDirs::from("", "", "paclens")
+        .ok_or_else(|| anyhow!("could not determine the cache directory for this platform"))?;
+    private_dir(dirs.cache_dir())
 }
 
 /// A located scan cache. Construct with [`Cache::locate`].
@@ -139,13 +136,15 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 }
 
 #[cfg(unix)]
-fn create_dir_private(dir: &Path) -> anyhow::Result<()> {
+/// Create `dir` (0700) if it is missing, and return it.
+fn private_dir(dir: &Path) -> anyhow::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
-        .with_context(|| format!("failed to create cache directory: {}", dir.display()))
+        .with_context(|| format!("failed to create cache directory: {}", dir.display()))?;
+    Ok(dir.to_path_buf())
 }
 
 #[cfg(test)]
@@ -154,11 +153,16 @@ mod tests {
     use crate::model::{CacheSizes, Source, SourceId, SourceKind};
 
     #[test]
-    fn cache_dir_is_the_paclens_dir_and_hosts_the_scan_cache() {
-        let dir = cache_dir().unwrap();
-        assert!(dir.ends_with("paclens"), "{}", dir.display());
-        assert!(dir.is_dir());
-        assert_eq!(Cache::locate().unwrap().path(), dir.join(CACHE_FILENAME));
+    fn private_dir_creates_a_0700_dir_and_accepts_an_existing_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("paclens-private-dir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let dir = tmp.join("new");
+        assert_eq!(private_dir(&dir).unwrap(), dir);
+        let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert_eq!(private_dir(&dir).unwrap(), dir);
+        fs::remove_dir_all(&tmp).unwrap();
     }
 
     fn sample_scan(scanned_at: DateTime<Utc>, schema: u32) -> ScanResult {
