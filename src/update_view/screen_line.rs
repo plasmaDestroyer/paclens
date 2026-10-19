@@ -94,7 +94,7 @@ pub fn classify_screen(line: &str, in_sync: bool) -> ScreenEvent {
     if let Some(e) = t.strip_prefix("error: ") {
         return Error(e.to_string());
     }
-    if in_sync && let Some(db) = t.split_whitespace().next() {
+    if in_sync && let Some(db) = sync_db(line) {
         return Db(db.to_string());
     }
     if let Some(p) = t.strip_prefix("Optional dependencies for ") {
@@ -103,6 +103,23 @@ pub fn classify_screen(line: &str, in_sync: bool) -> ScreenEvent {
     plan_line(t)
         .or_else(|| counted_line(t))
         .unwrap_or_else(|| Other(line.to_string()))
+}
+
+/// A real database line during sync: ` core`, ` core is up to date`,
+/// ` core downloading...` or ` core … NN%`. Anything else is not one.
+fn sync_db(line: &str) -> Option<&str> {
+    let t = line.strip_prefix(' ')?.trim();
+    let (db, rest) = t.split_once(char::is_whitespace).unwrap_or((t, ""));
+    let rest = rest.trim();
+    let plausible = !db.is_empty()
+        && db
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let db_form = rest.is_empty()
+        || rest == "is up to date"
+        || rest == "downloading..."
+        || bar_pct(rest).is_some();
+    (plausible && db_form).then_some(db)
 }
 
 /// Plan header, plan names, plan totals and verbose plan rows.
@@ -422,6 +439,31 @@ mod tests {
             classify_screen(" core", false),
             ScreenEvent::Other(_)
         ));
+    }
+
+    #[test]
+    fn only_real_database_lines_count_as_sync_output() {
+        for db_line in [
+            " core",
+            " extra  8.2 MiB  12.1 MiB/s 00:01 [####] 100%",
+            " core is up to date",
+            " multilib downloading...",
+        ] {
+            assert!(
+                matches!(classify_screen(db_line, true), ScreenEvent::Db(_)),
+                "{db_line}"
+            );
+        }
+        for other in [
+            "unexpected diagnostic detail",
+            " unexpected diagnostic detail",
+            " c/re",
+        ] {
+            assert_eq!(
+                classify_screen(other, true),
+                ScreenEvent::Other(other.to_string())
+            );
+        }
     }
 
     #[test]
