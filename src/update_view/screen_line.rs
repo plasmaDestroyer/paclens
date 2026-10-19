@@ -247,7 +247,7 @@ fn counted_line(t: &str) -> Option<ScreenEvent> {
 }
 
 /// Trailing ` NN%` read by structure, whatever glyphs draw the bar.
-fn bar_pct(line: &str) -> Option<u8> {
+pub(crate) fn bar_pct(line: &str) -> Option<u8> {
     let s = line.trim_end().strip_suffix('%')?;
     let digits = s.len() - s.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     let (head, num) = s.split_at(s.len() - digits);

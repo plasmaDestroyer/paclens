@@ -12,7 +12,7 @@ use crate::analyzer::history::EventKind;
 
 use super::log_line::LogEvent;
 use super::medians::Median;
-use super::screen_line::{ScreenEvent, classify_screen, plan_names};
+use super::screen_line::{ScreenEvent, bar_pct, classify_screen, plan_names};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PhaseKind {
@@ -296,18 +296,21 @@ impl Run {
             }
             LogEvent::HookRunning(file) => {
                 let median = self.medians.get(&file).copied();
-                let (list, i) = if self.tx_completed {
-                    self.log_post += 1;
-                    (&mut self.post_hooks, self.log_post - 1)
+                let (list, count) = if self.tx_completed {
+                    (&mut self.post_hooks, &mut self.log_post)
                 } else if !self.tx_started {
-                    self.log_pre += 1;
-                    (&mut self.pre_hooks, self.log_pre - 1)
+                    (&mut self.pre_hooks, &mut self.log_pre)
                 } else {
                     return;
                 };
-                let h = hook_at(list, i);
+                if list.iter().any(|h| h.file.as_ref() == Some(&file)) {
+                    return;
+                }
+                *count += 1;
+                let h = hook_at(list, *count - 1);
                 h.file = Some(file);
                 h.median = median;
+                reclassify(h, &mut self.unknown);
             }
             LogEvent::Package(e) => {
                 let p = self.pkg(&e.name);
@@ -335,6 +338,12 @@ impl Run {
         self.exit = exit;
         self.ended = Some(at);
         self.end_running(PHASES.len(), at);
+        // A hook the screen started after the log ended its phase is open still.
+        for h in self.pre_hooks.iter_mut().chain(self.post_hooks.iter_mut()) {
+            if h.started.is_some() {
+                h.ended.get_or_insert(at);
+            }
+        }
         let recovered = exit == Some(0);
         let hook_notes = self
             .pre_hooks
@@ -448,8 +457,10 @@ impl Run {
         let Some(kind) = self.screen_section else {
             return;
         };
-        let Some(list) = self.hooks_now() else {
-            return;
+        let list = match kind {
+            PhaseKind::PreHooks => &mut self.pre_hooks,
+            PhaseKind::PostHooks => &mut self.post_hooks,
+            _ => return,
         };
         for h in list.iter_mut().take(i).filter(|h| h.started.is_some()) {
             h.ended.get_or_insert(at);
@@ -457,6 +468,7 @@ impl Run {
         let h = hook_at(list, i);
         h.desc = Some(desc);
         h.started.get_or_insert(at);
+        reclassify(h, &mut self.unknown);
         self.screen_hook = Some(i);
         let ph = self.phase_mut(kind);
         ph.done = ph.done.max(index);
@@ -499,18 +511,24 @@ impl Run {
         self.unknown.push(line);
     }
 
-    /// A per-file download row (` name-ver-rel-arch   … NN%`) for a planned package.
+    /// A per-file download row for a planned package: its file stem
+    /// `name-ver-rel-arch` alone, or the stem followed by a bar ending `NN%`.
     fn download_row(&self, t: &str) -> bool {
-        self.current() == Some(PhaseKind::Download)
-            && t.split_whitespace()
-                .next()
-                .and_then(|w| w.rsplit_once('-'))
-                .and_then(|(nvr, _arch)| plan_names(nvr))
-                .is_some_and(|n| n.iter().all(|(name, _)| self.has_pkg(name)))
-    }
-
-    fn has_pkg(&self, name: &str) -> bool {
-        self.packages.iter().any(|p| p.name == name)
+        let mut words = t.split_whitespace();
+        let (Some(stem), more) = (words.next(), words.next().is_some()) else {
+            return false;
+        };
+        let planned = stem
+            .rsplit_once('-')
+            .and_then(|(nvr, _arch)| plan_names(nvr))
+            .is_some_and(|n| {
+                n.iter().all(|(name, ver)| {
+                    self.packages
+                        .iter()
+                        .any(|p| &p.name == name && p.new.as_ref() == Some(ver))
+                })
+            });
+        self.current() == Some(PhaseKind::Download) && planned && (!more || bar_pct(t).is_some())
     }
 
     fn add_names(&mut self, names: Vec<(String, String)>) {
@@ -558,6 +576,21 @@ fn hook_at(list: &mut Vec<Hook>, i: usize) -> &mut Hook {
         list.resize_with(i + 1, Hook::default);
     }
     &mut list[i]
+}
+
+/// The hook just learned its file or description: read its notes again, and
+/// a note no longer `Plain` leaves `unknown` (which holds the raw line).
+fn reclassify(h: &mut Hook, unknown: &mut Vec<String>) {
+    let kinds: Vec<_> = h.notes.iter().map(|n| hook_note_kind(&n.text, h)).collect();
+    for (n, kind) in h.notes.iter_mut().zip(kinds) {
+        if n.kind == NoteKind::Plain
+            && kind != NoteKind::Plain
+            && let Some(i) = unknown.iter().rposition(|l| l.trim() == n.text)
+        {
+            unknown.remove(i);
+        }
+        n.kind = kind;
+    }
 }
 
 /// What one line of hook output means.
@@ -911,12 +944,13 @@ mod tests {
             &mut r,
             "[2026-10-16T11:37:21+0530] [ALPM] transaction completed",
         );
-        feed(
-            &mut r,
-            &[
-                "(1/1) Performing snapper pre snapshots...",
-                "==> root: 1001",
-            ],
+        r.apply_line("(1/1) Performing snapper pre snapshots...", secs(3));
+        r.apply_line("==> root: 1001", secs(4));
+        r.finish(Some(0), secs(8));
+        assert!(
+            r.pre_hooks
+                .iter()
+                .all(|h| h.started == Some(secs(3)) && h.ended == Some(secs(8)))
         );
         assert_eq!(r.pre_hooks.len(), 1);
         assert_eq!(
@@ -927,6 +961,95 @@ mod tests {
             }
         );
         assert!(r.post_hooks.is_empty() && r.unknown.is_empty());
+    }
+
+    fn foreign_check(screen_first: bool) -> Run {
+        let mut r = run();
+        log(
+            &mut r,
+            "[2026-10-16T11:37:21+0530] [ALPM] transaction completed",
+        );
+        let screen = [
+            ":: Running post-transaction hooks...",
+            "(1/1) Check foreign packages",
+            "foreign foo",
+        ];
+        let hook = "[2026-10-16T11:37:25+0530] [ALPM] running 'rebuild-detector.hook'...";
+        if screen_first {
+            feed(&mut r, &screen);
+            log(&mut r, hook);
+        } else {
+            log(&mut r, hook);
+            feed(&mut r, &screen);
+        }
+        r
+    }
+
+    #[test]
+    fn hook_file_arriving_late_reclassifies_its_notes() {
+        for screen_first in [true, false] {
+            let r = foreign_check(screen_first);
+            assert_eq!(
+                r.post_hooks[0].notes,
+                [Note {
+                    kind: NoteKind::Rebuild,
+                    text: "foreign foo".into()
+                }],
+                "screen_first={screen_first}"
+            );
+            assert!(r.unknown.is_empty(), "screen_first={screen_first}");
+            assert_eq!(r.needs_you().len(), 1);
+        }
+    }
+
+    #[test]
+    fn finish_closes_hooks_whose_phase_already_ended() {
+        let mut r = run();
+        r.apply_line(":: Running pre-transaction hooks...", secs(1));
+        log(
+            &mut r,
+            "[2026-10-16T11:37:05+0530] [ALPM] transaction started",
+        );
+        r.apply_line("(1/1) a", secs(2));
+        r.finish(Some(0), secs(7));
+        assert_eq!(
+            (r.pre_hooks[0].started, r.pre_hooks[0].ended),
+            (Some(secs(2)), Some(secs(7)))
+        );
+    }
+
+    #[test]
+    fn download_prefix_without_progress_stays_unknown() {
+        let mut r = run();
+        feed(
+            &mut r,
+            &[
+                "Packages (1) curl-8.23.0-1",
+                ":: Retrieving packages...",
+                " curl-8.23.0-1-x86_64",
+                " curl-8.23.0-1-x86_64   1.2 MiB  1.0 MiB/s 00:01 [--C o] 40%",
+                " curl-8.23.0-1-x86_64 unexpected server response",
+                " curl-9.0-1-x86_64   1.2 MiB  1.0 MiB/s 00:01 [--C o] 40%",
+            ],
+        );
+        assert_eq!(
+            r.unknown,
+            [
+                " curl-8.23.0-1-x86_64 unexpected server response",
+                " curl-9.0-1-x86_64   1.2 MiB  1.0 MiB/s 00:01 [--C o] 40%"
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_log_hook_is_not_a_second_hook() {
+        let mut r = run();
+        let at = "[2026-10-16T11:37:03+0530] [ALPM] running '";
+        log(&mut r, &format!("{at}a.hook'..."));
+        log(&mut r, &format!("{at}a.hook'..."));
+        log(&mut r, &format!("{at}b.hook'..."));
+        let files: Vec<_> = r.pre_hooks.iter().map(|h| h.file.as_deref()).collect();
+        assert_eq!(files, [Some("a.hook"), Some("b.hook")]);
     }
 
     #[test]
