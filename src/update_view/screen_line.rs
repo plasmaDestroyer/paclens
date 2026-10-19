@@ -134,15 +134,7 @@ fn plan_line(t: &str) -> Option<ScreenEvent> {
         if rest.starts_with("Old Version") || rest.starts_with("New Version") {
             return Some(ScreenEvent::PlanHeader { count });
         }
-        let names = rest
-            .split_whitespace()
-            .map(|p| {
-                let mut it = p.rsplitn(3, '-');
-                let (rel, ver, name) = (it.next()?, it.next()?, it.next()?);
-                Some((name.to_string(), format!("{ver}-{rel}")))
-            })
-            .collect::<Option<Vec<_>>>()?;
-        return Some(ScreenEvent::PlanNames(names));
+        return plan_names(rest).map(ScreenEvent::PlanNames);
     }
     if let Some((label, value)) = t.split_once(':')
         && label.ends_with(" Size")
@@ -181,6 +173,21 @@ fn plan_line(t: &str) -> Option<ScreenEvent> {
         net,
         download: sizes.next(),
     }))
+}
+
+/// `name-ver-rel` words → (name, `ver-rel`); `None` if any word is not one.
+pub(crate) fn plan_names(words: &str) -> Option<Vec<(String, String)>> {
+    words
+        .split_whitespace()
+        .map(|p| {
+            let mut it = p.rsplitn(3, '-');
+            let (rel, ver, name) = (it.next()?, it.next()?, it.next()?);
+            let rel_ok = rel.starts_with(|c: char| c.is_ascii_digit())
+                && rel.chars().all(|c| c.is_ascii_digit() || c == '.');
+            (rel_ok && !ver.is_empty() && !name.is_empty())
+                .then(|| (name.to_string(), format!("{ver}-{rel}")))
+        })
+        .collect()
 }
 
 /// `( i/N) …` lines (hooks, packages, checks) and ` Total ( i/N) … NN%`.
@@ -329,6 +336,20 @@ mod tests {
             matches!(classify_screen("Packages (2) curl-8.23.0-1  zstd-1.5.7-4", false),
             ScreenEvent::PlanNames(v) if v == vec![("curl".into(), "8.23.0-1".into()), ("zstd".into(), "1.5.7-4".into())])
         );
+    }
+
+    #[test]
+    fn plan_names_needs_a_numeric_pkgrel() {
+        assert_eq!(
+            plan_names("brave-origin-bin-1:1.97.57-1  qt6-base-6.12.0-3.1"),
+            Some(vec![
+                ("brave-origin-bin".into(), "1:1.97.57-1".into()),
+                ("qt6-base".into(), "6.12.0-3.1".into())
+            ])
+        );
+        assert_eq!(plan_names("not-a-name"), None);
+        assert_eq!(plan_names("curl-8.23.0-1 oops"), None);
+        assert_eq!(plan_names(""), Some(vec![]));
     }
 
     #[test]
