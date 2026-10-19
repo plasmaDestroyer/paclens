@@ -2,6 +2,10 @@
 
 /// Feeds pty bytes through a vt100 screen and hands back each line once a
 /// `\n` finishes it, as the terminal would show it after every `\r` redraw.
+/// Parser height. Independent of the pty size: pacman moves the cursor only
+/// relatively, so a tall screen just keeps long wrapped lines whole.
+const ROWS: u16 = 1000;
+
 pub struct Settler {
     parser: vt100::Parser,
     cols: u16,
@@ -10,7 +14,9 @@ pub struct Settler {
 impl Settler {
     pub fn new(cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(50, cols, 0),
+            // ponytail: a line longer than ROWS x cols loses its start;
+            // reading vt100 scrollback is the upgrade path.
+            parser: vt100::Parser::new(ROWS, cols, 0),
             cols,
         }
     }
@@ -39,12 +45,13 @@ impl Settler {
             .to_string()
     }
 
-    /// The last `n` non-empty visible rows, trimmed.
+    /// The last `n` non-empty visible rows, trimmed, up to the cursor row.
     pub fn tail(&self, n: usize) -> Vec<String> {
-        let rows: Vec<String> = self
-            .parser
-            .screen()
+        let screen = self.parser.screen();
+        let (cursor, _) = screen.cursor_position();
+        let rows: Vec<String> = screen
             .rows(0, self.cols)
+            .take(usize::from(cursor) + 1)
             .map(|r| r.trim_end().to_string())
             .filter(|r| !r.is_empty())
             .collect();
@@ -89,7 +96,7 @@ mod tests {
     #[test]
     fn fixture_is_scrubbed() {
         let s = String::from_utf8_lossy(OUT);
-        for bad in ["machineid=", "bootid=", "hostname="] {
+        for bad in ["machineid=", "bootid=", "hostname=", "satyxsing"] {
             assert!(!s.contains(bad), "{bad}");
         }
     }
@@ -115,6 +122,13 @@ mod tests {
     fn soft_wrapped_line_comes_back_whole() {
         let mut s = Settler::new(20);
         let long = "error: ".to_string() + &"x".repeat(30);
+        assert_eq!(s.feed(format!("{long}\r\n").as_bytes()), vec![long]);
+    }
+
+    #[test]
+    fn line_longer_than_fifty_rows_keeps_its_start() {
+        let mut s = Settler::new(20);
+        let long = "error: ".to_string() + &"x".repeat(1000);
         assert_eq!(s.feed(format!("{long}\r\n").as_bytes()), vec![long]);
     }
 
