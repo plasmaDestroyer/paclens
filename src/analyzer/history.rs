@@ -206,7 +206,7 @@ pub fn run_summary_compact(run: Run<'_>) -> String {
 /// remembers: converting an upgrade logged at 17:12+0530 into 11:42Z renders
 /// a history nobody recognises. Ordering is unaffected — these compare by
 /// instant.
-fn split_line(line: &str) -> Option<(DateTime<FixedOffset>, &str)> {
+pub(crate) fn split_line(line: &str) -> Option<(DateTime<FixedOffset>, &str)> {
     let rest = line.strip_prefix('[')?;
     let (stamp, rest) = rest.split_once("] ")?;
     let at = DateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S%z").ok()?;
@@ -215,7 +215,7 @@ fn split_line(line: &str) -> Option<(DateTime<FixedOffset>, &str)> {
 
 /// One `[ALPM] upgraded name (a -> b)` line, or `None` for the many lines
 /// that are hooks, scriptlets, and pacman's own chatter.
-fn parse_event(at: DateTime<FixedOffset>, rest: &str) -> Option<PackageEvent> {
+pub(crate) fn parse_event(at: DateTime<FixedOffset>, rest: &str) -> Option<PackageEvent> {
     let rest = rest.strip_prefix("[ALPM] ")?;
     let (word, rest) = rest.split_once(' ')?;
     let kind = EventKind::parse(word)?;
