@@ -2,3 +2,4 @@
 
 pub mod log_line;
 pub mod screen;
+pub mod screen_line;
