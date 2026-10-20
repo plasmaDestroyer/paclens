@@ -466,16 +466,22 @@ pub fn frame(
     let mut above = Vec::new();
     let mut d = sent;
     let from = |v: &[String], i: usize| v.get(i..).unwrap_or_default().to_vec();
+    let plan = plan(run);
+    // Unknown lines inside an open plan wait: the plan goes up whole, in
+    // place, so sending them now would print them twice.
+    // ponytail: an unknown line in the same frame as the plan header waits
+    // too and is never sent; per-line indices in the model if that shows up.
+    let plan_open = plan.is_some_and(|(_, _, p)| p.is_none_or(|p| sent.lines <= p));
     if view.layout == Layout::Nom {
         // Every settled line goes up as printed, unrecognised ones included.
         above.extend(from(&run.lines, sent.lines));
         d.lines = run.lines.len();
-    } else {
+        d.unknown = run.unknown.len();
+    } else if !plan_open {
         above.extend(from(&run.unknown, sent.unknown));
+        d.unknown = run.unknown.len();
     }
-    d.unknown = run.unknown.len();
 
-    let plan = plan(run);
     // Once answered, the plan stays in scrollback, prompt line and all.
     if idle_prompt.is_none()
         && let Some((a, b, Some(p))) = plan
@@ -486,6 +492,7 @@ pub fn frame(
         }
         above.push(run.lines[p].clone());
         d.lines = p + 1;
+        d.unknown = run.unknown.len();
     }
 
     if view.layout == Layout::Receipt {
@@ -523,10 +530,12 @@ pub fn frame(
                     } else {
                         above.extend(lines.iter().cloned());
                         d.lines = b;
+                        d.unknown = run.unknown.len();
                         vec![prompt]
                     }
                 }
-                _ => rows.iter().map(|r| cut(r, w, s)).collect(),
+                // Verbatim: a cut prompt can lose its answer choices.
+                _ => rows.to_vec(),
             }
         }
         None => live(run, view, w, height, now, s),
@@ -1127,6 +1136,47 @@ mod tests {
             &plain(),
         );
         assert_eq!(f.region, rows);
+    }
+
+    #[test]
+    fn long_idle_prompt_is_kept_verbatim() {
+        let r = partial(1);
+        let rows = vec![":: Replace foo with extra/bar? [Y/n]".to_string()];
+        let (f, _) = frame(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            Delivered::default(),
+            12,
+            40,
+            Z,
+            Some(&rows),
+            &plain(),
+        );
+        assert_eq!(f.region, rows);
+    }
+
+    #[test]
+    fn unknown_line_in_plan_goes_up_once() {
+        let lines = fixture_lines();
+        for height in [49, 20] {
+            let mut r = partial(14);
+            r.apply_line("odd notice", Z);
+            let v = view(Layout::Inline, Motif::Subtle);
+            let (f, d) = frame(&r, &v, Delivered::default(), 120, height, Z, None, &plain());
+            let mut above = f.above;
+            for l in &lines[14..59] {
+                r.apply_line(l, Z);
+            }
+            let prompt = vec![lines[58].clone()];
+            let (f, d) = frame(&r, &v, d, 120, height, Z, Some(&prompt), &plain());
+            above.extend(f.above);
+            r.apply_line(&lines[59], Z);
+            let (f, _) = frame(&r, &v, d, 120, height, Z, None, &plain());
+            above.extend(f.above);
+            let n = above.iter().filter(|l| *l == "odd notice").count();
+            assert_eq!(n, 1, "height {height}: {above:?}");
+            assert!(above.contains(&lines[58]), "height {height}");
+        }
     }
 
     #[test]
