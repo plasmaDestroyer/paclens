@@ -30,7 +30,13 @@ fn main() -> Result<()> {
                 let v = value()?;
                 motif = Motif::parse(&v).with_context(|| format!("unknown motif {v}"))?;
             }
-            "--speed" => speed = value()?.parse()?,
+            "--speed" => {
+                speed = value()?.parse()?;
+                // 0 = no sleeping; a tiny speed would overflow the sleep.
+                if !(speed == 0.0 || (0.01..=1000.0).contains(&speed)) {
+                    bail!("--speed is 0 or between 0.01 and 1000");
+                }
+            }
             "--exit" => exit = Some(value()?.parse()?),
             "--width" => width = Some(value()?.parse()?),
             _ if a.starts_with("--") => bail!("unknown option {a}"),
@@ -66,6 +72,7 @@ fn main() -> Result<()> {
         exit,
         width: width.unwrap_or(cols),
         height: rows,
+        live: stdout.is_terminal(),
         transcript: &typescript,
         styles: Styles::resolve(false, ColorTheme::Dark, stdout.is_terminal()),
     };

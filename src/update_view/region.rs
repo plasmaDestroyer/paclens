@@ -1,16 +1,22 @@
-//! The live region drawn inline under the shell prompt (#81): no alternate
-//! screen, so scrollback keeps everything printed above it.
+//! Where the view goes (#81): a live region drawn inline under the shell
+//! prompt when stdout is a terminal — no alternate screen, so scrollback
+//! keeps everything printed above it — or plain appended lines otherwise.
 
 use std::io::{self, Write};
+use std::time::Duration;
 
 use crossterm::cursor::MoveUp;
 use crossterm::queue;
 use crossterm::terminal::{Clear, ClearType};
+use unicode_width::UnicodeWidthChar;
 
-use super::render::Frame;
+use crate::cli::style::Styles;
 
-/// How many rows the last drawn region took; the cursor sits on the row
-/// under it.
+use super::model::{Outcome, Run};
+use super::render::{Delivered, Frame, View, frame};
+
+/// How many terminal rows the last drawn region took; the cursor sits on
+/// the row under it.
 #[derive(Default)]
 pub struct Region {
     height: u16,
@@ -22,25 +28,45 @@ impl Region {
     }
 
     /// Erase the last region, print `frame.above` for good, then draw
-    /// `frame.region`. A region taller than `rows - 1` keeps its last rows:
-    /// `MoveUp` cannot reach rows already in scrollback.
-    pub fn draw(&mut self, out: &mut impl Write, frame: &Frame, rows: u16) -> io::Result<()> {
+    /// `frame.region` on a `rows`×`cols` terminal. A region taller than
+    /// `rows - 1` keeps its last rows: `MoveUp` cannot reach rows already in
+    /// scrollback. A line wider than `cols` counts every row it wraps onto.
+    pub fn draw(
+        &mut self,
+        out: &mut impl Write,
+        frame: &Frame,
+        rows: u16,
+        cols: u16,
+    ) -> io::Result<()> {
         self.erase(out)?;
         for l in &frame.above {
             write!(out, "{l}\r\n")?;
         }
-        let fit = usize::from(rows.saturating_sub(1));
-        let skip = frame.region.len().saturating_sub(fit);
+        let room = usize::from(rows.saturating_sub(1));
+        let (mut used, mut skip) = (0, frame.region.len());
+        for l in frame.region.iter().rev() {
+            let h = rows_of(l, cols);
+            if used + h > room {
+                break;
+            }
+            used += h;
+            skip -= 1;
+        }
         for l in &frame.region[skip..] {
             write!(out, "{l}\r\n")?;
         }
-        self.height = u16::try_from(frame.region.len() - skip).unwrap_or(u16::MAX);
+        self.height = u16::try_from(used).unwrap_or(u16::MAX);
         out.flush()
     }
 
     /// Erase the last region and print `lines` for good.
     pub fn close(&mut self, out: &mut impl Write, lines: &[String]) -> io::Result<()> {
         self.erase(out)?;
+        self.leave(out, lines)
+    }
+
+    /// Keep the last region on screen and print `lines` under it.
+    pub fn leave(&mut self, out: &mut impl Write, lines: &[String]) -> io::Result<()> {
         for l in lines {
             write!(out, "{l}\r\n")?;
         }
@@ -57,6 +83,117 @@ impl Region {
     }
 }
 
+/// Terminal rows `line` takes at `cols` columns, colour escapes ignored.
+fn rows_of(line: &str, cols: u16) -> usize {
+    let mut width = 0;
+    let mut esc = false;
+    for c in line.chars() {
+        match (esc, c) {
+            (false, '\u{1b}') => esc = true,
+            (true, c) => esc = !c.is_ascii_alphabetic(),
+            (false, c) => width += c.width().unwrap_or(0),
+        }
+    }
+    width.div_ceil(usize::from(cols.max(1))).max(1)
+}
+
+/// The view's output, for the live run and the replay alike.
+pub struct Painter {
+    live: bool,
+    rows: u16,
+    cols: u16,
+    region: Region,
+    sent: Delivered,
+    /// Plain mode: the unfinished line already printed while pacman waited.
+    shown: String,
+}
+
+impl Painter {
+    /// `live`: stdout is a terminal of `rows`×`cols`.
+    pub fn new(live: bool, rows: u16, cols: u16) -> Self {
+        Self {
+            live,
+            rows,
+            cols,
+            region: Region::new(),
+            sent: Delivered::default(),
+            shown: String::new(),
+        }
+    }
+
+    /// A line pacman finished. Plain mode prints it (less the prompt text
+    /// already shown); the live region gets it through the next frame.
+    pub fn line(&mut self, out: &mut impl Write, line: &str) -> io::Result<()> {
+        if !self.live {
+            let rest = line.strip_prefix(self.shown.as_str()).unwrap_or(line);
+            writeln!(out, "{rest}")?;
+            self.shown.clear();
+        }
+        Ok(())
+    }
+
+    /// One tick of the view. `idle` = pacman's screen tail when it waits
+    /// for an answer; its last row is the unfinished line.
+    pub fn tick(
+        &mut self,
+        out: &mut impl Write,
+        run: &Run,
+        view: &View,
+        now: Duration,
+        idle: Option<&[String]>,
+        s: &Styles,
+    ) -> io::Result<()> {
+        if !self.live {
+            // Printed once, without a newline, so a piped run still shows
+            // the question.
+            if let Some(partial) = idle.and_then(|rows| rows.last())
+                && self.shown.is_empty()
+            {
+                write!(out, "{partial}")?;
+                self.shown.clone_from(partial);
+                out.flush()?;
+            }
+            return Ok(());
+        }
+        let (f, d) = frame(run, view, self.sent, self.cols, self.rows, now, idle, s);
+        self.sent = d;
+        self.region.draw(out, &f, self.rows, self.cols)?;
+        // Terminal progress (OSC 9;4): the running phase's share done.
+        if let Some(p) = run
+            .current()
+            .and_then(|k| run.phases.iter().find(|p| p.kind == k))
+            && let Some(total) = p.total.filter(|&t| t > 0)
+        {
+            write!(out, "\x1b]9;4;1;{}\x07", (p.done * 100 / total).min(100))?;
+            out.flush()?;
+        }
+        Ok(())
+    }
+
+    /// The end: on exit 0 the region gives way to `lines`; on a failure it
+    /// stays, with `lines` under it.
+    pub fn close(&mut self, out: &mut impl Write, run: &Run, lines: &[String]) -> io::Result<()> {
+        let failed = matches!(run.outcome(), Outcome::Failed(_));
+        if !self.live {
+            if !self.shown.is_empty() {
+                writeln!(out)?;
+            }
+            for l in lines {
+                writeln!(out, "{l}")?;
+            }
+            return out.flush();
+        }
+        if failed {
+            self.region.leave(out, lines)?;
+            write!(out, "\x1b]9;4;2;100\x07")?;
+        } else {
+            self.region.close(out, lines)?;
+            write!(out, "\x1b]9;4;0;0\x07")?;
+        }
+        out.flush()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,7 +207,7 @@ mod tests {
 
     fn draw(r: &mut Region, f: &Frame, rows: u16) -> String {
         let mut out = Vec::new();
-        r.draw(&mut out, f, rows).unwrap();
+        r.draw(&mut out, f, rows, 80).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -102,7 +239,22 @@ mod tests {
     }
 
     #[test]
-    fn close_erases_and_prints() {
+    fn wrapped_line_counts_every_row() {
+        let mut r = Region::new();
+        let f = Frame {
+            above: vec![],
+            region: vec!["x".repeat(25), "\x1b[1mshort\x1b[0m".into()],
+        };
+        let mut out = Vec::new();
+        r.draw(&mut out, &f, 40, 10).unwrap();
+        assert_eq!(r.height, 4);
+        // Only the short line fits under a 3-row terminal.
+        r.draw(&mut out, &f, 3, 10).unwrap();
+        assert_eq!(r.height, 1);
+    }
+
+    #[test]
+    fn close_erases_and_leave_keeps() {
         let mut r = Region::new();
         draw(&mut r, &frame(&[], 2), 40);
         let mut out = Vec::new();
@@ -110,5 +262,36 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.starts_with("\x1b[2A") && s.ends_with("done\r\n"), "{s:?}");
         assert_eq!(r.height, 0);
+
+        draw(&mut r, &frame(&[], 2), 40);
+        let mut out = Vec::new();
+        r.leave(&mut out, &["failed".to_string()]).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "failed\r\n");
+    }
+
+    #[test]
+    fn plain_painter_appends_and_shows_the_prompt_once() {
+        let run = Run::new("pacman -S foo", Default::default(), Default::default());
+        let view = View {
+            layout: crate::config::Layout::Inline,
+            motif: crate::config::Motif::Subtle,
+            candy: false,
+        };
+        let s = Styles::resolve(true, crate::config::ColorTheme::Dark, false);
+        let mut p = Painter::new(false, 24, 80);
+        let mut out = Vec::new();
+        p.line(&mut out, "resolving dependencies...").unwrap();
+        let idle = vec![":: Proceed with installation? [Y/n]".to_string()];
+        for _ in 0..3 {
+            p.tick(&mut out, &run, &view, Duration::ZERO, Some(&idle), &s)
+                .unwrap();
+        }
+        p.line(&mut out, ":: Proceed with installation? [Y/n] y")
+            .unwrap();
+        p.close(&mut out, &run, &["end".to_string()]).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "resolving dependencies...\n:: Proceed with installation? [Y/n] y\nend\n"
+        );
     }
 }

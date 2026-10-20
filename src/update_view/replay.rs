@@ -13,8 +13,8 @@ use crate::cli::style::Styles;
 use super::log_line::classify_log;
 use super::medians::hook_medians;
 use super::model::Run;
-use super::region::Region;
-use super::render::{Delivered, View, closing, frame};
+use super::region::Painter;
+use super::render::{View, closing};
 use super::screen::Settler;
 
 /// One timed write of the recorded terminal output.
@@ -108,6 +108,8 @@ pub struct Play<'a> {
     pub exit: Option<i32>,
     pub width: u16,
     pub height: u16,
+    /// stdout is a terminal: draw the live region; else append plain lines.
+    pub live: bool,
     /// Shown in the failure block as where the full output is.
     pub transcript: &'a str,
     pub styles: Styles,
@@ -127,31 +129,11 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
     let all_log: String = p.log.iter().map(|(_, l)| format!("{l}\n")).collect();
     let mut run = Run::new(&command, hook_medians(&all_log), HashMap::new());
     let mut settler = Settler::new(cols);
-    let mut region = Region::new();
-    let mut sent = Delivered::default();
+    let mut painter = Painter::new(p.live, p.height, p.width);
     let mut log = p.log.iter().peekable();
     let mut now = Duration::ZERO;
     let end = p.log.last().map_or(Duration::ZERO, |(at, _)| *at);
-    let mut draw = |run: &mut Run, settler: &Settler, now: Duration, idle: bool| {
-        while let Some((at, line)) = log.next_if(|(at, _)| *at <= now) {
-            if let Some((_, ev)) = classify_log(line) {
-                run.apply_log(ev, *at);
-            }
-        }
-        let rows = idle.then(|| settler.tail(20.min(usize::from(p.height / 2))));
-        let (f, d) = frame(
-            run,
-            &p.view,
-            sent,
-            p.width,
-            p.height,
-            now,
-            rows.as_deref(),
-            &p.styles,
-        );
-        sent = d;
-        region.draw(out, &f, p.height)
-    };
+    let idle_rows = |settler: &Settler| settler.tail(20.min(usize::from(p.height / 2)));
     for c in p.chunks {
         let waiting = !settler.partial().is_empty();
         let mut waited = Duration::ZERO;
@@ -164,19 +146,36 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
                 std::thread::sleep(step.div_f64(p.speed));
             }
             waited += step;
-            draw(&mut run, &settler, now + waited, waiting && waited >= IDLE)?;
+            catch_up(&mut log, &mut run, now + waited);
+            let idle = (waiting && waited >= IDLE).then(|| idle_rows(&settler));
+            painter.tick(out, &run, &p.view, now + waited, idle.as_deref(), &p.styles)?;
         }
         now += c.delay;
         for l in settler.feed(&c.bytes) {
             run.apply_line(&l, now);
+            painter.line(out, &l)?;
         }
     }
     // Log lines after the last write (pacman's post-transaction hooks race
     // its exit) still land before the end.
-    draw(&mut run, &settler, now.max(end), false)?;
+    catch_up(&mut log, &mut run, now.max(end));
+    painter.tick(out, &run, &p.view, now.max(end), None, &p.styles)?;
     run.finish(p.exit, now);
     let lines = closing(&run, &p.view, p.width, p.transcript, &p.styles);
-    region.close(out, &lines)
+    painter.close(out, &run, &lines)
+}
+
+/// Apply every log line due by `now`.
+fn catch_up<'a>(
+    log: &mut std::iter::Peekable<impl Iterator<Item = &'a (Duration, String)>>,
+    run: &mut Run,
+    now: Duration,
+) {
+    while let Some((at, line)) = log.next_if(|(at, _)| *at <= now) {
+        if let Some((_, ev)) = classify_log(line) {
+            run.apply_log(ev, *at);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -199,7 +198,7 @@ mod tests {
         assert_eq!(header_field(b"no header", "COLUMNS"), None);
     }
 
-    fn play_fixture(layout: Layout, motif: Motif, exit: Option<i32>) -> String {
+    fn play_fixture(layout: Layout, motif: Motif, exit: Option<i32>, live: bool) -> String {
         let chunks = parse_recording(OUT, TIMING).unwrap();
         let log = log_schedule(LOG, start());
         let mut out = Vec::new();
@@ -216,6 +215,7 @@ mod tests {
             exit,
             width: 120,
             height: 40,
+            live,
             transcript: "/tmp/last.out",
             styles: Styles::resolve(true, ColorTheme::Dark, false),
         };
@@ -227,7 +227,7 @@ mod tests {
     fn fixture_plays_in_every_layout_and_motif() {
         for layout in Layout::ALL {
             for motif in Motif::ALL {
-                let s = play_fixture(layout, motif, Some(0));
+                let s = play_fixture(layout, motif, Some(0), true);
                 assert!(s.contains("38"), "{layout:?} {motif:?}");
                 if motif == Motif::Subtle {
                     assert!(s.contains("38 eaten in 2m03s"), "{layout:?}");
@@ -240,8 +240,25 @@ mod tests {
 
     #[test]
     fn failed_exit_points_at_the_transcript() {
-        let s = play_fixture(Layout::Inline, Motif::Subtle, Some(1));
+        let s = play_fixture(Layout::Inline, Motif::Subtle, Some(1), true);
         assert!(s.contains("/tmp/last.out"));
+        // The region stays: no erase after the last frame.
+        let tail = &s[s.rfind("\x1b[J").unwrap_or(0)..];
+        assert!(tail.contains("post-hooks"), "{tail:?}");
+    }
+
+    #[test]
+    fn plain_replay_has_no_cursor_moves() {
+        let s = play_fixture(Layout::Inline, Motif::Subtle, Some(0), false);
+        assert!(
+            !s.contains('\x1b') && !s.contains('\r'),
+            "escape in plain output"
+        );
+        assert_eq!(
+            s.matches(":: Proceed with installation? [Y/n]\n").count(),
+            1
+        );
+        assert!(s.ends_with('\n') && s.contains("38 eaten"));
     }
 
     fn start() -> DateTime<FixedOffset> {
