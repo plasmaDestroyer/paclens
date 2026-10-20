@@ -232,7 +232,15 @@ pub fn run(
             out,
         )?;
     }
+    // A last line pacman never ended with a newline still counts.
+    let rest = settler.partial();
+    if !rest.is_empty() {
+        model.apply_line(&rest, now);
+        painter.line(out, &rest)?;
+    }
     read_log(&mut log, &mut model, &mut transcript, now);
+    // One more frame, so what came in after the last tick goes up too.
+    painter.tick(out, &model, &view, now, None, &opts.styles)?;
     let code = exit_code(&status);
     model.finish(code, now);
     let transcript_path = opts
@@ -536,6 +544,20 @@ mod tests {
         assert_eq!(run(&sh(&script), &o, &mut out).unwrap(), Some(0));
         let text = String::from_utf8_lossy(&out);
         assert!(!text.contains("nothing to do"), "{text:?}");
+    }
+
+    #[test]
+    fn last_line_without_newline_is_kept() {
+        for live in [false, true] {
+            let (mut o, _) = opts(if live { "tail-live" } else { "tail-plain" });
+            o.live = live;
+            let mut out = Vec::new();
+            let script = "printf 'odd line\\nerror: final failure'; exit 1";
+            assert_eq!(run(&sh(script), &o, &mut out).unwrap(), Some(1));
+            let text = String::from_utf8_lossy(&out);
+            assert!(text.contains("odd line"), "live {live}: {text:?}");
+            assert!(text.contains("final failure"), "live {live}: {text:?}");
+        }
     }
 
     #[test]
