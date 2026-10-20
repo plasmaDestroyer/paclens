@@ -180,6 +180,9 @@ pub fn run(
     let mut settler = Settler::new(cols);
     let mut model = Run::new(&command, medians, opts.installed.clone());
     let mut painter = Painter::new(opts.live, rows, cols);
+    if opts.keys {
+        painter = painter.raw();
+    }
     let status = loop {
         let now = start.elapsed();
         while let Ok(bytes) = rx.try_recv() {
@@ -210,6 +213,9 @@ pub fn run(
         let idle = (!settler.partial().is_empty() && last_bytes.elapsed() >= IDLE)
             .then(|| settler.tail(20.min(usize::from(rows / 2))));
         painter.tick(out, &model, &view, now, idle.as_deref(), &opts.styles)?;
+        if idle.is_some() {
+            painter.prompt(out, &settler.partial())?;
+        }
         if let Some(status) = exited {
             break status;
         }

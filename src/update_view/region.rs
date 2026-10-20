@@ -147,6 +147,9 @@ pub struct Painter {
     sent: Delivered,
     /// Plain mode: the unfinished line already printed while pacman waited.
     shown: String,
+    /// Plain mode line end: `\r\n` while raw mode is on — raw mode turns off
+    /// the terminal's own `\n` → `\r\n`, and `| cat` lands there.
+    eol: &'static str,
 }
 
 impl Painter {
@@ -159,7 +162,14 @@ impl Painter {
             region: Region::new(),
             sent: Delivered::default(),
             shown: String::new(),
+            eol: "\n",
         }
+    }
+
+    /// Plain lines end `\r\n`, for while stdin is in raw mode.
+    pub fn raw(mut self) -> Self {
+        self.eol = "\r\n";
+        self
     }
 
     /// A line pacman finished. Plain mode prints it (less the prompt text
@@ -167,14 +177,25 @@ impl Painter {
     pub fn line(&mut self, out: &mut impl Write, line: &str) -> io::Result<()> {
         if !self.live {
             let rest = line.strip_prefix(self.shown.as_str()).unwrap_or(line);
-            writeln!(out, "{rest}")?;
+            write!(out, "{rest}{}", self.eol)?;
             self.shown.clear();
         }
         Ok(())
     }
 
-    /// One tick of the view. `idle` = pacman's screen tail when it waits
-    /// for an answer; its last row is the unfinished line.
+    /// Plain mode, while pacman waits: its whole unfinished line, printed
+    /// once without a newline, so a piped run still shows the question.
+    pub fn prompt(&mut self, out: &mut impl Write, partial: &str) -> io::Result<()> {
+        if self.live || !self.shown.is_empty() || partial.is_empty() {
+            return Ok(());
+        }
+        write!(out, "{partial}")?;
+        self.shown = partial.to_string();
+        out.flush()
+    }
+
+    /// One frame of the live region (plain mode draws none). `idle` =
+    /// pacman's screen tail when it waits for an answer.
     pub fn tick(
         &mut self,
         out: &mut impl Write,
@@ -185,15 +206,6 @@ impl Painter {
         s: &Styles,
     ) -> io::Result<()> {
         if !self.live {
-            // Printed once, without a newline, so a piped run still shows
-            // the question.
-            if let Some(partial) = idle.and_then(|rows| rows.last())
-                && self.shown.is_empty()
-            {
-                write!(out, "{partial}")?;
-                self.shown.clone_from(partial);
-                out.flush()?;
-            }
             return Ok(());
         }
         let (f, d) = frame(run, view, self.sent, self.cols, self.rows, now, idle, s);
@@ -217,10 +229,10 @@ impl Painter {
         let failed = matches!(run.outcome(), Outcome::Failed(_));
         if !self.live {
             if !self.shown.is_empty() {
-                writeln!(out)?;
+                write!(out, "{}", self.eol)?;
             }
             for l in lines {
-                writeln!(out, "{l}")?;
+                write!(out, "{l}{}", self.eol)?;
             }
             return out.flush();
         }
@@ -333,6 +345,14 @@ mod tests {
     }
 
     #[test]
+    fn raw_plain_painter_ends_lines_with_crlf() {
+        let mut p = Painter::new(false, 24, 80).raw();
+        let mut out = Vec::new();
+        p.line(&mut out, "one").unwrap();
+        assert_eq!(out, b"one\r\n");
+    }
+
+    #[test]
     fn plain_painter_appends_and_shows_the_prompt_once() {
         let run = Run::new("pacman -S foo", Default::default(), Default::default());
         let view = View {
@@ -348,6 +368,7 @@ mod tests {
         for _ in 0..3 {
             p.tick(&mut out, &run, &view, Duration::ZERO, Some(&idle), &s)
                 .unwrap();
+            p.prompt(&mut out, &idle[0]).unwrap();
         }
         p.line(&mut out, ":: Proceed with installation? [Y/n] y")
             .unwrap();

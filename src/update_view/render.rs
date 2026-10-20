@@ -11,7 +11,7 @@ use crate::config::{Layout, Motif};
 
 use super::medians::Median;
 use super::model::{Hook, Note, NoteKind, Outcome, Phase, PhaseKind, PhaseState, Run};
-use super::screen_line::{ScreenEvent, classify_screen};
+use super::screen_line::{ScreenEvent, classify_screen, is_prompt};
 
 pub struct View {
     pub layout: Layout,
@@ -27,8 +27,8 @@ pub struct Frame {
     pub region: Vec<String>,
 }
 
-/// How much of `run.lines` / `run.unknown` / `run.phases` is already in
-/// `above`.
+/// How much is already in `above`: `run.lines` and `run.phases` by count,
+/// unknown lines by line position in `run.lines`.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Delivered {
     pub lines: usize,
@@ -438,11 +438,6 @@ fn plan(run: &Run) -> Option<(usize, usize, Option<usize>)> {
     Some((start, end, prompt))
 }
 
-fn is_prompt(l: &str) -> bool {
-    let t = l.trim_end();
-    t.ends_with("[Y/n]") || t.ends_with("[y/N]")
-}
-
 /// One frame of the live view. `sent` says what earlier frames already put
 /// in `above`; the returned `Delivered` covers this frame too, so the same
 /// run drawn again with it gives an empty `above`.
@@ -469,19 +464,24 @@ pub fn frame(
     let plan = plan(run);
     // Unknown lines before line `stop` go up; with `print` false they are
     // passed over, because the plan already carried them.
+    // `d.unknown` is a line position, not a count: the model may drop an
+    // unknown line once a hook claims it, and a count would then skip one.
     let unknown = |above: &mut Vec<String>, d: &mut Delivered, stop: usize, print: bool| {
-        while run.unknown_at.get(d.unknown).is_some_and(|&at| at < stop) {
-            if print {
-                above.push(run.unknown[d.unknown].clone());
-            }
-            d.unknown += 1;
+        let stop = stop.min(run.lines.len());
+        if print {
+            let new = run.unknown_at.iter().zip(&run.unknown);
+            above.extend(
+                new.filter(|(at, _)| (d.unknown..stop).contains(*at))
+                    .map(|(_, l)| l.clone()),
+            );
         }
+        d.unknown = d.unknown.max(stop);
     };
     if view.layout == Layout::Nom {
         // Every settled line goes up as printed, unrecognised ones included.
         above.extend(from(&run.lines, sent.lines));
         d.lines = run.lines.len();
-        d.unknown = run.unknown.len();
+        d.unknown = run.lines.len();
     } else {
         // Unknown lines inside a plan not yet sent wait: the plan goes up
         // whole, in place, so sending them now would print them twice.
@@ -1001,7 +1001,9 @@ mod tests {
                         if let Some(i) = l.rfind(ESC) {
                             let tail = &l[i..];
                             assert!(
-                                tail.starts_with("\u{1b}[0m") || tail.starts_with("\u{1b}[39m"),
+                                ["\u{1b}[0m", "\u{1b}[m", "\u{1b}[39m"]
+                                    .iter()
+                                    .any(|r| tail.starts_with(r)),
                                 "{l:?}"
                             );
                         }
@@ -1147,6 +1149,72 @@ mod tests {
             &plain(),
         );
         assert_eq!(f.region, rows);
+    }
+
+    #[test]
+    fn unknown_line_claimed_by_a_late_hook_does_not_break_delivery() {
+        let log = |r: &mut Run, l: &str| {
+            if let Some((_, ev)) = crate::update_view::log_line::classify_log(l) {
+                r.apply_log(ev, Z);
+            }
+        };
+        let hook = "[2026-10-16T11:37:25+0530] [ALPM] running 'rebuild-detector.hook'...";
+        let v = view(Layout::Inline, Motif::Subtle);
+        for frame_between in [true, false] {
+            let mut r = empty();
+            log(
+                &mut r,
+                "[2026-10-16T11:37:21+0530] [ALPM] transaction completed",
+            );
+            for l in [
+                ":: Running post-transaction hooks...",
+                "(1/1) Check foreign packages",
+                "foreign foo",
+            ] {
+                r.apply_line(l, Z);
+            }
+            let mut d = Delivered::default();
+            if frame_between {
+                let (f, sent) = frame(&r, &v, d, 120, 40, Z, None, &plain());
+                assert!(f.above.contains(&"foreign foo".to_string()));
+                d = sent;
+            }
+            log(&mut r, hook);
+            let (f, _) = frame(&r, &v, d, 120, 40, Z, None, &plain());
+            assert!(
+                !f.above.contains(&"foreign foo".to_string()),
+                "{:?}",
+                f.above
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_with_echoed_answer_is_a_prompt() {
+        for l in [
+            ":: Proceed with installation? [Y/n]",
+            ":: Proceed with installation? [Y/n] y",
+            ":: Proceed with installation? [Y/n] n",
+            ":: Remove foo? [y/N] yes",
+        ] {
+            assert!(is_prompt(l), "{l}");
+        }
+        assert!(!is_prompt("[Y/n] is what pacman asks, said the wiki"));
+    }
+
+    #[test]
+    fn unknown_line_after_an_answered_prompt_goes_up() {
+        let lines = fixture_lines();
+        let mut r = partial(58);
+        r.apply_line(&format!("{} y", lines[58]), Z);
+        r.apply_line("custom hook notice", Z);
+        let v = view(Layout::Inline, Motif::Subtle);
+        let (f, _) = frame(&r, &v, Delivered::default(), 120, 49, Z, None, &plain());
+        assert!(
+            f.above.contains(&"custom hook notice".to_string()),
+            "{:?}",
+            f.above
+        );
     }
 
     #[test]

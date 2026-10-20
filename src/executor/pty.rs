@@ -85,7 +85,9 @@ mod tests {
         let _child = pty.close();
         let mut out = Vec::new();
         // EIO at EOF on Linux ptys is fine: everything was read before it.
-        let _ = reader.read_to_end(&mut out);
+        if let Err(err) = reader.read_to_end(&mut out) {
+            assert_eq!(err.raw_os_error(), Some(5), "{err}");
+        }
         assert!(String::from_utf8_lossy(&out).contains("hi"));
         assert_eq!(exit_code(&status), Some(3));
         Ok(())

@@ -149,12 +149,21 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
             catch_up(&mut log, &mut run, now + waited);
             let idle = (waiting && waited >= IDLE).then(|| idle_rows(&settler));
             painter.tick(out, &run, &p.view, now + waited, idle.as_deref(), &p.styles)?;
+            if idle.is_some() {
+                painter.prompt(out, &settler.partial())?;
+            }
         }
         now += c.delay;
         for l in settler.feed(&c.bytes) {
             run.apply_line(&l, now);
             painter.line(out, &l)?;
         }
+    }
+    // A last line the recording never ended with a newline still counts.
+    let rest = settler.partial();
+    if !rest.is_empty() {
+        run.apply_line(&rest, now);
+        painter.line(out, &rest)?;
     }
     // Log lines after the last write (pacman's post-transaction hooks race
     // its exit) still land before the end.
@@ -245,6 +254,35 @@ mod tests {
         // The region stays: no erase after the last frame.
         let tail = &s[s.rfind("\x1b[J").unwrap_or(0)..];
         assert!(tail.contains("post-hooks"), "{tail:?}");
+    }
+
+    #[test]
+    fn final_line_without_newline_is_played() {
+        let chunks = [Chunk {
+            delay: Duration::ZERO,
+            bytes: b"odd line\r\nerror: final failure".to_vec(),
+        }];
+        let mut out = Vec::new();
+        let p = Play {
+            typescript: b"Script started on 2026-10-16 11:35:31+05:30 [COMMAND=\"pacman -S x\"]\n",
+            chunks: &chunks,
+            log: &[],
+            view: View {
+                layout: Layout::Inline,
+                motif: Motif::Subtle,
+                candy: false,
+            },
+            speed: 0.0,
+            exit: Some(1),
+            width: 80,
+            height: 24,
+            live: false,
+            transcript: "/tmp/last.out",
+            styles: Styles::resolve(true, ColorTheme::Dark, false),
+        };
+        play(&mut out, &p).unwrap();
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("odd line\nerror: final failure\n"), "{s:?}");
     }
 
     #[test]

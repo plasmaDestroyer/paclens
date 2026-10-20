@@ -69,10 +69,21 @@ const VERBS: [&str; 5] = [
 ];
 const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
 
+/// pacman's `[Y/n]` / `[y/N]` question, bare or with the answer echoed
+/// after it (`[Y/n] y`).
+pub fn is_prompt(l: &str) -> bool {
+    ["[Y/n]", "[y/N]"].iter().any(|q| {
+        l.rfind(q).is_some_and(|i| {
+            let answer = l[i + q.len()..].trim();
+            answer.len() <= 3 && answer.chars().all(|c| c.is_ascii_alphabetic())
+        })
+    })
+}
+
 pub fn classify_screen(line: &str, in_sync: bool) -> ScreenEvent {
     use ScreenEvent::*;
     let t = line.trim();
-    if t.ends_with("[Y/n]") || t.ends_with("[y/N]") {
+    if is_prompt(t) {
         return Prompt(t.to_string());
     }
     match t {

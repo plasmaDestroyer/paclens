@@ -287,7 +287,15 @@ impl Run {
     }
 
     pub fn apply_log(&mut self, ev: LogEvent, at: Duration) {
-        self.log_seen = true;
+        // Evidence that the log speaks for this run: its `Running` line or a
+        // transaction (pacman's db lock keeps those ours). A stray
+        // `synchronizing` line alone must not read as "nothing to do".
+        if matches!(
+            ev,
+            LogEvent::RunStart(_) | LogEvent::TxStarted | LogEvent::TxCompleted
+        ) {
+            self.log_seen = true;
+        }
         match ev {
             LogEvent::TxStarted => {
                 self.tx_started = true;
@@ -313,7 +321,7 @@ impl Run {
                 let h = hook_at(list, *count - 1);
                 h.file = Some(file);
                 h.median = median;
-                reclassify(h, &mut self.unknown);
+                reclassify(h, &mut self.unknown, &mut self.unknown_at);
             }
             LogEvent::Package(e) => {
                 let p = self.pkg(&e.name);
@@ -440,6 +448,9 @@ impl Run {
             for h in hooks.iter_mut().filter(|h| h.started.is_some()) {
                 h.ended.get_or_insert(at);
             }
+            ph.done = ph
+                .done
+                .max(hooks.iter().filter(|h| h.started.is_some()).count());
         }
     }
 
@@ -471,10 +482,11 @@ impl Run {
         let h = hook_at(list, i);
         h.desc = Some(desc);
         h.started.get_or_insert(at);
-        reclassify(h, &mut self.unknown);
+        reclassify(h, &mut self.unknown, &mut self.unknown_at);
         self.screen_hook = Some(i);
         let ph = self.phase_mut(kind);
-        ph.done = ph.done.max(index);
+        // `(i/n)` starts hook i: the ones before it are done, it is not.
+        ph.done = ph.done.max(index.saturating_sub(1));
         ph.total = Some(total);
     }
 
@@ -584,7 +596,7 @@ fn hook_at(list: &mut Vec<Hook>, i: usize) -> &mut Hook {
 
 /// The hook just learned its file or description: read its notes again, and
 /// a note no longer `Plain` leaves `unknown` (which holds the raw line).
-fn reclassify(h: &mut Hook, unknown: &mut Vec<String>) {
+fn reclassify(h: &mut Hook, unknown: &mut Vec<String>, unknown_at: &mut Vec<usize>) {
     let kinds: Vec<_> = h.notes.iter().map(|n| hook_note_kind(&n.text, h)).collect();
     for (n, kind) in h.notes.iter_mut().zip(kinds) {
         if n.kind == NoteKind::Plain
@@ -592,6 +604,7 @@ fn reclassify(h: &mut Hook, unknown: &mut Vec<String>) {
             && let Some(i) = unknown.iter().rposition(|l| l.trim() == n.text)
         {
             unknown.remove(i);
+            unknown_at.remove(i);
         }
         n.kind = kind;
     }
@@ -862,6 +875,34 @@ mod tests {
     }
 
     #[test]
+    fn running_hook_is_not_counted_done() {
+        let mut r = run();
+        log(
+            &mut r,
+            "[2026-10-16T11:37:21+0530] [ALPM] transaction completed",
+        );
+        r.apply_line(":: Running post-transaction hooks...", Z);
+        r.apply_line("(1/2) Rebuilding initramfs", Z);
+        let post = |r: &Run| r.phases[idx(PhaseKind::PostHooks)].done;
+        assert_eq!(post(&r), 0);
+        r.apply_line("(2/2) Updating icon caches", Z);
+        assert_eq!(post(&r), 1);
+        r.finish(Some(0), Z);
+        assert_eq!(post(&r), 2);
+    }
+
+    #[test]
+    fn stray_log_lines_are_not_a_clean_board() {
+        let mut r = run();
+        log(
+            &mut r,
+            "[2026-10-16T11:35:36+0530] [PACMAN] synchronizing package lists",
+        );
+        r.finish(Some(0), Z);
+        assert_eq!(r.outcome(), Outcome::Unknown);
+    }
+
+    #[test]
     fn no_log_means_unknown_not_nothing_changed() {
         let mut r = run();
         feed(
@@ -993,6 +1034,7 @@ mod tests {
     fn hook_file_arriving_late_reclassifies_its_notes() {
         for screen_first in [true, false] {
             let r = foreign_check(screen_first);
+            assert_eq!(r.unknown.len(), r.unknown_at.len());
             assert_eq!(
                 r.post_hooks[0].notes,
                 [Note {
