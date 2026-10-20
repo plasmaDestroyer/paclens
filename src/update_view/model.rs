@@ -123,6 +123,8 @@ pub struct Run {
     pub lines: Vec<String>,
     /// Unrecognised lines, verbatim, in order — unrecognised hook output too.
     pub unknown: Vec<String>,
+    /// Where each `unknown` line sits in `lines`.
+    pub unknown_at: Vec<usize>,
     /// name → version from the scan cache: the old version for `PlanNames`.
     pub installed: HashMap<String, String>,
     pub log_seen: bool,
@@ -174,6 +176,7 @@ impl Run {
             prompt: None,
             lines: Vec::new(),
             unknown: Vec::new(),
+            unknown_at: Vec::new(),
             installed,
             log_seen: false,
             tx_started: false,
@@ -508,6 +511,7 @@ impl Run {
                 return;
             }
         }
+        self.unknown_at.push(self.lines.len().saturating_sub(1));
         self.unknown.push(line);
     }
 

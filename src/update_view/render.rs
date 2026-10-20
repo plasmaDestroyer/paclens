@@ -467,19 +467,29 @@ pub fn frame(
     let mut d = sent;
     let from = |v: &[String], i: usize| v.get(i..).unwrap_or_default().to_vec();
     let plan = plan(run);
-    // Unknown lines inside an open plan wait: the plan goes up whole, in
-    // place, so sending them now would print them twice.
-    // ponytail: an unknown line in the same frame as the plan header waits
-    // too and is never sent; per-line indices in the model if that shows up.
-    let plan_open = plan.is_some_and(|(_, _, p)| p.is_none_or(|p| sent.lines <= p));
+    // Unknown lines before line `stop` go up; with `print` false they are
+    // passed over, because the plan already carried them.
+    let unknown = |above: &mut Vec<String>, d: &mut Delivered, stop: usize, print: bool| {
+        while run.unknown_at.get(d.unknown).is_some_and(|&at| at < stop) {
+            if print {
+                above.push(run.unknown[d.unknown].clone());
+            }
+            d.unknown += 1;
+        }
+    };
     if view.layout == Layout::Nom {
         // Every settled line goes up as printed, unrecognised ones included.
         above.extend(from(&run.lines, sent.lines));
         d.lines = run.lines.len();
         d.unknown = run.unknown.len();
-    } else if !plan_open {
-        above.extend(from(&run.unknown, sent.unknown));
-        d.unknown = run.unknown.len();
+    } else {
+        // Unknown lines inside a plan not yet sent wait: the plan goes up
+        // whole, in place, so sending them now would print them twice.
+        let stop = match plan {
+            Some((a, _, p)) if p.is_none_or(|p| sent.lines <= p) => a.max(sent.lines),
+            _ => usize::MAX,
+        };
+        unknown(&mut above, &mut d, stop, true);
     }
 
     // Once answered, the plan stays in scrollback, prompt line and all.
@@ -492,7 +502,8 @@ pub fn frame(
         }
         above.push(run.lines[p].clone());
         d.lines = p + 1;
-        d.unknown = run.unknown.len();
+        unknown(&mut above, &mut d, p + 1, false);
+        unknown(&mut above, &mut d, usize::MAX, true);
     }
 
     if view.layout == Layout::Receipt {
@@ -530,7 +541,7 @@ pub fn frame(
                     } else {
                         above.extend(lines.iter().cloned());
                         d.lines = b;
-                        d.unknown = run.unknown.len();
+                        unknown(&mut above, &mut d, b, false);
                         vec![prompt]
                     }
                 }
@@ -1024,7 +1035,7 @@ mod tests {
         let v = view(Layout::Inline, Motif::Subtle);
         let (_, d) = frame(&r, &v, Delivered::default(), 120, 40, Z, None, &plain());
         for l in ["odd one", "odd two", "odd three"] {
-            r.unknown.push(l.into());
+            r.apply_line(l, Z);
         }
         let (f, _) = frame(&r, &v, d, 120, 40, Z, None, &plain());
         assert_eq!(f.above, ["odd one", "odd two", "odd three"]);
@@ -1159,7 +1170,9 @@ mod tests {
     fn unknown_line_in_plan_goes_up_once() {
         let lines = fixture_lines();
         for height in [49, 20] {
-            let mut r = partial(14);
+            let mut r = partial(13);
+            r.apply_line("before plan", Z);
+            r.apply_line(&lines[13], Z);
             r.apply_line("odd notice", Z);
             let v = view(Layout::Inline, Motif::Subtle);
             let (f, d) = frame(&r, &v, Delivered::default(), 120, height, Z, None, &plain());
@@ -1171,10 +1184,15 @@ mod tests {
             let (f, d) = frame(&r, &v, d, 120, height, Z, Some(&prompt), &plain());
             above.extend(f.above);
             r.apply_line(&lines[59], Z);
+            r.apply_line("after prompt", Z);
             let (f, _) = frame(&r, &v, d, 120, height, Z, None, &plain());
             above.extend(f.above);
-            let n = above.iter().filter(|l| *l == "odd notice").count();
-            assert_eq!(n, 1, "height {height}: {above:?}");
+            for t in ["before plan", "odd notice", "after prompt"] {
+                let n = above.iter().filter(|l| *l == t).count();
+                assert_eq!(n, 1, "height {height} {t:?}: {above:?}");
+            }
+            let at = |t: &str| above.iter().position(|l| l == t);
+            assert!(at("before plan") < at(&lines[13]) && at(&lines[58]) < at("after prompt"));
             assert!(above.contains(&lines[58]), "height {height}");
         }
     }
