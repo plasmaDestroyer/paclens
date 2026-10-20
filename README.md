@@ -154,6 +154,8 @@ paclens migrate firefox         # where both sides keep data + the steps
 paclens migrate firefox --run   # run the copy: plan, y/N, backup, rollback block
 paclens history                 # what past upgrades changed, newest first
 paclens history --package firefox   # one package: every line the log has
+paclens pacman -Syu             # pacman under the live view; installs and upgrades (-S) only
+paclens transcript              # the last `paclens pacman` run, as pacman printed it
 ```
 
 (Or press `c` on the dashboard for the same report in the TUI.)
@@ -166,7 +168,8 @@ paclens history --package firefox   # one package: every line the log has
 `~/.config/paclens/config.toml`, created with defaults on first run. See
 [`config.default.toml`](config.default.toml) for the full annotated schema:
 cache TTL, source toggles, provider timeout, why depth, overlap ignore list
-and extra mappings, orphan ignore list, color theme, log level.
+and extra mappings, orphan ignore list, color theme, log level, and the
+pacman view's `[update] layout` and `motif`.
 
 ## Design principles
 

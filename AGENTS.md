@@ -6,7 +6,7 @@ paclens is **not** a package manager. It wraps pacman, whichever AUR helper you 
 
 ## Status
 
-**0.6.0 — working tool, daily-driveable.** ~19k lines of Rust across `src/`. 650 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
+**0.6.0 — working tool, daily-driveable.** ~19k lines of Rust across `src/`. 855 tests green; `cargo fmt --check` and `clippy -D warnings -D clippy::unwrap_used` clean.
 
 Shipped: the full TUI (dashboard, package list, overlap screen, cleanup screen, history screen, pty exec console, log viewer), pacman + AUR + Flatpak + cargo providers, the scan cache, the dependency graph, `why`, overlap detection, migration advisory **and** execution, and the cleanup report. The dashboard opens before the first scan finishes and fills in as each source reports.
 
@@ -48,7 +48,7 @@ CLI/TUI  →  Application core (state, planner, event bus)
          →  Cache layer (scan cache; graph & overlaps recomputed on load)
 ```
 
-Modules: `main.rs`, `cli/`, `tui/`, `model/`, `providers/`, `scanner/`, `analyzer/`, `executor/`, `config/`, plus `planner.rs`, `format.rs`, `fuzzy.rs`, `glyphs.rs`, `logging.rs`.
+Modules: `main.rs`, `lib.rs`, `cli/`, `tui/`, `model/`, `providers/`, `scanner/`, `analyzer/`, `executor/`, `config/`, `update_view/`, plus `planner.rs`, `format.rs`, `fuzzy.rs`, `glyphs.rs`, `logging.rs`. `lib.rs` exists so `examples/replay.rs` can reach `cli`, `config` and `update_view`; `main.rs` only calls `paclens::cli::run()`.
 
 Module contracts (design §6):
 - **Provider** — accepts an injectable `CommandRunner` (the testing seam); returns `Ok(vec![])` when nothing is installed; `Err` only when the binary exists but the command failed; never calls sudo; never knows about other providers.
@@ -64,6 +64,7 @@ Orientation only — **design §3 carries the rules and §13 the dated reasoning
 - **Dep graph from one `pacman -Qi` call**, not per-package `pactree`. All graph queries run in-memory on `petgraph`.
 - **Cache = `ScanResult` serialized to TOML** at `~/.cache/paclens/scan.toml`, currently `SCHEMA_VERSION = 16`. The dep graph and overlaps are recomputed on load, never serialized. Atomic writes: write `.tmp`, then `rename()`.
 - **Execution runs on a real pty** (`portable-pty` + `vt100`) inside the TUI. The child sees a genuine terminal, so sudo/doas/pkexec/pacman/paru prompt, colour and redraw natively; every key including Ctrl-C passes through. This replaced both the piped-stdio console and the original suspend/restore flow.
+- **The pacman view only watches** (#81, design §13 2026-10-16). `paclens pacman <args>` runs pacman on its own pty; `update_view/` reads the settled vt100 screen and tails `/var/log/pacman.log`, and never touches libalpm. stdout not a TTY → plain appended lines. The last run is kept as `pacman-last.{out,timing,log}` in the cache dir (0600), which `paclens transcript` prints and `cargo run --example replay` plays. `paclens update` is not wired to the view yet (sudo caches per tty; deferred).
 - **No `--noconfirm` for pacman**, ever. It suppresses conflict resolution.
 - **The dashboard *is* the plan view.** There is no separate update screen. `space` toggles a source, **`u` runs the plan** (the only key that does), `enter` (or `i`) opens the selected source's package list — enter means "look closer" on every screen, and the console and log viewer are screen-independent overlays. There is no in-TUI confirm modal — the plan is visible and the tools ask their own questions.
 - **AUR is the libalpm split, not a second scan** — but *foreign* is not *from the AUR*. Foreign packages carry full `pacman -Qi` metadata; the scanner relabels only the ones built here (`Validated By: None`, `Packager: Unknown Packager`). A signed foreign package came from a repo that is no longer configured, stays pacman's, and is reported as "in no configured repository" (design §13, 2026-09-05). The helper only does what pacman can't: update detection (`-Qua`) and the update step (`-Sua`). paru, yay and pikaur are autodetected in that order. **An AUR helper is never run under sudo** — they self-elevate.
