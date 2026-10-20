@@ -552,11 +552,14 @@ mod tests {
             let (mut o, _) = opts(if live { "tail-live" } else { "tail-plain" });
             o.live = live;
             let mut out = Vec::new();
-            let script = "printf 'odd line\\nerror: final failure'; exit 1";
+            let script = "printf 'odd line\\nerror: final failure %0600d' 0; exit 1";
             assert_eq!(run(&sh(script), &o, &mut out).unwrap(), Some(1));
             let text = String::from_utf8_lossy(&out);
             assert!(text.contains("odd line"), "live {live}: {text:?}");
-            assert!(text.contains("final failure"), "live {live}: {text:?}");
+            assert!(
+                text.contains("error: final failure 000"),
+                "live {live}: {text:?}"
+            );
         }
     }
 

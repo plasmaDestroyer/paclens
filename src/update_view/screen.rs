@@ -35,14 +35,9 @@ impl Settler {
         lines
     }
 
-    /// The unfinished line under the cursor, trimmed.
+    /// The unfinished line under the cursor, trimmed, wrapped rows joined.
     pub fn partial(&self) -> String {
-        let screen = self.parser.screen();
-        let (row, _) = screen.cursor_position();
-        screen
-            .contents_between(row, 0, row, self.cols)
-            .trim_end()
-            .to_string()
+        self.cursor_line()
     }
 
     /// The last `n` non-empty visible rows, trimmed. Rows below the cursor
@@ -178,5 +173,12 @@ mod tests {
             lines.iter().filter(|l| l.contains(") upgrading ")).count(),
             38
         );
+    }
+
+    #[test]
+    fn partial_joins_wrapped_rows() {
+        let mut s = Settler::new(20);
+        s.feed(format!("error: {}", "0".repeat(30)).as_bytes());
+        assert_eq!(s.partial(), format!("error: {}", "0".repeat(30)));
     }
 }
