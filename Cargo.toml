@@ -55,3 +55,8 @@ vt100 = "0.16.2"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+
+# Dependencies (vt100, chrono) are hot in the replay tests; optimizing them
+# keeps `cargo test` fast without slowing the crate's own rebuilds.
+[profile.dev.package."*"]
+opt-level = 2

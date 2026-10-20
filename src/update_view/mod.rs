@@ -4,6 +4,7 @@ pub mod live;
 pub mod log_line;
 pub mod medians;
 pub mod model;
+pub mod region;
 pub mod render;
 pub mod replay;
 pub mod screen;

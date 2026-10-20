@@ -1,11 +1,21 @@
 //! A `script` recording (typescript + timing) and its pacman.log, read back
 //! for replay (#81).
 
+use std::collections::HashMap;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
 
 use crate::analyzer::history::split_line;
+use crate::cli::style::Styles;
+
+use super::log_line::classify_log;
+use super::medians::hook_medians;
+use super::model::Run;
+use super::region::Region;
+use super::render::{Delivered, View, closing, frame};
+use super::screen::Settler;
 
 /// One timed write of the recorded terminal output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,13 +84,165 @@ pub fn log_schedule(log: &str, start: DateTime<FixedOffset>) -> Vec<(Duration, S
         .collect()
 }
 
+/// A field of the header, e.g. `COLUMNS="178"` → `178`.
+pub fn header_field(typescript: &[u8], name: &str) -> Option<String> {
+    let header = typescript.split(|&b| b == b'\n').next()?;
+    let header = std::str::from_utf8(header).ok()?;
+    let key = format!("{name}=\"");
+    let at = header
+        .match_indices(&key)
+        .find(|(i, _)| matches!(header[..*i].chars().last(), Some(' ' | '[')))?
+        .0;
+    let rest = &header[at + key.len()..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+pub struct Play<'a> {
+    pub typescript: &'a [u8],
+    pub chunks: &'a [Chunk],
+    /// pacman.log lines as `log_schedule` gives them.
+    pub log: &'a [(Duration, String)],
+    pub view: View,
+    /// 1.0 = recorded speed; 0 = no sleeping.
+    pub speed: f64,
+    pub exit: Option<i32>,
+    pub width: u16,
+    pub height: u16,
+    /// Shown in the failure block as where the full output is.
+    pub transcript: &'a str,
+    pub styles: Styles,
+}
+
+/// Same idle rule as the live view: an unfinished line and no output for
+/// this long means pacman waits for an answer.
+const IDLE: Duration = Duration::from_millis(300);
+const TICK: Duration = Duration::from_millis(50);
+
+/// Play a recording through the live view into `out`, as if pacman ran now.
+pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
+    let cols = header_field(p.typescript, "COLUMNS")
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(p.width);
+    let command = header_field(p.typescript, "COMMAND").unwrap_or_else(|| "pacman".into());
+    let all_log: String = p.log.iter().map(|(_, l)| format!("{l}\n")).collect();
+    let mut run = Run::new(&command, hook_medians(&all_log), HashMap::new());
+    let mut settler = Settler::new(cols);
+    let mut region = Region::new();
+    let mut sent = Delivered::default();
+    let mut log = p.log.iter().peekable();
+    let mut now = Duration::ZERO;
+    let end = p.log.last().map_or(Duration::ZERO, |(at, _)| *at);
+    let mut draw = |run: &mut Run, settler: &Settler, now: Duration, idle: bool| {
+        while let Some((at, line)) = log.next_if(|(at, _)| *at <= now) {
+            if let Some((_, ev)) = classify_log(line) {
+                run.apply_log(ev, *at);
+            }
+        }
+        let rows = idle.then(|| settler.tail(20.min(usize::from(p.height / 2))));
+        let (f, d) = frame(
+            run,
+            &p.view,
+            sent,
+            p.width,
+            p.height,
+            now,
+            rows.as_deref(),
+            &p.styles,
+        );
+        sent = d;
+        region.draw(out, &f, p.height)
+    };
+    for c in p.chunks {
+        let waiting = !settler.partial().is_empty();
+        let mut waited = Duration::ZERO;
+        // At speed 0 nothing watches the ticks: one frame per write, and
+        // none for writes closer than a tick, as the live view would.
+        let tick = if p.speed > 0.0 { TICK } else { c.delay };
+        while waited < c.delay && (p.speed > 0.0 || c.delay >= TICK) {
+            let step = tick.min(c.delay - waited);
+            if p.speed > 0.0 {
+                std::thread::sleep(step.div_f64(p.speed));
+            }
+            waited += step;
+            draw(&mut run, &settler, now + waited, waiting && waited >= IDLE)?;
+        }
+        now += c.delay;
+        for l in settler.feed(&c.bytes) {
+            run.apply_line(&l, now);
+        }
+    }
+    // Log lines after the last write (pacman's post-transaction hooks race
+    // its exit) still land before the end.
+    draw(&mut run, &settler, now.max(end), false)?;
+    run.finish(p.exit, now);
+    let lines = closing(&run, &p.view, p.width, p.transcript, &p.styles);
+    region.close(out, &lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ColorTheme, Layout, Motif};
 
     const OUT: &[u8] = include_bytes!("../../tests/fixtures/pacman-run/2026-10-16.out");
     const TIMING: &str = include_str!("../../tests/fixtures/pacman-run/2026-10-16.timing");
     const LOG: &str = include_str!("../../tests/fixtures/pacman-run/2026-10-16.log");
+
+    #[test]
+    fn header_fields() {
+        assert_eq!(header_field(OUT, "COLUMNS").as_deref(), Some("178"));
+        assert_eq!(
+            header_field(OUT, "COMMAND").as_deref(),
+            Some("sudo pacman -Syu")
+        );
+        assert_eq!(header_field(OUT, "NOPE"), None);
+        assert_eq!(header_field(b"no header", "COLUMNS"), None);
+    }
+
+    fn play_fixture(layout: Layout, motif: Motif, exit: Option<i32>) -> String {
+        let chunks = parse_recording(OUT, TIMING).unwrap();
+        let log = log_schedule(LOG, start());
+        let mut out = Vec::new();
+        let p = Play {
+            typescript: OUT,
+            chunks: &chunks,
+            log: &log,
+            view: View {
+                layout,
+                motif,
+                candy: true,
+            },
+            speed: 0.0,
+            exit,
+            width: 120,
+            height: 40,
+            transcript: "/tmp/last.out",
+            styles: Styles::resolve(true, ColorTheme::Dark, false),
+        };
+        play(&mut out, &p).unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn fixture_plays_in_every_layout_and_motif() {
+        for layout in Layout::ALL {
+            for motif in Motif::ALL {
+                let s = play_fixture(layout, motif, Some(0));
+                assert!(s.contains("38"), "{layout:?} {motif:?}");
+                if motif == Motif::Subtle {
+                    assert!(s.contains("38 eaten in 2m03s"), "{layout:?}");
+                }
+                assert!(!s.contains("\x1b[?1049h"), "{layout:?} {motif:?}");
+                assert!(!s.contains("/tmp/last.out"), "{layout:?} {motif:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn failed_exit_points_at_the_transcript() {
+        let s = play_fixture(Layout::Inline, Motif::Subtle, Some(1));
+        assert!(s.contains("/tmp/last.out"));
+    }
 
     fn start() -> DateTime<FixedOffset> {
         DateTime::parse_from_rfc3339("2026-10-16T11:35:31+05:30").unwrap_or_default()
