@@ -212,3 +212,19 @@ fn pacman_without_a_terminal_errors_cleanly() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs a terminal"));
 }
+
+#[test]
+fn pacman_non_utf8_argument_is_refused() {
+    use std::os::unix::ffi::OsStrExt;
+    let home = sandbox("pacman-utf8");
+    let out = Command::new(BIN)
+        .args(["pacman", "-S", "--cachedir"])
+        .arg(std::ffi::OsStr::from_bytes(b"/tmp/\xff"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .output()
+        .expect("run paclens");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not UTF-8"));
+}

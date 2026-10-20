@@ -10,7 +10,7 @@ use crate::cli::history::PACMAN_LOG;
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::executor::{self, StepStatus, UpdateLog};
-use crate::model::{ActionKind, ActionPlan, ActionStep, SourceId};
+use crate::model::{ActionKind, ActionPlan, ActionStep, Package, SourceId};
 use crate::scanner::cache::{Cache, cache_dir};
 use crate::update_view::live::{ViewOptions, ViewRunner};
 
@@ -58,10 +58,15 @@ pub fn run(
         &mut UpdateLog::open_default()?,
         executor::sudo::detect(),
     );
-    match report.steps.first().map(|s| &s.status) {
+    outcome(report.steps.first().map(|s| &s.status))
+}
+
+/// The step's end as this command's result.
+fn outcome(status: Option<&StepStatus>) -> anyhow::Result<()> {
+    match status {
         Some(StepStatus::Skipped { reason }) => anyhow::bail!("pacman did not run: {reason}"),
-        Some(StepStatus::Failed { .. }) => {
-            anyhow::bail!("pacman failed — transcript: paclens transcript")
+        Some(StepStatus::Failed { detail }) => {
+            anyhow::bail!("pacman failed: {detail} — transcript: paclens transcript")
         }
         _ => Ok(()),
     }
@@ -71,13 +76,17 @@ pub fn run(
 /// empty when there is no cache.
 fn installed() -> HashMap<String, String> {
     let scan = Cache::locate().and_then(|c| c.read()).ok().flatten();
-    scan.map(|s| {
-        s.packages
-            .into_iter()
-            .map(|p| (p.name, p.version))
-            .collect()
-    })
-    .unwrap_or_default()
+    scan.map(|s| pacman_versions(s.packages))
+        .unwrap_or_default()
+}
+
+/// Only what pacman installed: a cargo `ripgrep` is not pacman's `ripgrep`.
+fn pacman_versions(packages: Vec<Package>) -> HashMap<String, String> {
+    packages
+        .into_iter()
+        .filter(|p| p.source_id == SourceId::pacman() || p.source_id == SourceId::aur())
+        .map(|p| (p.name, p.version))
+        .collect()
 }
 
 /// Every long option pacman accepts, and whether it takes a required value.
@@ -234,6 +243,48 @@ fn rules(args: &[String], posix: bool) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_versions_are_pacman_and_aur_only() {
+        let pkg = |name: &str, version: &str, source_id: SourceId| Package {
+            name: name.into(),
+            version: version.into(),
+            source_id,
+            install_reason: crate::model::InstallReason::Explicit,
+            size_bytes: None,
+            description: None,
+            depends_on: vec![],
+            required_by: vec![],
+            optional_deps: vec![],
+            provides: vec![],
+            runtime: false,
+            scope: None,
+            foreign: false,
+            signed: false,
+            packager: None,
+            repo_version: None,
+        };
+        let v = pacman_versions(vec![
+            pkg("ripgrep", "14.1.1-1", SourceId::pacman()),
+            pkg("paru", "2.0.4-1", SourceId::aur()),
+            pkg("ripgrep", "14.1.0", SourceId::cargo()),
+        ]);
+        assert_eq!(v.get("ripgrep").map(String::as_str), Some("14.1.1-1"));
+        assert_eq!(v.get("paru").map(String::as_str), Some("2.0.4-1"));
+    }
+
+    #[test]
+    fn failure_detail_is_kept() {
+        let failed = StepStatus::Failed {
+            detail: "failed to open a pty: no ptys".into(),
+        };
+        let err = outcome(Some(&failed)).unwrap_err().to_string();
+        assert!(
+            err.contains("no ptys") && err.contains("paclens transcript"),
+            "{err}"
+        );
+        assert!(outcome(Some(&StepStatus::Succeeded)).is_ok());
+    }
 
     fn c(args: &[&str]) -> Result<(), &'static str> {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();

@@ -316,15 +316,19 @@ pub fn run() -> ExitCode {
                 config.general.color_theme(),
                 std::io::stdout().is_terminal(),
             );
-            report(
-                pacman::run(
-                    &config,
-                    &pacman_args,
-                    std::io::stdin().is_terminal(),
-                    &out_styles,
-                ),
-                &err_styles,
-            )
+            // Passed on untouched or not at all: a lossy copy of a path is
+            // another path.
+            let args: Result<Vec<String>, _> =
+                pacman_args.into_iter().map(OsString::into_string).collect();
+            let result = match args {
+                Ok(args) => {
+                    pacman::run(&config, &args, std::io::stdin().is_terminal(), &out_styles)
+                }
+                Err(arg) => Err(anyhow::anyhow!(
+                    "refused: argument {arg:?} is not UTF-8 — run pacman directly for this"
+                )),
+            };
+            report(result, &err_styles)
         }
         Command::Transcript => report(
             crate::scanner::cache::cache_dir()
@@ -337,17 +341,13 @@ pub fn run() -> ExitCode {
 /// Split `paclens [global flags] pacman <args>`: clap reads up to and
 /// including `pacman`, and the rest goes to pacman untouched. clap alone
 /// would read `paclens pacman --config /x -Syu` as paclens's own `--config`.
-fn split_pacman(argv: Vec<OsString>) -> (Vec<OsString>, Vec<String>) {
+fn split_pacman(argv: Vec<OsString>) -> (Vec<OsString>, Vec<OsString>) {
     let mut i = 1;
     while let Some(a) = argv.get(i).and_then(|a| a.to_str()) {
         match a {
             "pacman" => {
-                let rest = argv[i + 1..]
-                    .iter()
-                    .map(|a| a.to_string_lossy().into_owned())
-                    .collect();
                 let mut argv = argv;
-                argv.truncate(i + 1);
+                let rest = argv.split_off(i + 1);
                 return (argv, rest);
             }
             "--no-color" | "--debug" | "--refresh" => i += 1,
@@ -395,6 +395,7 @@ mod tests {
 
     fn split(args: &[&str]) -> (Cli, Vec<String>) {
         let (argv, rest) = split_pacman(args.iter().map(OsString::from).collect());
+        let rest = rest.into_iter().map(|a| a.into_string().unwrap()).collect();
         (Cli::try_parse_from(argv).unwrap(), rest)
     }
 
