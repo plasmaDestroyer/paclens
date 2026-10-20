@@ -355,6 +355,16 @@ impl Run {
                 h.ended.get_or_insert(at);
             }
         }
+        for kind in [PhaseKind::PreHooks, PhaseKind::PostHooks] {
+            let list = if kind == PhaseKind::PreHooks {
+                &self.pre_hooks
+            } else {
+                &self.post_hooks
+            };
+            let started = list.iter().filter(|h| h.started.is_some()).count();
+            let ph = self.phase_mut(kind);
+            ph.done = ph.done.max(started);
+        }
         let recovered = exit == Some(0);
         let hook_notes = self
             .pre_hooks
@@ -1058,6 +1068,7 @@ mod tests {
         );
         r.apply_line("(1/1) a", secs(2));
         r.finish(Some(0), secs(7));
+        assert_eq!(r.phases[idx(PhaseKind::PreHooks)].done, 1);
         assert_eq!(
             (r.pre_hooks[0].started, r.pre_hooks[0].ended),
             (Some(secs(2)), Some(secs(7)))
