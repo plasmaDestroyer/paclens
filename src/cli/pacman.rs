@@ -1,5 +1,84 @@
-//! `paclens pacman <args>`: which pacman arguments the passthrough refuses.
-//! Every refusal names a design §3 rule or keeps the view honest (#81).
+//! `paclens pacman <args>`: pacman under the live view (#81), and which
+//! pacman arguments the passthrough refuses. Every refusal names a design §3
+//! rule or keeps the view honest.
+
+use std::collections::HashMap;
+use std::io::IsTerminal;
+use std::path::PathBuf;
+
+use crate::cli::history::PACMAN_LOG;
+use crate::cli::style::Styles;
+use crate::config::Config;
+use crate::executor::{self, StepStatus, UpdateLog};
+use crate::model::{ActionKind, ActionPlan, ActionStep, SourceId};
+use crate::scanner::cache::{Cache, cache_dir};
+use crate::update_view::live::{ViewOptions, ViewRunner};
+
+/// Run `pacman <args>` under the live view, as one privileged step. No
+/// outer `sudo -v`: sudo caches per tty, and pacman gets its own pty, so a
+/// primed timestamp would not reach it and sudo would ask twice.
+pub fn run(
+    config: &Config,
+    args: &[String],
+    stdin_is_tty: bool,
+    styles: &Styles,
+) -> anyhow::Result<()> {
+    if let Err(reason) = check(args) {
+        anyhow::bail!("refused: {reason} — run pacman directly for this");
+    }
+    if !stdin_is_tty {
+        anyhow::bail!("pacman needs a terminal for its own prompts");
+    }
+    let plan = ActionPlan {
+        steps: vec![ActionStep {
+            source_id: SourceId::pacman(),
+            kind: ActionKind::Update,
+            targets: vec![],
+            command: std::iter::once("pacman".to_string())
+                .chain(args.iter().cloned())
+                .collect(),
+            label: "pacman".into(),
+            privileged: true,
+            interactive: true,
+        }],
+    };
+    let opts = ViewOptions {
+        layout: config.update.layout(),
+        motif: config.update.motif(),
+        styles: styles.clone(),
+        live: std::io::stdout().is_terminal(),
+        keys: true,
+        installed: installed(),
+        log: PathBuf::from(PACMAN_LOG),
+        transcript_dir: cache_dir().ok(),
+    };
+    let report = executor::execute(
+        &plan,
+        &ViewRunner { opts },
+        &mut UpdateLog::open_default()?,
+        executor::sudo::detect(),
+    );
+    match report.steps.first().map(|s| &s.status) {
+        Some(StepStatus::Skipped { reason }) => anyhow::bail!("pacman did not run: {reason}"),
+        Some(StepStatus::Failed { .. }) => {
+            anyhow::bail!("pacman failed — transcript: paclens transcript")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// name → version from the scan cache, for the old version in the plan;
+/// empty when there is no cache.
+fn installed() -> HashMap<String, String> {
+    let scan = Cache::locate().and_then(|c| c.read()).ok().flatten();
+    scan.map(|s| {
+        s.packages
+            .into_iter()
+            .map(|p| (p.name, p.version))
+            .collect()
+    })
+    .unwrap_or_default()
+}
 
 /// Every long option pacman accepts, and whether it takes a required value.
 ///

@@ -194,3 +194,21 @@ fn update_rejects_unknown_source() {
     assert!(stderr.contains("unknown source"), "stderr was: {stderr}");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn pacman_refusal_exits_nonzero_before_running() {
+    let home = sandbox("pacman-refuse");
+    let out = run(&home, &["pacman", "-Rns", "foo"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("refused"), "{stderr}");
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+}
+
+#[test]
+fn pacman_without_a_terminal_errors_cleanly() {
+    let home = sandbox("pacman-notty");
+    let out = run(&home, &["pacman", "-S", "foo"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("needs a terminal"));
+}

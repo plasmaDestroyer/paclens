@@ -4,7 +4,6 @@ mod cleanup;
 pub(crate) mod history;
 mod migrate;
 mod overlaps;
-#[cfg_attr(not(test), allow(dead_code))] // wired in Task 11b (#81)
 pub(crate) mod pacman;
 mod status;
 pub mod style;
@@ -12,6 +11,7 @@ mod transcript;
 mod update;
 mod why;
 
+use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -122,6 +122,10 @@ pub enum Command {
     },
     /// Show the last pacman run as pacman printed it.
     Transcript,
+    /// Run pacman under the live view: installs and upgrades (-S) only.
+    /// Everything after `pacman` goes to pacman untouched.
+    #[command(disable_help_flag = true)]
+    Pacman,
 }
 
 /// `--to` values for `migrate`, mapped onto the model's `Direction`.
@@ -142,7 +146,8 @@ impl From<MigrateTarget> for crate::model::Direction {
 
 /// Parse args, load config, initialize logging, and dispatch.
 pub fn run() -> ExitCode {
-    let mut cli = Cli::parse();
+    let (argv, pacman_args) = split_pacman(std::env::args_os().collect());
+    let mut cli = Cli::parse_from(argv);
     cli.no_color |= no_color_requested(std::env::var_os("NO_COLOR"));
     let stderr_tty = std::io::stderr().is_terminal();
 
@@ -305,12 +310,53 @@ pub fn run() -> ExitCode {
                 &err_styles,
             )
         }
+        Command::Pacman => {
+            let out_styles = Styles::resolve(
+                cli.no_color,
+                config.general.color_theme(),
+                std::io::stdout().is_terminal(),
+            );
+            report(
+                pacman::run(
+                    &config,
+                    &pacman_args,
+                    std::io::stdin().is_terminal(),
+                    &out_styles,
+                ),
+                &err_styles,
+            )
+        }
         Command::Transcript => report(
             crate::scanner::cache::cache_dir()
                 .and_then(|dir| transcript::run(&dir, &mut std::io::stdout().lock())),
             &err_styles,
         ),
     }
+}
+
+/// Split `paclens [global flags] pacman <args>`: clap reads up to and
+/// including `pacman`, and the rest goes to pacman untouched. clap alone
+/// would read `paclens pacman --config /x -Syu` as paclens's own `--config`.
+fn split_pacman(argv: Vec<OsString>) -> (Vec<OsString>, Vec<String>) {
+    let mut i = 1;
+    while let Some(a) = argv.get(i).and_then(|a| a.to_str()) {
+        match a {
+            "pacman" => {
+                let rest = argv[i + 1..]
+                    .iter()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                let mut argv = argv;
+                argv.truncate(i + 1);
+                return (argv, rest);
+            }
+            "--no-color" | "--debug" | "--refresh" => i += 1,
+            "--config" => i += 2,
+            _ if a.starts_with("--config=") => i += 1,
+            _ => break,
+        }
+    }
+    (argv, Vec::new())
 }
 
 /// The `NO_COLOR` convention (no-color.org): set and non-empty means no colour.
@@ -345,6 +391,50 @@ mod tests {
         assert!(no_color_requested(Some("1".into())));
         assert!(!no_color_requested(Some("".into())), "empty means unset");
         assert!(!no_color_requested(None));
+    }
+
+    fn split(args: &[&str]) -> (Cli, Vec<String>) {
+        let (argv, rest) = split_pacman(args.iter().map(OsString::from).collect());
+        (Cli::try_parse_from(argv).unwrap(), rest)
+    }
+
+    #[test]
+    fn pacman_args_pass_through_untouched() {
+        let (cli, args) = split(&["paclens", "pacman", "-S", "--needed", "foo"]);
+        assert!(matches!(cli.command, Some(Command::Pacman)));
+        assert_eq!(args, ["-S", "--needed", "foo"]);
+    }
+
+    #[test]
+    fn pacman_args_after_subcommand_are_not_paclens_flags() {
+        for a in [
+            &["paclens", "pacman", "--config", "/x", "-Syu"][..],
+            &["paclens", "pacman", "-Syu", "--config", "/x"][..],
+        ] {
+            let (cli, args) = split(a);
+            assert!(cli.config.is_none(), "{a:?}");
+            assert!(args.windows(2).any(|w| w == ["--config", "/x"]), "{a:?}");
+        }
+        let (_, args) = split(&["paclens", "pacman", "--help"]);
+        assert_eq!(args, ["--help"]);
+        let (cli, args) = split(&["paclens", "--no-color", "pacman", "-Syu"]);
+        assert!(cli.no_color);
+        assert_eq!(args, ["-Syu"]);
+        let (cli, args) = split(&["paclens", "--config", "/c", "pacman", "-Syu"]);
+        assert_eq!(cli.config.as_deref(), Some(std::path::Path::new("/c")));
+        assert_eq!(args, ["-Syu"]);
+    }
+
+    #[test]
+    fn pacman_as_a_value_is_not_the_subcommand() {
+        let (argv, rest) = split_pacman(
+            ["paclens", "why", "pacman"]
+                .iter()
+                .map(OsString::from)
+                .collect(),
+        );
+        assert_eq!(argv.len(), 3);
+        assert!(rest.is_empty());
     }
 
     #[test]
