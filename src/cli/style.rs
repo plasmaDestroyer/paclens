@@ -8,14 +8,23 @@
 //! (so piped/redirected output stays clean). When color is off, the no-color
 //! glyph set is used too, matching the TUI's `none` theme.
 
-use crossterm::style::{StyledContent, Stylize};
+use crossterm::style::{Color, StyledContent, Stylize};
 
 use crate::config::ColorTheme;
 use crate::glyphs::{self, Glyphs};
 
+#[derive(Clone)]
 pub struct Styles {
     color: bool,
     glyphs: Glyphs,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ghost {
+    Blinky,
+    Pinky,
+    Inky,
+    Clyde,
 }
 
 impl Styles {
@@ -36,6 +45,29 @@ impl Styles {
             glyphs::UNICODE
         };
         Styles { color, glyphs }
+    }
+
+    /// The ASCII glyph set is in use (forced plain), so callers that draw
+    /// their own symbols pick the ASCII stand-in too.
+    pub fn plain(&self) -> bool {
+        self.glyphs == glyphs::ASCII
+    }
+
+    /// `s` in the colour of one ghost (arcade motif): Blinky red = error,
+    /// Pinky pink = `.pacnew`, Inky cyan = optdepends, Clyde orange =
+    /// scriptlet warning. No colour → plain text.
+    pub fn ghost(&self, g: Ghost, s: &str) -> String {
+        let color = match g {
+            Ghost::Blinky => Color::Red,
+            Ghost::Pinky => Color::Magenta,
+            Ghost::Inky => Color::Cyan,
+            Ghost::Clyde => Color::Rgb {
+                r: 255,
+                g: 184,
+                b: 82,
+            },
+        };
+        self.paint(s, |t| t.with(color))
     }
 
     /// The active bullet separator ("·" with Unicode glyphs, "-" in the ASCII path).
@@ -199,6 +231,25 @@ mod tests {
         // Both dim; the point is it does not panic and stays plain without color.
         assert_eq!(plain().updates_count("  0", 0), "  0");
         assert!(colored().updates_count("  0", 0).contains(ESC));
+    }
+
+    #[test]
+    fn plain_means_ascii_glyphs() {
+        assert!(plain().plain());
+        assert!(!colored().plain());
+        assert!(!Styles::resolve(false, ColorTheme::Dark, false).plain());
+    }
+
+    #[test]
+    fn ghosts_have_their_own_colours() {
+        assert_eq!(plain().ghost(Ghost::Blinky, "G"), "G");
+        let c = colored();
+        let all = [Ghost::Blinky, Ghost::Pinky, Ghost::Inky, Ghost::Clyde].map(|g| c.ghost(g, "G"));
+        assert!(all.iter().all(|s| s.contains(ESC) && s.contains('G')));
+        for (i, a) in all.iter().enumerate() {
+            assert!(all[i + 1..].iter().all(|b| a != b), "{all:?}");
+        }
+        assert!(all[3].contains("255;184;82"), "{:?}", all[3]);
     }
 
     #[test]

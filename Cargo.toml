@@ -40,6 +40,7 @@ toml = "1.1.2"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+unicode-width = "0.2.2"
 vt100 = "0.16.2"
 
 # Release builds are what users install, so they optimize for a small, fast

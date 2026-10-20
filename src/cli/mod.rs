@@ -7,7 +7,7 @@ mod overlaps;
 #[cfg_attr(not(test), allow(dead_code))] // wired in Task 11b (#81)
 pub(crate) mod pacman;
 mod status;
-mod style;
+pub mod style;
 mod transcript;
 mod update;
 mod why;
