@@ -55,6 +55,16 @@ impl Region {
         for l in &frame.region[skip..] {
             write!(out, "{l}\r\n")?;
         }
+        // The last line alone is too tall: its end still shows, so a long
+        // prompt keeps its answer choices.
+        if skip == frame.region.len()
+            && room > 0
+            && let Some(last) = frame.region.last()
+        {
+            let end = tail_fit(last, room, cols);
+            used = rows_of(&end, cols);
+            write!(out, "{end}\r\n")?;
+        }
         self.height = u16::try_from(used).unwrap_or(u16::MAX);
         out.flush()
     }
@@ -83,18 +93,49 @@ impl Region {
     }
 }
 
-/// Terminal rows `line` takes at `cols` columns, colour escapes ignored.
-fn rows_of(line: &str, cols: u16) -> usize {
-    let mut width = 0;
+/// The visible characters of `line`, colour escapes left out.
+fn visible(line: &str) -> impl Iterator<Item = char> + '_ {
     let mut esc = false;
-    for c in line.chars() {
-        match (esc, c) {
-            (false, '\u{1b}') => esc = true,
-            (true, c) => esc = !c.is_ascii_alphabetic(),
-            (false, c) => width += c.width().unwrap_or(0),
+    line.chars().filter(move |&c| match (esc, c) {
+        (false, '\u{1b}') => {
+            esc = true;
+            false
         }
+        (true, c) => {
+            esc = !c.is_ascii_alphabetic();
+            false
+        }
+        (false, _) => true,
+    })
+}
+
+/// Terminal rows `line` takes at `cols` columns. A wide character that does
+/// not fit at the end of a row starts the next one, as terminals do.
+fn rows_of(line: &str, cols: u16) -> usize {
+    let cols = usize::from(cols.max(1));
+    let (mut rows, mut col) = (1, 0);
+    for w in visible(line).filter_map(|c| c.width()).filter(|&w| w > 0) {
+        if col + w > cols {
+            rows += 1;
+            col = 0;
+        }
+        col += w;
     }
-    width.div_ceil(usize::from(cols.max(1))).max(1)
+    rows
+}
+
+/// The end of `line` that fits in `room` rows of `cols`, without colour.
+fn tail_fit(line: &str, room: usize, cols: u16) -> String {
+    let chars: Vec<char> = visible(line).collect();
+    let mut start = chars.len();
+    while start > 0 {
+        let candidate: String = chars[start - 1..].iter().collect();
+        if rows_of(&candidate, cols) > room {
+            break;
+        }
+        start -= 1;
+    }
+    chars[start..].iter().collect()
 }
 
 /// The view's output, for the live run and the replay alike.
@@ -251,6 +292,28 @@ mod tests {
         // Only the short line fits under a 3-row terminal.
         r.draw(&mut out, &f, 3, 10).unwrap();
         assert_eq!(r.height, 1);
+    }
+
+    #[test]
+    fn wide_characters_wrap_whole() {
+        assert_eq!(rows_of("界界界", 3), 3);
+        assert_eq!(rows_of("abc", 3), 1);
+        assert_eq!(rows_of("abcd", 3), 2);
+        assert_eq!(rows_of("", 3), 1);
+    }
+
+    #[test]
+    fn too_tall_last_line_keeps_its_end() {
+        let mut r = Region::new();
+        let f = Frame {
+            above: vec![],
+            region: vec![":: Proceed with installation? [Y/n]".into()],
+        };
+        let mut out = Vec::new();
+        r.draw(&mut out, &f, 4, 10).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.ends_with("? [Y/n]\r\n"), "{s:?}");
+        assert_eq!(r.height, 3);
     }
 
     #[test]
