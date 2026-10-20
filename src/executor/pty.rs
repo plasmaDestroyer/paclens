@@ -62,8 +62,6 @@ pub fn spawn(argv: &[String], rows: u16, cols: u16) -> anyhow::Result<Pty> {
 }
 
 /// The exit code, or `None` when a signal ended the process.
-// ponytail: first production caller is the pacman view (#81); drop the allow then.
-#[allow(dead_code)]
 pub fn exit_code(status: &ExitStatus) -> Option<i32> {
     match status.signal() {
         Some(_) => None,

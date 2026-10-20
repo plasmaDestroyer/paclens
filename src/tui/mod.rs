@@ -9,7 +9,7 @@
 mod app;
 mod draw;
 mod exec;
-mod input;
+pub(crate) mod input;
 mod theme;
 
 use std::path::Path;
