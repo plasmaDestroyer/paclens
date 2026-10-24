@@ -462,10 +462,17 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
     // last few lines, under what produced it.
     let (_, _, pipe, _) = s.tree_glyphs();
     for l in log_lines(run, LOG_TAIL) {
-        rows.push(vec![seg(Paint::Dim, format!("  {pipe} {}", l.trim_end()))]);
+        rows.push(vec![seg(
+            Paint::Dim,
+            format!("{NESTED}{pipe}{}", l.trim_end()),
+        )]);
     }
     rows
 }
+
+/// Marks a child row that hangs under the one before it (output of the
+/// running hook), so the tree gives it no branch of its own.
+const NESTED: &str = "\u{0}";
 
 /// `name` cut to `w` columns with an ellipsis, uncoloured (it is padded after).
 fn cut_plain(name: &str, w: usize) -> String {
@@ -489,7 +496,7 @@ fn cut_plain(name: &str, w: usize) -> String {
 /// ("+N more").
 fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles) -> Vec<String> {
     let fit = |segs: &Vec<Seg>| line(segs, w, s);
-    let (branch, last, _, _) = s.tree_glyphs();
+    let (branch, last, pipe, blank) = s.tree_glyphs();
     let done: Vec<Vec<Seg>> = run
         .phases
         .iter()
@@ -552,10 +559,23 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
     rows.extend(done_rows.iter().map(fit));
     if let Some(r) = &running {
         rows.push(fit(r));
-        let n = kid_rows.len();
+        let nested = |k: &Vec<Seg>| k.first().is_some_and(|(_, t)| t.starts_with(NESTED));
+        let last_branch = kid_rows.iter().rposition(|k| !nested(k));
         for (i, mut k) in kid_rows.into_iter().enumerate() {
-            let glyph = if i + 1 == n { last } else { branch };
-            k.insert(0, seg(Paint::Dim, format!("  {glyph} ")));
+            if nested(&k) {
+                if let Some(first) = k.first_mut() {
+                    first.1 = first.1.replacen(NESTED, "", 1);
+                }
+                let up = if last_branch.is_some_and(|l| i > l) {
+                    blank
+                } else {
+                    pipe
+                };
+                k.insert(0, seg(Paint::Dim, format!("  {up}")));
+            } else {
+                let glyph = if Some(i) == last_branch { last } else { branch };
+                k.insert(0, seg(Paint::Dim, format!("  {glyph}")));
+            }
             rows.push(fit(&k));
         }
     }
