@@ -215,9 +215,9 @@ impl Painter {
         if let Some(p) = run
             .current()
             .and_then(|k| run.phases.iter().find(|p| p.kind == k))
-            && let Some(total) = p.total.filter(|&t| t > 0)
+            && let Some(share) = p.share()
         {
-            write!(out, "\x1b]9;4;1;{}\x07", (p.done * 100 / total).min(100))?;
+            write!(out, "\x1b]9;4;1;{share}\x07")?;
             out.flush()?;
         }
         Ok(())

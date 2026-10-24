@@ -198,10 +198,10 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
         .map(duration)
         .unwrap_or_default();
     let text = format!(" {:<10} {:>7}  {time}", name(p.kind), count(p));
-    let text_paint = if p.state == PhaseState::Pending {
-        Paint::Dim
-    } else {
-        Paint::Plain
+    // The running phase stands out; finished ones step back.
+    let text_paint = match p.state {
+        PhaseState::Running => Paint::Bold,
+        PhaseState::Done | PhaseState::Pending => Paint::Dim,
     };
     vec![
         seg(mark_paint, mark),
@@ -237,15 +237,15 @@ fn done_summary(run: &Run, now: Duration, s: &Styles) -> Option<Vec<Seg>> {
     ])
 }
 
-/// `⏱ 12s · ∅ 23s (51 runs)` — the median is an estimate from past runs.
+/// `⏱ 12s · median 23s (51 runs)` — an estimate from past runs.
 fn hook_time(h: &Hook, now: Duration, s: &Styles) -> String {
     let t = took(h.started, h.ended, now)
         .map(duration)
         .unwrap_or_default();
     let typical = |m: Median| duration(Duration::from_secs(m.secs));
     match (h.median, s.plain()) {
-        (Some(m), false) => format!("⏱ {t} · ∅ {} ({} runs)", typical(m), m.runs),
-        (Some(m), true) => format!("{t} - ~{} ({} runs)", typical(m), m.runs),
+        (Some(m), false) => format!("⏱ {t} · median {} ({} runs)", typical(m), m.runs),
+        (Some(m), true) => format!("{t} - median {} ({} runs)", typical(m), m.runs),
         (None, false) => format!("⏱ {t}"),
         (None, true) => t,
     }
@@ -315,13 +315,9 @@ fn meter(run: &Run, view: &View, w: usize, s: &Styles) -> Option<String> {
     if view.motif == Motif::Arcade && !run.packages.is_empty() {
         return Some(lane(run, w, s));
     }
-    let ph = phase(run, run.current()?)?;
-    let total = ph.total.filter(|&t| t > 0)?;
     // pacman's measured percent wins: for downloads it counts bytes, and a
     // file count sits at 0% while twenty big files are halfway done.
-    let pct = ph
-        .pct
-        .unwrap_or_else(|| u8::try_from(ph.done.min(total) * 100 / total).unwrap_or(100));
+    let pct = phase(run, run.current()?)?.share()?;
     // `[` + cells + `] ` + up to `100%`: the row is `cells + 7` wide.
     let cells = w.saturating_sub(7).min(40);
     if cells == 0 {
@@ -444,7 +440,7 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
                 let desc = format!("({}/{total}) {desc}", n + 1);
                 let running = h.ended.is_none() && i + 1 == started.len();
                 let (mark, paint) = if running {
-                    (seg(Paint::Warn, g(s, "▸", ">")), Paint::Plain)
+                    (seg(Paint::Warn, g(s, "▸", ">")), Paint::Bold)
                 } else {
                     (seg(Paint::Ok, s.check()), Paint::Dim)
                 };
@@ -589,12 +585,12 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
     let room = height.saturating_sub(1).max(1);
     match view.layout {
         Layout::Inline => {
-            // Fixed height, so the region never jumps.
-            let h = (height / 2).clamp(1, 16);
+            // Up to two thirds of the screen: room for every download in
+            // flight on a big terminal, and the shell above stays in view.
+            let h = (height * 2 / 3).max(6).min(room);
             let mut rows = tree(run, view, w, h.saturating_sub(1).max(1), now, s);
             rows.extend(meter(run, view, w, s));
             rows.truncate(h);
-            rows.resize(h, String::new());
             rows
         }
         Layout::InlineGrow | Layout::Nom => {
@@ -711,6 +707,19 @@ fn log_lines(run: &Run, n: usize) -> Vec<&String> {
     let Some(from) = transaction_from(run) else {
         return Vec::new();
     };
+    // Only what the current hook or package printed: output belongs under
+    // what produced it, and a new item starts with an empty tail.
+    let item = run.lines.iter().rposition(|l| {
+        matches!(
+            classify_screen(l, false),
+            ScreenEvent::Hook { .. }
+                | ScreenEvent::Package { .. }
+                | ScreenEvent::PreHooks
+                | ScreenEvent::PostHooks
+                | ScreenEvent::Processing
+        )
+    });
+    let from = from.max(item.unwrap_or(0));
     let mut tail: Vec<&String> = run
         .unknown_at
         .iter()
@@ -791,9 +800,12 @@ pub fn frame(
             // Unknown lines and warnings, merged in screen order. The
             // transaction's unknown lines stay in the live tail instead.
             let quiet_from = transaction_from(run).unwrap_or(usize::MAX);
+            // A warning from the transaction itself is in the live tail and
+            // the receipt; up here it would be a third copy.
             let warnings = run
                 .warning_at
                 .iter()
+                .filter(|&&at| at < quiet_from)
                 .filter_map(|&at| Some((at, shown.get(at)?)));
             let unknown = run.unknown_at.iter().zip(&run.unknown);
             let unknown = unknown
@@ -1288,22 +1300,18 @@ mod tests {
     }
 
     #[test]
-    fn inline_height_is_fixed_and_grow_is_not() {
+    fn inline_takes_at_most_two_thirds_and_no_blank_rows() {
         let mid = partial(161);
         for h in [40u16, 15, 6] {
             let f = draw(&mid, &view(Layout::Inline, Motif::Subtle), h, &plain());
-            assert_eq!(f.region.len(), (h as usize / 2).min(16), "h={h}");
+            let cap = (usize::from(h) * 2 / 3).max(6).min(usize::from(h) - 1);
+            assert!(f.region.len() <= cap, "h={h}: {:?}", f.region);
+            assert!(
+                f.region.iter().all(|l| !l.is_empty()),
+                "h={h}: {:?}",
+                f.region
+            );
         }
-        let done = fixture_run();
-        let inline = draw(&done, &view(Layout::Inline, Motif::Subtle), 40, &plain());
-        let grow = draw(
-            &done,
-            &view(Layout::InlineGrow, Motif::Subtle),
-            40,
-            &plain(),
-        );
-        assert_eq!(inline.region.len(), 16);
-        assert!(grow.region.len() < 16, "{:?}", grow.region);
     }
 
     #[test]
@@ -1362,7 +1370,8 @@ mod tests {
         assert!(
             f.region
                 .iter()
-                .any(|l| l.contains("(1/2) Doing x...") && l.ends_with("⏱ 12s · ∅ 23s (51 runs)")),
+                .any(|l| l.contains("(1/2) Doing x...")
+                    && l.ends_with("⏱ 12s · median 23s (51 runs)")),
             "{:?}",
             f.region
         );
@@ -1622,6 +1631,34 @@ mod tests {
         );
         assert!(
             f.region.iter().any(|l| l.ends_with("custom hook notice")),
+            "{:?}",
+            f.region
+        );
+    }
+
+    #[test]
+    fn hook_output_stays_with_its_own_hook() {
+        let lines = fixture_lines();
+        let mut r = partial(60);
+        for l in [
+            ":: Running post-transaction hooks...",
+            "(1/2) Updating linux initcpios...",
+            "==> Building image",
+            "(2/2) Updating the MIME type database...",
+        ] {
+            r.apply_line(l, Z);
+        }
+        let _ = lines;
+        let f = draw(&r, &view(Layout::Inline, Motif::Subtle), 40, &plain());
+        assert!(
+            !f.region.iter().any(|l| l.contains("Building image")),
+            "{:?}",
+            f.region
+        );
+        r.apply_line("mime output", Z);
+        let f = draw(&r, &view(Layout::Inline, Motif::Subtle), 40, &plain());
+        assert!(
+            f.region.iter().any(|l| l.contains("mime output")),
             "{:?}",
             f.region
         );

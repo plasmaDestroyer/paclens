@@ -66,6 +66,18 @@ pub struct InFlight {
     pub detail: String,
 }
 
+impl Phase {
+    /// How far along, in percent: pacman's own measure when it draws one
+    /// (download bytes), else the done count over the total.
+    pub fn share(&self) -> Option<u8> {
+        let total = self.total.filter(|&t| t > 0)?;
+        Some(
+            self.pct
+                .unwrap_or_else(|| u8::try_from(self.done.min(total) * 100 / total).unwrap_or(100)),
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Pkg {
     pub name: String,
@@ -336,11 +348,6 @@ impl Run {
             self.in_flight.clear();
             return;
         }
-        self.in_flight = rows
-            .iter()
-            .filter_map(|r| self.in_flight_row(r))
-            .filter(|f| f.pct < 100)
-            .collect();
         let total = rows
             .iter()
             .rev()
@@ -348,6 +355,19 @@ impl Run {
                 ev @ ScreenEvent::DownloadTotal { .. } => Some(ev),
                 _ => None,
             });
+        // pacman writes a new file's name over the row the Total line used
+        // to be on, and its numbers stay there until the file's first
+        // update: a file row that repeats the Total's numbers is queued.
+        let stale = match &total {
+            Some(ScreenEvent::DownloadTotal { pct, detail, .. }) => Some((*pct, detail.clone())),
+            _ => None,
+        };
+        self.in_flight = rows
+            .iter()
+            .filter_map(|r| self.in_flight_row(r))
+            .filter(|f| f.pct < 100)
+            .filter(|f| stale.as_ref() != Some(&(f.pct, f.detail.clone())))
+            .collect();
         if let Some(ev) = total {
             self.apply_screen(ev, at);
         }
@@ -998,6 +1018,23 @@ mod tests {
         r.observe_screen(&rows, Z);
         assert!(r.in_flight.is_empty());
         assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
+    }
+
+    #[test]
+    fn file_row_with_the_totals_numbers_is_queued_not_in_flight() {
+        let mut r = run();
+        r.apply_line(":: Retrieving packages...", Z);
+        r.packages.push(Pkg {
+            name: "libuv".into(),
+            new: Some("1.51.0-1".into()),
+            ..Pkg::default()
+        });
+        let rows = [
+            " libuv-1.51.0-1-x86_64   1022.0 MiB  9.10 MiB/s 00:12 [------C o] 83%".to_string(),
+            " Total ( 6/79)   1022.0 MiB  9.10 MiB/s 00:12 [------C o] 83%".to_string(),
+        ];
+        r.observe_screen(&rows, Z);
+        assert!(r.in_flight.is_empty(), "{:?}", r.in_flight);
     }
 
     #[test]
