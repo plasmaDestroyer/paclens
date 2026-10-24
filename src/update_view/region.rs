@@ -212,11 +212,7 @@ impl Painter {
         self.sent = d;
         self.region.draw(out, &f, self.rows, self.cols)?;
         // Terminal progress (OSC 9;4): the running phase's share done.
-        if let Some(p) = run
-            .current()
-            .and_then(|k| run.phases.iter().find(|p| p.kind == k))
-            && let Some(share) = p.share()
-        {
+        if let Some(share) = run.progress(now) {
             write!(out, "\x1b]9;4;1;{share}\x07")?;
             out.flush()?;
         }

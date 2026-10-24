@@ -311,13 +311,13 @@ fn item(run: &Run, now: Duration, s: &Styles) -> Option<Vec<Seg>> {
 
 /// The measured bar of the running phase (`[-----C o  ] 50%`), or — arcade,
 /// once packages are known — the package lane.
-fn meter(run: &Run, view: &View, w: usize, s: &Styles) -> Option<String> {
+fn meter(run: &Run, view: &View, w: usize, now: Duration, s: &Styles) -> Option<String> {
     if view.motif == Motif::Arcade && !run.packages.is_empty() {
         return Some(lane(run, w, s));
     }
     // pacman's measured percent wins: for downloads it counts bytes, and a
     // file count sits at 0% while twenty big files are halfway done.
-    let pct = phase(run, run.current()?)?.share()?;
+    let pct = run.progress(now)?;
     // `[` + cells + `] ` + up to `100%`: the row is `cells + 7` wide.
     let cells = w.saturating_sub(7).min(120);
     if cells == 0 {
@@ -598,13 +598,13 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
             // flight on a big terminal, and the shell above stays in view.
             let h = (height * 2 / 3).max(6).min(room);
             let mut rows = tree(run, view, w, h.saturating_sub(1).max(1), now, s);
-            rows.extend(meter(run, view, w, s));
+            rows.extend(meter(run, view, w, now, s));
             rows.truncate(h);
             rows
         }
         Layout::InlineGrow | Layout::Nom => {
             let mut rows = tree(run, view, w, room.saturating_sub(1).max(1), now, s);
-            rows.extend(meter(run, view, w, s));
+            rows.extend(meter(run, view, w, now, s));
             rows
         }
         Layout::Receipt => {

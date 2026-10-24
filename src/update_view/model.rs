@@ -487,6 +487,55 @@ impl Run {
         }
     }
 
+    /// How far along the running phase is, in percent. Hook phases go by
+    /// time, not count: one initramfs rebuild can take most of the phase,
+    /// and a count would sit still through it, then jump. Finished hooks
+    /// count what they took, the running one its elapsed time against its
+    /// median, hooks still to come the typical median. No history → count.
+    pub fn progress(&self, now: Duration) -> Option<u8> {
+        let k = self.current()?;
+        let ph = self.phases.iter().find(|p| p.kind == k)?;
+        let hooks = match k {
+            PhaseKind::PreHooks => &self.pre_hooks,
+            PhaseKind::PostHooks => &self.post_hooks,
+            _ => return ph.share(),
+        };
+        let mut known: Vec<u64> = self.medians.values().map(|m| m.secs).collect();
+        if known.is_empty() {
+            return ph.share();
+        }
+        known.sort_unstable();
+        let typical =
+            Duration::from_secs(known[(known.len() - 1) / 2]).max(Duration::from_millis(500));
+        let total = ph.total?;
+        let started: Vec<&Hook> = hooks.iter().filter(|h| h.started.is_some()).collect();
+        let (mut done, mut all) = (Duration::ZERO, Duration::ZERO);
+        for h in &started {
+            let took = h
+                .ended
+                .unwrap_or(now)
+                .saturating_sub(h.started.unwrap_or(now));
+            let expect = h.median.map_or(typical, |m| Duration::from_secs(m.secs));
+            if h.ended.is_some() {
+                done += took;
+                all += took;
+            } else {
+                // A hook past its median is not done: keep a little room.
+                done += took;
+                all += expect.max(took + took / 10);
+            }
+        }
+        all += typical * u32::try_from(total.saturating_sub(started.len())).unwrap_or(0);
+        if all.is_zero() {
+            return ph.share();
+        }
+        Some(
+            u8::try_from(done.as_millis() * 100 / all.as_millis())
+                .unwrap_or(100)
+                .min(100),
+        )
+    }
+
     pub fn outcome(&self) -> Outcome {
         match (self.finished, self.exit) {
             (false, _) => Outcome::Running,
@@ -1072,6 +1121,29 @@ mod tests {
         ];
         r.observe_screen(&later, Z);
         assert!(r.in_flight.iter().all(|f| f.queued), "{:?}", r.in_flight);
+    }
+
+    #[test]
+    fn long_hook_moves_the_bar_by_time() {
+        let mut medians = HashMap::new();
+        medians.insert("90-mkinitcpio.hook".into(), Median { secs: 20, runs: 50 });
+        medians.insert("x.hook".into(), Median { secs: 1, runs: 50 });
+        let mut r = Run::new("pacman -Syu", medians, HashMap::new());
+        log(
+            &mut r,
+            "[2026-10-16T11:37:21+0530] [ALPM] transaction completed",
+        );
+        log(
+            &mut r,
+            "[2026-10-16T11:37:21+0530] [ALPM] running '90-mkinitcpio.hook'...",
+        );
+        r.apply_line(":: Running post-transaction hooks...", secs(0));
+        r.apply_line("(1/3) Updating linux initcpios...", secs(0));
+        let early = r.progress(secs(2)).unwrap();
+        let late = r.progress(secs(16)).unwrap();
+        assert!(early < 15 && late > 60, "{early} {late}");
+        // Count alone would sit at 0% for all of it.
+        assert_eq!(r.phases[idx(PhaseKind::PostHooks)].share(), Some(0));
     }
 
     #[test]
