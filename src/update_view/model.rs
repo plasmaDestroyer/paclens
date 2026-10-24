@@ -64,6 +64,21 @@ pub struct InFlight {
     pub pct: u8,
     /// pacman's `1.8 MiB  460 KiB/s 00:33`: bytes so far, rate, time left.
     pub detail: String,
+    /// Listed but not started: no numbers of its own yet.
+    pub queued: bool,
+}
+
+impl InFlight {
+    /// `detail` split into bytes so far, rate, time left.
+    pub fn parts(&self) -> (String, String, String) {
+        let t: Vec<&str> = self.detail.split_whitespace().collect();
+        let two = |i: usize| t.get(i..i + 2).map(|p| p.join(" ")).unwrap_or_default();
+        (
+            two(0),
+            two(2),
+            t.get(4).copied().unwrap_or_default().to_string(),
+        )
+    }
 }
 
 impl Phase {
@@ -151,6 +166,8 @@ pub struct Run {
     pub styled: Vec<String>,
     /// Files downloading now (download phase only), in screen order.
     pub in_flight: Vec<InFlight>,
+    /// Every download Total row seen, to spot its numbers left on a file row.
+    pub totals_seen: std::collections::HashSet<(u8, String)>,
     /// Unrecognised lines, verbatim, in order — unrecognised hook output too.
     pub unknown: Vec<String>,
     /// Where each `unknown` line sits in `lines`.
@@ -212,6 +229,7 @@ impl Run {
             lines: Vec::new(),
             styled: Vec::new(),
             in_flight: Vec::new(),
+            totals_seen: Default::default(),
             unknown: Vec::new(),
             unknown_at: Vec::new(),
             warning_at: Vec::new(),
@@ -355,18 +373,22 @@ impl Run {
                 ev @ ScreenEvent::DownloadTotal { .. } => Some(ev),
                 _ => None,
             });
-        // pacman writes a new file's name over the row the Total line used
-        // to be on, and its numbers stay there until the file's first
-        // update: a file row that repeats the Total's numbers is queued.
-        let stale = match &total {
-            Some(ScreenEvent::DownloadTotal { pct, detail, .. }) => Some((*pct, detail.clone())),
-            _ => None,
-        };
+        // pacman writes a new file's name over the row a Total line used to
+        // be on, and that Total's numbers stay there until the file's first
+        // update: a file row that repeats any Total seen so far is queued.
+        if let Some(ScreenEvent::DownloadTotal { pct, detail, .. }) = &total {
+            self.totals_seen.insert((*pct, detail.clone()));
+        }
+        let rows: Vec<InFlight> = rows.iter().filter_map(|r| self.in_flight_row(r)).collect();
         self.in_flight = rows
-            .iter()
-            .filter_map(|r| self.in_flight_row(r))
+            .into_iter()
             .filter(|f| f.pct < 100)
-            .filter(|f| stale.as_ref() != Some(&(f.pct, f.detail.clone())))
+            .map(|mut f| {
+                if self.totals_seen.contains(&(f.pct, f.detail.clone())) {
+                    f.queued = true;
+                }
+                f
+            })
             .collect();
         if let Some(ev) = total {
             self.apply_screen(ev, at);
@@ -659,7 +681,14 @@ impl Run {
         let name = self.planned(stem)?;
         let detail = t[stem.len()..].split('[').next().unwrap_or_default();
         let detail = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-        Some(InFlight { name, pct, detail })
+        // `0.0 B 0.00 B/s --:--`: listed, not started.
+        let queued = detail.ends_with("--:--");
+        Some(InFlight {
+            name,
+            pct,
+            detail,
+            queued,
+        })
     }
 
     fn add_names(&mut self, names: Vec<(String, String)>) {
@@ -1008,7 +1037,8 @@ mod tests {
             [InFlight {
                 name: "zed".into(),
                 pct: 50,
-                detail: "40.1 MiB 5.0 MiB/s 00:08".into()
+                detail: "40.1 MiB 5.0 MiB/s 00:08".into(),
+                queued: false,
             }]
         );
         let d = &r.phases[idx(PhaseKind::Download)];
@@ -1034,7 +1064,14 @@ mod tests {
             " Total ( 6/79)   1022.0 MiB  9.10 MiB/s 00:12 [------C o] 83%".to_string(),
         ];
         r.observe_screen(&rows, Z);
-        assert!(r.in_flight.is_empty(), "{:?}", r.in_flight);
+        assert!(r.in_flight.iter().all(|f| f.queued), "{:?}", r.in_flight);
+        // An older Total's numbers, left behind after the Total moved on.
+        let later = [
+            rows[0].clone(),
+            " Total ( 7/79)   1030.0 MiB  9.20 MiB/s 00:11 [------C o] 84%".to_string(),
+        ];
+        r.observe_screen(&later, Z);
+        assert!(r.in_flight.iter().all(|f| f.queued), "{:?}", r.in_flight);
     }
 
     #[test]

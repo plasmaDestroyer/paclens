@@ -319,7 +319,7 @@ fn meter(run: &Run, view: &View, w: usize, s: &Styles) -> Option<String> {
     // file count sits at 0% while twenty big files are halfway done.
     let pct = phase(run, run.current()?)?.share()?;
     // `[` + cells + `] ` + up to `100%`: the row is `cells + 7` wide.
-    let cells = w.saturating_sub(7).min(40);
+    let cells = w.saturating_sub(7).min(120);
     if cells == 0 {
         return Some(line(&[seg(Paint::Plain, format!("{pct}%"))], w, s));
     }
@@ -357,24 +357,33 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
     };
     let mut rows: Vec<Vec<Seg>> = match k {
         PhaseKind::Download => {
-            let width = run
-                .in_flight
+            // Fixed columns for the whole download, so rows do not shift as
+            // files come and go: the name as wide as the longest planned
+            // package, then the bar takes what is left of the line.
+            let name_w = run
+                .packages
                 .iter()
-                .map(|f| f.name.width())
+                .map(|p| p.name.width())
                 .max()
                 .unwrap_or(0);
-            let width = width.min(w / 3);
+            let name_w = name_w.clamp(8, w / 3);
+            // `100%` + `  1055.4 MiB` + `  1503 KiB/s` + `  01:55`
+            let right = 4 + 2 + 10 + 2 + 11 + 2 + 5;
+            // `  ├─ ` + name + ` [` + bar + `] ` + right
+            let cells = w.saturating_sub(5 + name_w + 2 + 2 + right).clamp(10, 80);
             run.in_flight
                 .iter()
                 .map(|f| {
+                    let name = format!("{:<name_w$}", cut_plain(&f.name, name_w));
+                    if f.queued {
+                        return vec![seg(Paint::Dim, format!("{name}  queued"))];
+                    }
+                    let (size, rate, eta) = f.parts();
                     vec![
-                        seg(
-                            Paint::Plain,
-                            format!("{:<width$} ", cut_plain(&f.name, width)),
-                        ),
-                        seg(Paint::Plain, format!("[{}] ", bar(f.pct, 12, true, s))),
+                        seg(Paint::Plain, format!("{name} ")),
+                        seg(Paint::Plain, format!("[{}] ", bar(f.pct, cells, true, s))),
                         seg(Paint::Plain, format!("{:>3}%", f.pct)),
-                        seg(Paint::Dim, format!("  {}", f.detail)),
+                        seg(Paint::Dim, format!("  {size:>10}  {rate:>11}  {eta:>5}")),
                     ]
                 })
                 .collect()
