@@ -86,6 +86,11 @@ impl StepRunner for ViewRunner {
     fn run_captured(&self, argv: &[String]) -> anyhow::Result<(Option<i32>, String)> {
         InteractiveRunner.run_captured(argv)
     }
+
+    /// The view's own title names the command.
+    fn announces(&self, argv: &[String]) -> bool {
+        !is_pacman_transaction(argv)
+    }
 }
 
 const TICK: Duration = Duration::from_millis(50);
@@ -575,6 +580,14 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(run(&sh("kill -INT $$"), &o, &mut out).unwrap(), None);
         assert!(String::from_utf8_lossy(&out).contains("signal"));
+    }
+
+    #[test]
+    fn view_steps_carry_no_executor_header() {
+        let (opts, _) = opts("announce");
+        let r = ViewRunner { opts };
+        assert!(!r.announces(&argv(["sudo", "pacman", "-Syu"])));
+        assert!(r.announces(&argv(["paru", "-Sua"])));
     }
 
     #[test]

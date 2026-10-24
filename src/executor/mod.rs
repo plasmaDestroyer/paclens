@@ -37,6 +37,12 @@ pub trait StepRunner {
     /// [`execute_concurrent`], where several steps run at once and sharing one
     /// terminal would shred all of their output.
     fn run_captured(&self, argv: &[String]) -> anyhow::Result<(Option<i32>, String)>;
+
+    /// Should the executor print its `:: <command>` header first? A runner
+    /// that draws its own title for the step says no.
+    fn announces(&self, _argv: &[String]) -> bool {
+        true
+    }
 }
 
 /// The production runner: spawns the command attached to the real terminal.
@@ -276,7 +282,9 @@ fn foreground_step(step: &ActionStep, runner: &impl StepRunner, tool: Option<&st
             let argv = effective_command(step, tool);
             // The TUI is suspended (or we are in plain CLI mode): give the raw
             // terminal a header so the user knows whose output follows (P1).
-            println!(":: {}", argv.join(" "));
+            if runner.announces(&argv) {
+                println!(":: {}", argv.join(" "));
+            }
             run_step(step, &argv, runner, false)
         }
     }
