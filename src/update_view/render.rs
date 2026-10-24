@@ -366,7 +366,7 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
                 .map(|p| p.name.width())
                 .max()
                 .unwrap_or(0);
-            let name_w = name_w.clamp(8, w / 3);
+            let name_w = name_w.max(8).min(w / 3);
             // `100%` + `  1055.4 MiB` + `  1503 KiB/s` + `  01:55`
             let right = 4 + 2 + 10 + 2 + 11 + 2 + 5;
             // `  ├─ ` + name + ` [` + bar + `] ` + right
@@ -729,12 +729,24 @@ fn log_lines(run: &Run, n: usize) -> Vec<&String> {
         )
     });
     let from = from.max(item.unwrap_or(0));
-    let mut tail: Vec<&String> = run
+    // Unknown lines and the transaction's warnings (a warning shows here
+    // while it is current, then in the receipt).
+    let warnings = run
+        .warning_at
+        .iter()
+        .filter_map(|&at| Some((at, run.lines.get(at)?)));
+    let mut all: Vec<(usize, &String)> = run
         .unknown_at
         .iter()
+        .copied()
         .zip(&run.unknown)
+        .chain(warnings)
+        .collect();
+    all.sort_by_key(|&(at, _)| at);
+    let mut tail: Vec<&String> = all
+        .into_iter()
         .rev()
-        .filter(|(at, _)| **at >= from)
+        .filter(|(at, _)| *at >= from)
         .take(n)
         .map(|(_, l)| l)
         .collect();
@@ -1668,6 +1680,48 @@ mod tests {
         let f = draw(&r, &view(Layout::Inline, Motif::Subtle), 40, &plain());
         assert!(
             f.region.iter().any(|l| l.contains("mime output")),
+            "{:?}",
+            f.region
+        );
+    }
+
+    #[test]
+    fn narrow_terminal_download_frame_does_not_panic() {
+        let mut r = partial(120);
+        r.in_flight.push(crate::update_view::model::InFlight {
+            name: "zed".into(),
+            pct: 40,
+            detail: "1.0 MiB 1.0 MiB/s 00:10".into(),
+            queued: false,
+        });
+        for w in [1u16, 10, 23, 24] {
+            let _ = frame(
+                &r,
+                &view(Layout::Inline, Motif::Subtle),
+                Delivered::default(),
+                w,
+                40,
+                Z,
+                None,
+                &plain(),
+            );
+        }
+    }
+
+    #[test]
+    fn transaction_warning_shows_live_before_the_end() {
+        let lines = fixture_lines();
+        let mut r = partial(60);
+        r.apply_line(":: Processing package changes...", Z);
+        r.apply_line("(1/38) upgrading foo", Z);
+        r.apply_line(
+            "Warning: The unit file of x.service changed on disk. Run 'systemctl daemon-reload'.",
+            Z,
+        );
+        let _ = lines;
+        let f = draw(&r, &view(Layout::Inline, Motif::Subtle), 40, &plain());
+        assert!(
+            f.region.iter().any(|l| l.contains("daemon-reload")),
             "{:?}",
             f.region
         );
