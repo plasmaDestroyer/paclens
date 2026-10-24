@@ -53,6 +53,11 @@ impl Styles {
         self.glyphs == glyphs::ASCII
     }
 
+    /// Colour is on.
+    pub fn colored(&self) -> bool {
+        self.color
+    }
+
     /// `s` in the colour of one ghost (arcade motif): Blinky red = error,
     /// Pinky pink = `.pacnew`, Inky cyan = optdepends, Clyde orange =
     /// scriptlet warning. No colour → plain text.

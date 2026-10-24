@@ -126,6 +126,8 @@ pub struct Run {
     pub prompt: Option<String>,
     /// Every settled screen line, in order.
     pub lines: Vec<String>,
+    /// `lines` with pacman's colours, same index.
+    pub styled: Vec<String>,
     /// Unrecognised lines, verbatim, in order — unrecognised hook output too.
     pub unknown: Vec<String>,
     /// Where each `unknown` line sits in `lines`.
@@ -185,6 +187,7 @@ impl Run {
             totals: Vec::new(),
             prompt: None,
             lines: Vec::new(),
+            styled: Vec::new(),
             unknown: Vec::new(),
             unknown_at: Vec::new(),
             warning_at: Vec::new(),
@@ -208,6 +211,12 @@ impl Run {
 
     /// One settled screen line: kept in `lines`, classified, applied.
     pub fn apply_line(&mut self, line: &str, at: Duration) {
+        self.apply_line_styled(line, line, at);
+    }
+
+    /// [`Run::apply_line`], with the line as pacman coloured it.
+    pub fn apply_line_styled(&mut self, line: &str, styled: &str, at: Duration) {
+        self.styled.push(styled.to_string());
         self.lines.push(line.to_string());
         let ev = classify_screen(line, self.current() == Some(PhaseKind::Sync));
         self.apply_screen(ev, at);

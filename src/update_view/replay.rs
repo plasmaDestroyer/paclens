@@ -156,8 +156,8 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
             }
         }
         now += c.delay;
-        for l in settler.feed(&c.bytes) {
-            run.apply_line(&l, now);
+        for (l, styled) in settler.feed_styled(&c.bytes) {
+            run.apply_line_styled(&l, &styled, now);
             painter.line(out, &l)?;
         }
     }

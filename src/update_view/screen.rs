@@ -23,16 +23,71 @@ impl Settler {
 
     /// Lines completed by a `\n` in `bytes`, trailing whitespace trimmed.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.feed_styled(bytes)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect()
+    }
+
+    /// As [`Settler::feed`], each line with its colours too: `(plain, styled)`.
+    /// The plain text is what gets classified; the styled one is what is shown.
+    pub fn feed_styled(&mut self, bytes: &[u8]) -> Vec<(String, String)> {
         let mut lines = Vec::new();
         let mut segments = bytes.split(|&b| b == b'\n').peekable();
         while let Some(segment) = segments.next() {
             self.parser.process(segment);
             if segments.peek().is_some() {
-                lines.push(self.cursor_line());
+                lines.push((self.cursor_line(), self.cursor_line_styled()));
                 self.parser.process(b"\n");
             }
         }
         lines
+    }
+
+    /// The unfinished line, with its colours.
+    pub fn partial_styled(&self) -> String {
+        self.cursor_line_styled()
+    }
+
+    /// [`Self::cursor_line`] with SGR codes for the cells' colours and
+    /// weight, ending in a reset; trailing blanks dropped.
+    fn cursor_line_styled(&self) -> String {
+        let screen = self.parser.screen();
+        let (row, _) = screen.cursor_position();
+        let mut top = row;
+        while top > 0 && screen.row_wrapped(top - 1) {
+            top -= 1;
+        }
+        let mut out = String::new();
+        let mut keep = 0; // `out` up to the last visible character
+        let mut attrs = Sgr::default();
+        for r in top..=row {
+            for c in 0..self.cols {
+                let Some(cell) = screen.cell(r, c) else {
+                    continue;
+                };
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                let now = Sgr::of(cell);
+                if now != attrs {
+                    now.write(&mut out);
+                    attrs = now;
+                }
+                let text = cell.contents();
+                if text.is_empty() || text == " " {
+                    out.push(' ');
+                } else {
+                    out.push_str(text);
+                    keep = out.len();
+                }
+            }
+        }
+        out.truncate(keep);
+        if attrs != Sgr::default() || out.contains('\u{1b}') {
+            out.push_str("\u{1b}[0m");
+        }
+        out
     }
 
     /// The unfinished line under the cursor, trimmed, wrapped rows joined.
@@ -71,6 +126,60 @@ impl Settler {
     }
 }
 
+/// The look of one cell, as far as the view repeats it.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+struct Sgr {
+    fg: vt100::Color,
+    bg: vt100::Color,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    inverse: bool,
+}
+
+impl Sgr {
+    fn of(c: &vt100::Cell) -> Self {
+        Self {
+            fg: c.fgcolor(),
+            bg: c.bgcolor(),
+            bold: c.bold(),
+            dim: c.dim(),
+            italic: c.italic(),
+            underline: c.underline(),
+            inverse: c.inverse(),
+        }
+    }
+
+    /// A full reset, then this look: simple and never wrong.
+    fn write(&self, out: &mut String) {
+        let mut codes = vec!["0".to_string()];
+        for (on, code) in [
+            (self.bold, "1"),
+            (self.dim, "2"),
+            (self.italic, "3"),
+            (self.underline, "4"),
+            (self.inverse, "7"),
+        ] {
+            if on {
+                codes.push(code.into());
+            }
+        }
+        for (color, base) in [(self.fg, 30), (self.bg, 40)] {
+            match color {
+                vt100::Color::Default => {}
+                vt100::Color::Idx(i) if i < 8 => codes.push((base + u16::from(i)).to_string()),
+                vt100::Color::Idx(i) if i < 16 => {
+                    codes.push((base + 52 + u16::from(i)).to_string())
+                }
+                vt100::Color::Idx(i) => codes.push(format!("{};5;{i}", base + 8)),
+                vt100::Color::Rgb(r, g, b) => codes.push(format!("{};2;{r};{g};{b}", base + 8)),
+            }
+        }
+        out.push_str(&format!("\u{1b}[{}m", codes.join(";")));
+    }
+}
+
 /// The whole fixture recording settled at its recorded width (178 cols):
 /// header line skipped, untimed `Script done` footer left out.
 #[cfg(test)]
@@ -88,6 +197,22 @@ pub(crate) fn fixture_lines() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn styled_line_keeps_pacman_colours() {
+        let mut s = Settler::new(80);
+        let lines = s.feed_styled(b"\x1b[1;34m::\x1b[0;1m Synchronizing\x1b[0m   \r\n");
+        let (plain, styled) = &lines[0];
+        assert_eq!(plain, ":: Synchronizing");
+        assert_eq!(styled, "\u{1b}[0;1;34m::\u{1b}[0;1m Synchronizing\u{1b}[0m");
+    }
+
+    #[test]
+    fn styled_line_without_colour_is_the_plain_line() {
+        let mut s = Settler::new(80);
+        let lines = s.feed_styled(b"plain text\r\n");
+        assert_eq!(lines[0].0, lines[0].1);
+    }
 
     const OUT: &[u8] = include_bytes!("../../tests/fixtures/pacman-run/2026-10-16.out");
 

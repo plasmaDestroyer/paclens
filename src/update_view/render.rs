@@ -471,6 +471,12 @@ pub fn frame(
     let mut above = Vec::new();
     let mut d = sent;
     let from = |v: &[String], i: usize| v.get(i..).unwrap_or_default().to_vec();
+    // pacman's own lines as it coloured them, when colour is on.
+    let shown: &[String] = if s.colored() && run.styled.len() == run.lines.len() {
+        &run.styled
+    } else {
+        &run.lines
+    };
     let plan = plan(run);
     // Unknown lines before line `stop` go up; with `print` false they are
     // passed over, because the plan already carried them.
@@ -483,12 +489,10 @@ pub fn frame(
             let warnings = run
                 .warning_at
                 .iter()
-                .filter_map(|&at| Some((at, run.lines.get(at)?)));
-            let mut new: Vec<(usize, &String)> = run
-                .unknown_at
-                .iter()
-                .copied()
-                .zip(&run.unknown)
+                .filter_map(|&at| Some((at, shown.get(at)?)));
+            let unknown = run.unknown_at.iter().zip(&run.unknown);
+            let unknown = unknown.map(|(&at, l)| (at, shown.get(at).unwrap_or(l)));
+            let mut new: Vec<(usize, &String)> = unknown
                 .chain(warnings)
                 .filter(|(at, _)| (d.unknown..stop).contains(at))
                 .collect();
@@ -499,7 +503,7 @@ pub fn frame(
     };
     if view.layout == Layout::Nom {
         // Every settled line goes up as printed, unrecognised ones included.
-        above.extend(from(&run.lines, sent.lines));
+        above.extend(from(shown, sent.lines));
         d.lines = run.lines.len();
         d.unknown = run.lines.len();
     } else {
@@ -518,9 +522,9 @@ pub fn frame(
         && d.lines <= p
     {
         if d.lines < b {
-            above.extend(run.lines[a.max(d.lines)..b].iter().cloned());
+            above.extend(shown[a.max(d.lines)..b].iter().cloned());
         }
-        above.push(run.lines[p].clone());
+        above.push(shown[p].clone());
         d.lines = p + 1;
         unknown(&mut above, &mut d, p + 1, false);
         unknown(&mut above, &mut d, usize::MAX, true);
@@ -555,11 +559,11 @@ pub fn frame(
                     } else if lines.len() < height.saturating_sub(1)
                         && lines.iter().chain([&prompt]).all(|l| l.width() <= w)
                     {
-                        let mut r = lines.to_vec();
+                        let mut r = shown[a..b].to_vec();
                         r.push(prompt);
                         r
                     } else {
-                        above.extend(lines.iter().cloned());
+                        above.extend(shown[a..b].iter().cloned());
                         d.lines = b;
                         unknown(&mut above, &mut d, b, false);
                         vec![prompt]
@@ -896,6 +900,17 @@ mod tests {
             "{c:?}"
         );
         assert!(!c.iter().any(|l| l.contains("is newer than")), "{c:?}");
+    }
+
+    #[test]
+    fn coloured_lines_go_up_in_colour_only_when_colour_is_on() {
+        let mut r = empty();
+        r.apply_line_styled("odd line", "\u{1b}[0;1modd line\u{1b}[0m", Z);
+        let v = view(Layout::Inline, Motif::Subtle);
+        let (f, _) = frame(&r, &v, Delivered::default(), 120, 40, Z, None, &colour());
+        assert_eq!(f.above, ["\u{1b}[0;1modd line\u{1b}[0m"]);
+        let (f, _) = frame(&r, &v, Delivered::default(), 120, 40, Z, None, &plain());
+        assert_eq!(f.above, ["odd line"]);
     }
 
     #[test]

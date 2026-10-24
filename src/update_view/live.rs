@@ -280,8 +280,8 @@ fn take(
     if let Some(t) = transcript {
         t.record(at, bytes);
     }
-    for l in settler.feed(bytes) {
-        model.apply_line(&l, at);
+    for (l, styled) in settler.feed_styled(bytes) {
+        model.apply_line_styled(&l, &styled, at);
         painter.line(out, &l)?;
     }
     Ok(())
