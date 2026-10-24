@@ -50,6 +50,11 @@ pub struct Phase {
     pub total: Option<usize>,
     pub started: Option<Duration>,
     pub ended: Option<Duration>,
+    /// pacman's own measured percent, when it draws one (download: bytes,
+    /// not files).
+    pub pct: Option<u8>,
+    /// pacman's own words on the bar, e.g. bytes, rate and time left.
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -165,6 +170,8 @@ impl Run {
                     total: None,
                     started: None,
                     ended: None,
+                    pct: None,
+                    detail: None,
                 })
                 .collect(),
             dbs: Vec::new(),
@@ -242,11 +249,18 @@ impl Run {
                 let n = self.packages.len();
                 self.phase_mut(PhaseKind::Download).total = (n > 0).then_some(n);
             }
-            S::DownloadTotal { done, total, .. } => {
+            S::DownloadTotal {
+                done,
+                total,
+                pct,
+                detail,
+            } => {
                 self.enter(PhaseKind::Download, at);
                 let ph = self.phase_mut(PhaseKind::Download);
                 ph.done = done;
                 ph.total = Some(total);
+                ph.pct = Some(pct);
+                ph.detail = Some(detail);
             }
             S::Check { done, total, .. } => {
                 self.enter(PhaseKind::Checks, at);
@@ -283,6 +297,25 @@ impl Run {
             }
             S::Optdepends(pkg) => self.optdeps_for = Some(pkg),
             S::Other(line) => self.other(line),
+        }
+    }
+
+    /// The live screen rows (not settled yet): pacman redraws its download
+    /// `Total` row in place and settles it only when the download ends, so
+    /// it is read from here while the download runs.
+    pub fn observe_screen(&mut self, rows: &[String], at: Duration) {
+        if self.current() != Some(PhaseKind::Download) {
+            return;
+        }
+        let total = rows
+            .iter()
+            .rev()
+            .find_map(|r| match classify_screen(r, false) {
+                ev @ ScreenEvent::DownloadTotal { .. } => Some(ev),
+                _ => None,
+            });
+        if let Some(ev) = total {
+            self.apply_screen(ev, at);
         }
     }
 
@@ -882,6 +915,23 @@ mod tests {
         assert_eq!(k(1), NoteKind::Reboot);
         assert_eq!(k(2), NoteKind::Rebuild);
         assert!(r.unknown.is_empty());
+    }
+
+    #[test]
+    fn live_total_row_drives_download_progress() {
+        let mut r = run();
+        r.apply_line(":: Retrieving packages...", Z);
+        let rows = [
+            " zed-1.25.3-1-x86_64   40.1 MiB  5.0 MiB/s 00:08 [---C o o]  50%".to_string(),
+            " Total ( 3/79)   363.0 MiB  5.12 MiB/s 00:02:51 [---C o o] 29%".to_string(),
+        ];
+        r.observe_screen(&rows, Z);
+        let d = &r.phases[idx(PhaseKind::Download)];
+        assert_eq!((d.done, d.total, d.pct), (3, Some(79), Some(29)));
+        assert_eq!(d.detail.as_deref(), Some("363.0 MiB 5.12 MiB/s 00:02:51"));
+        r.apply_line(":: Processing package changes...", Z);
+        r.observe_screen(&rows, Z);
+        assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
     }
 
     #[test]

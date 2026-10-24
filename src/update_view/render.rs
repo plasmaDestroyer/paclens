@@ -294,10 +294,16 @@ fn item(run: &Run, now: Duration, s: &Styles) -> Option<Vec<Seg>> {
                 seg(Paint::Dim, format!("  {}", hook_time(h, now, s))),
             ])
         }
-        PhaseKind::Download => Some(vec![seg(
-            Paint::Plain,
-            format!("{}/{total}{}", ph.done, download_size(run, s)),
-        )]),
+        PhaseKind::Download => {
+            let mut segs = vec![seg(
+                Paint::Plain,
+                format!("{}/{total}{}", ph.done, download_size(run, s)),
+            )];
+            if let Some(d) = &ph.detail {
+                segs.push(seg(Paint::Dim, format!("  {d}")));
+            }
+            Some(segs)
+        }
         PhaseKind::Sync => Some(vec![seg(Paint::Plain, run.dbs.last()?.clone())]),
         _ => None,
     }
@@ -311,7 +317,11 @@ fn meter(run: &Run, view: &View, w: usize, s: &Styles) -> Option<String> {
     }
     let ph = phase(run, run.current()?)?;
     let total = ph.total.filter(|&t| t > 0)?;
-    let pct = u8::try_from(ph.done.min(total) * 100 / total).unwrap_or(100);
+    // pacman's measured percent wins: for downloads it counts bytes, and a
+    // file count sits at 0% while twenty big files are halfway done.
+    let pct = ph
+        .pct
+        .unwrap_or_else(|| u8::try_from(ph.done.min(total) * 100 / total).unwrap_or(100));
     // `[` + cells + `] ` + up to `100%`: the row is `cells + 7` wide.
     let cells = w.saturating_sub(7).min(40);
     if cells == 0 {

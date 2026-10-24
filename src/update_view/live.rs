@@ -215,6 +215,7 @@ pub fn run(
                 }
             }
         }
+        model.observe_screen(&settler.tail(8), now);
         let exited = pty.child.try_wait()?;
         let idle = (may_be_question(&settler.partial()) && last_bytes.elapsed() >= IDLE)
             .then(|| settler.tail(20.min(usize::from(rows / 2))));

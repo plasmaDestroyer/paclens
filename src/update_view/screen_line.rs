@@ -33,6 +33,8 @@ pub enum ScreenEvent {
         done: usize,
         total: usize,
         pct: u8,
+        /// pacman's `363.0 MiB  5.12 MiB/s 00:02:51`: bytes, rate, time left.
+        detail: String,
     },
     Check {
         name: String,
@@ -220,10 +222,12 @@ fn counted_line(t: &str) -> Option<ScreenEvent> {
     let (index, total): (usize, usize) = (i.trim().parse().ok()?, n.trim().parse().ok()?);
     let pct = bar_pct(rest);
     if total_bar {
+        let before_bar = rest.split('[').next().unwrap_or_default();
         return Some(ScreenEvent::DownloadTotal {
             done: index,
             total,
             pct: pct?,
+            detail: before_bar.split_whitespace().collect::<Vec<_>>().join(" "),
         });
     }
     let Some(pct) = pct else {
@@ -324,8 +328,9 @@ mod tests {
             DownloadTotal {
                 done: 11,
                 total: 38,
-                pct: 12
-            }
+                pct: 12,
+                ref detail,
+            } if detail == "87.4 MiB 11.9 MiB/s 00:51"
         ));
         assert!(matches!(
             classify_screen(
