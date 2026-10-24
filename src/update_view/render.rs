@@ -621,6 +621,80 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
     }
 }
 
+/// The plan when pacman's own text is taller than the screen: a header,
+/// `name old → new` packed into columns, the totals. At most `max` rows;
+/// past that, "+N more".
+fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
+    let arrow = s.arrow();
+    let entries: Vec<(String, String)> = run
+        .packages
+        .iter()
+        .map(|p| {
+            let v = match (&p.old, &p.new) {
+                (Some(o), Some(n)) => format!("{o} {arrow} {n}"),
+                (None, Some(n)) => n.clone(),
+                _ => String::new(),
+            };
+            (p.name.clone(), v)
+        })
+        .collect();
+    // Sized to most entries, not the longest: one long version string
+    // would cost every column; the few longer ones are cut.
+    let mut widths: Vec<usize> = entries
+        .iter()
+        .map(|(n, v)| n.width() + 1 + v.width())
+        .collect();
+    widths.sort_unstable();
+    let col = widths.get(widths.len() * 9 / 10).copied().unwrap_or(1) + 3;
+    let cols = (w / col).max(1);
+    let totals: Vec<String> = run
+        .totals
+        .iter()
+        .map(|(l, v)| {
+            line(
+                &[
+                    seg(Paint::Bold, format!("{l}:")),
+                    seg(Paint::Plain, format!(" {v}")),
+                ],
+                w,
+                s,
+            )
+        })
+        .collect();
+    let mut out = vec![line(
+        &[seg(Paint::Bold, format!("Packages ({})", entries.len()))],
+        w,
+        s,
+    )];
+    let room = max.saturating_sub(1 + totals.len()).max(1);
+    let needed = entries.len().div_ceil(cols);
+    let (shown_rows, hidden) = if needed > room {
+        let rows = room.saturating_sub(1).max(1);
+        (rows, entries.len().saturating_sub(rows * cols))
+    } else {
+        (needed, 0)
+    };
+    for r in 0..shown_rows {
+        let mut segs = Vec::new();
+        for c in 0..cols {
+            // Column-major, like `ls`: read down, then across.
+            let Some((n, v)) = entries.get(c * shown_rows + r) else {
+                break;
+            };
+            let v = cut_plain(v, col.saturating_sub(n.width() + 4));
+            let pad = col.saturating_sub(n.width() + 1 + v.width());
+            segs.push(seg(Paint::Plain, format!("{n} ")));
+            segs.push(seg(Paint::Dim, format!("{v}{}", " ".repeat(pad))));
+        }
+        out.push(line(&segs, w, s));
+    }
+    if hidden > 0 {
+        out.push(line(&[seg(Paint::Dim, format!("+{hidden} more"))], w, s));
+    }
+    out.extend(totals);
+    out
+}
+
 /// Lines from here on are the transaction's own output: after the plan's
 /// prompt line settled, i.e. after the user answered.
 fn transaction_from(run: &Run) -> Option<usize> {
@@ -749,17 +823,15 @@ pub fn frame(
         unknown(&mut above, &mut d, stop, true);
     }
 
-    // Once answered, the plan stays in scrollback, prompt line and all.
+    // Once answered, the plan is gone: it was there to decide on, and the
+    // region redraws over it. Nothing of it goes to scrollback.
     if idle_prompt.is_none()
-        && let Some((a, b, Some(p))) = plan
+        && let Some((_, _, Some(p))) = plan
         && d.lines <= p
     {
-        if d.lines < b {
-            above.extend(shown[a.max(d.lines)..b].iter().cloned());
-        }
-        above.push(shown[p].clone());
         d.lines = p + 1;
-        unknown(&mut above, &mut d, p + 1, false);
+        // Lines pacman printed inside the plan that were not plan: they
+        // go up now, since the plan that carried them is gone.
         unknown(&mut above, &mut d, usize::MAX, true);
     }
 
@@ -783,24 +855,20 @@ pub fn frame(
         Some(rows) => {
             let prompt = rows.last().cloned().unwrap_or_default();
             match plan {
-                // The whole plan as pacman printed it, if it fits; else it
-                // goes to scrollback once and the prompt stands alone.
+                // The whole plan as pacman printed it, if it fits; else the
+                // same plan packed into columns. Either way it lives in the
+                // region only, so answering wipes it.
                 Some((a, b, None)) if is_prompt(&prompt) => {
                     let lines = &run.lines[a..b];
-                    if d.lines >= b {
-                        vec![prompt]
-                    } else if lines.len() < height.saturating_sub(1)
+                    let mut r = if lines.len() < height.saturating_sub(1)
                         && lines.iter().chain([&prompt]).all(|l| l.width() <= w)
                     {
-                        let mut r = shown[a..b].to_vec();
-                        r.push(prompt);
-                        r
+                        shown[a..b].to_vec()
                     } else {
-                        above.extend(shown[a..b].iter().cloned());
-                        d.lines = b;
-                        unknown(&mut above, &mut d, b, false);
-                        vec![prompt]
-                    }
+                        compact_plan(run, w, height.saturating_sub(2), s)
+                    };
+                    r.push(prompt);
+                    r
                 }
                 // Verbatim: a cut prompt can lose its answer choices.
                 _ => rows.to_vec(),
@@ -1426,15 +1494,29 @@ mod tests {
             Some(&prompt),
             &plain(),
         );
-        assert_eq!(f.region, prompt);
-        assert!(f.above.contains(&lines[13]) && f.above.contains(&lines[56]));
+        // Too tall: packed into columns, still in the region only.
+        assert_eq!(f.region.first().map(String::as_str), Some("Packages (38)"));
+        assert_eq!(f.region.last(), Some(&lines[58]));
+        assert!(f.region.len() <= 19, "{:?}", f.region);
+        assert!(
+            f.region.iter().any(
+                |l| l.contains("brave-origin-bin") && l.contains("breeze-cursors")
+                    || l.matches("->").count() >= 2
+            ),
+            "{:?}",
+            f.region
+        );
+        assert!(
+            f.above.iter().all(|l| !l.starts_with("Package (")),
+            "{:?}",
+            f.above
+        );
         let (f, _) = frame(&r, &v, d, 120, 20, Z, Some(&prompt), &plain());
         assert!(f.above.is_empty());
-        assert_eq!(f.region, prompt);
     }
 
     #[test]
-    fn plan_stays_in_scrollback_after_the_answer() {
+    fn plan_is_wiped_after_the_answer() {
         let lines = fixture_lines();
         let r = partial(60);
         let (f, _) = frame(
@@ -1447,7 +1529,11 @@ mod tests {
             None,
             &plain(),
         );
-        assert!(f.above.contains(&lines[15]) && f.above.contains(&lines[58]));
+        assert!(
+            !f.above.contains(&lines[15]) && !f.above.contains(&lines[58]),
+            "{:?}",
+            f.above
+        );
     }
 
     #[test]
@@ -1588,8 +1674,9 @@ mod tests {
                 "height {height}"
             );
             let at = |t: &str| above.iter().position(|l| l == t);
-            assert!(at("before plan") < at(&lines[13]));
-            assert!(above.contains(&lines[58]), "height {height}");
+            assert!(at("before plan") < at("odd notice"));
+            assert!(at(&lines[13]).is_none(), "plan header went to scrollback");
+            assert!(!above.contains(&lines[58]), "height {height}");
         }
     }
 
