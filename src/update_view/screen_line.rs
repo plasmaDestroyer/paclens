@@ -80,6 +80,14 @@ pub fn is_prompt(l: &str) -> bool {
     })
 }
 
+/// Could this unfinished line be pacman (or sudo) waiting for an answer?
+/// A progress row — download, checks, a hook's bar — ends in `NN%` and is
+/// only paused, never asking.
+pub fn may_be_question(partial: &str) -> bool {
+    let t = partial.trim_end();
+    !t.is_empty() && !t.ends_with('%')
+}
+
 pub fn classify_screen(line: &str, in_sync: bool) -> ScreenEvent {
     use ScreenEvent::*;
     let t = line.trim();
@@ -271,6 +279,19 @@ pub(crate) fn bar_pct(line: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_progress_rows_are_not_questions() {
+        assert!(!may_be_question(
+            " Total ( 3/79)   363.0 MiB  5.12 MiB/s 00:02:51 [---C o o] 29%"
+        ));
+        assert!(!may_be_question(
+            "(10/75) checking package integrity   [C o o o ]   0%"
+        ));
+        assert!(may_be_question(":: Proceed with installation? [Y/n] "));
+        assert!(may_be_question("[sudo] password for someone:"));
+        assert!(!may_be_question("   "));
+    }
 
     #[test]
     fn classifies_fixture_lines() {

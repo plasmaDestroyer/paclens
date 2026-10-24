@@ -32,6 +32,7 @@ use super::model::Run;
 use super::region::Painter;
 use super::render::{View, candy_enabled, closing};
 use super::screen::Settler;
+use super::screen_line::may_be_question;
 
 /// The last run's raw pty output, `script(1)` style.
 pub const TRANSCRIPT: &str = "pacman-last.out";
@@ -215,7 +216,7 @@ pub fn run(
             }
         }
         let exited = pty.child.try_wait()?;
-        let idle = (!settler.partial().is_empty() && last_bytes.elapsed() >= IDLE)
+        let idle = (may_be_question(&settler.partial()) && last_bytes.elapsed() >= IDLE)
             .then(|| settler.tail(20.min(usize::from(rows / 2))));
         painter.tick(out, &model, &view, now, idle.as_deref(), &opts.styles)?;
         if idle.is_some() {

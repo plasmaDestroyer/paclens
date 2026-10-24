@@ -16,6 +16,7 @@ use super::model::Run;
 use super::region::Painter;
 use super::render::{View, closing};
 use super::screen::Settler;
+use super::screen_line::may_be_question;
 
 /// One timed write of the recorded terminal output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +136,7 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
     let end = p.log.last().map_or(Duration::ZERO, |(at, _)| *at);
     let idle_rows = |settler: &Settler| settler.tail(20.min(usize::from(p.height / 2)));
     for c in p.chunks {
-        let waiting = !settler.partial().is_empty();
+        let waiting = may_be_question(&settler.partial());
         let mut waited = Duration::ZERO;
         // At speed 0 nothing watches the ticks: one frame per write, and
         // none for writes closer than a tick, as the live view would.
