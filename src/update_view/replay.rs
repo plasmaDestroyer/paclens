@@ -111,6 +111,9 @@ pub struct Play<'a> {
     pub height: u16,
     /// stdout is a terminal: draw the live region; else append plain lines.
     pub live: bool,
+    /// Older pacman.log text for hook medians (the live view reads the
+    /// system log); empty for none.
+    pub history: &'a str,
     /// Shown in the failure block as where the full output is.
     pub transcript: &'a str,
     pub styles: Styles,
@@ -128,7 +131,8 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
         .unwrap_or(p.width);
     let command = header_field(p.typescript, "COMMAND").unwrap_or_else(|| "pacman".into());
     let all_log: String = p.log.iter().map(|(_, l)| format!("{l}\n")).collect();
-    let mut run = Run::new(&command, hook_medians(&all_log), HashMap::new());
+    let medians = hook_medians(&format!("{}\n{all_log}", p.history));
+    let mut run = Run::new(&command, medians, HashMap::new());
     let mut settler = Settler::new(cols);
     let mut painter = Painter::new(p.live, p.height, p.width);
     let mut log = p.log.iter().peekable();
@@ -227,6 +231,7 @@ mod tests {
             width: 120,
             height: 40,
             live,
+            history: "",
             transcript: "/tmp/last.out",
             styles: Styles::resolve(true, ColorTheme::Dark, false),
         };
@@ -279,6 +284,7 @@ mod tests {
             width: 80,
             height: 24,
             live: false,
+            history: "",
             transcript: "/tmp/last.out",
             styles: Styles::resolve(true, ColorTheme::Dark, false),
         };

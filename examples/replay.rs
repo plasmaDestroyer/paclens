@@ -57,6 +57,13 @@ fn main() -> Result<()> {
         }
         _ => Vec::new(),
     };
+    // Hook medians come from the system log, as in the live view.
+    let history = std::fs::read("/var/log/pacman.log")
+        .map(|b| {
+            let tail = &b[b.len().saturating_sub(4 << 20)..];
+            String::from_utf8_lossy(tail).into_owned()
+        })
+        .unwrap_or_default();
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let stdout = std::io::stdout();
     let p = Play {
@@ -73,6 +80,7 @@ fn main() -> Result<()> {
         width: width.unwrap_or(cols),
         height: rows,
         live: stdout.is_terminal(),
+        history: &history,
         transcript: &typescript,
         styles: Styles::resolve(false, ColorTheme::Dark, stdout.is_terminal()),
     };
