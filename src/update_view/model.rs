@@ -130,6 +130,9 @@ pub struct Run {
     pub unknown: Vec<String>,
     /// Where each `unknown` line sits in `lines`.
     pub unknown_at: Vec<usize>,
+    /// Where each warning line sits in `lines`: shown verbatim, like an
+    /// unknown line, but not counted as one.
+    pub warning_at: Vec<usize>,
     /// name → version from the scan cache: the old version for `PlanNames`.
     pub installed: HashMap<String, String>,
     pub log_seen: bool,
@@ -184,6 +187,7 @@ impl Run {
             lines: Vec::new(),
             unknown: Vec::new(),
             unknown_at: Vec::new(),
+            warning_at: Vec::new(),
             installed,
             log_seen: false,
             tx_started: false,
@@ -224,7 +228,10 @@ impl Run {
                 self.phase_mut(PhaseKind::Sync).done = self.dbs.len();
             }
             S::UpgradeStart | S::NothingToDo => self.enter(PhaseKind::Plan, at),
-            S::Warning(w) => self.note(NoteKind::Warning, w),
+            S::Warning(w) => {
+                self.note(NoteKind::Warning, w);
+                self.warning_at.push(self.lines.len().saturating_sub(1));
+            }
             S::Error(e) => self.note(NoteKind::Error { recovered: false }, e),
             S::Pacnew(p) => self.note(NoteKind::Pacnew, p),
             S::PlanHeader { count } => {
@@ -447,6 +454,7 @@ impl Run {
                         | NoteKind::Snapshot { .. }
                         | NoteKind::Pacnew
                         | NoteKind::Optdepends
+                        | NoteKind::Warning
                         | NoteKind::Error { recovered: true }
                 )
             })

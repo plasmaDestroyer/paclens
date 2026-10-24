@@ -106,7 +106,11 @@ pub fn classify_screen(line: &str, in_sync: bool) -> ScreenEvent {
         "there is nothing to do" => return NothingToDo,
         _ => {}
     }
-    if let Some(w) = t.strip_prefix("warning: ") {
+    // pacman writes `warning:`; systemd, from a scriptlet, `Warning:`.
+    if let Some(w) = t
+        .strip_prefix("warning: ")
+        .or_else(|| t.strip_prefix("Warning: "))
+    {
         return match w.split_once(" installed as ") {
             Some((_, p)) if p.ends_with(".pacnew") => Pacnew(p.to_string()),
             _ => Warning(w.to_string()),
@@ -283,6 +287,14 @@ pub(crate) fn bar_pct(line: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn systemd_capital_warning_is_a_warning() {
+        let l = "Warning: The unit file of warp-svc.service changed on disk. Run 'systemctl daemon-reload' to reload units.";
+        assert!(
+            matches!(classify_screen(l, false), ScreenEvent::Warning(w) if w.starts_with("The unit file"))
+        );
+    }
 
     #[test]
     fn paused_progress_rows_are_not_questions() {

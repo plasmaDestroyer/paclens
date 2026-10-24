@@ -479,11 +479,21 @@ pub fn frame(
     let unknown = |above: &mut Vec<String>, d: &mut Delivered, stop: usize, print: bool| {
         let stop = stop.min(run.lines.len());
         if print {
-            let new = run.unknown_at.iter().zip(&run.unknown);
-            above.extend(
-                new.filter(|(at, _)| (d.unknown..stop).contains(*at))
-                    .map(|(_, l)| l.clone()),
-            );
+            // Unknown lines and warnings, merged in screen order.
+            let warnings = run
+                .warning_at
+                .iter()
+                .filter_map(|&at| Some((at, run.lines.get(at)?)));
+            let mut new: Vec<(usize, &String)> = run
+                .unknown_at
+                .iter()
+                .copied()
+                .zip(&run.unknown)
+                .chain(warnings)
+                .filter(|(at, _)| (d.unknown..stop).contains(at))
+                .collect();
+            new.sort_by_key(|&(at, _)| at);
+            above.extend(new.into_iter().map(|(_, l)| l.clone()));
         }
         d.unknown = d.unknown.max(stop);
     };
@@ -628,6 +638,15 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     if !rebuild.is_empty() {
         groups.push((bullet, format!("rebuild: {}", rebuild.join(", "))));
     }
+    // One line each: a warning is usually something to do (daemon-reload).
+    // "local is newer than repo" was shown before the plan and asks nothing.
+    let to_do = |w: &String| !w.contains(" is newer than ");
+    for w in texts(&|k| *k == NoteKind::Warning)
+        .into_iter()
+        .filter(to_do)
+    {
+        groups.push((mark(Ghost::Clyde), format!("warning: {w}")));
+    }
     let pacnew = texts(&|k| *k == NoteKind::Pacnew);
     if !pacnew.is_empty() {
         groups.push((
@@ -678,11 +697,13 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
             format!("{n} {lines} not recognised {b} paclens transcript"),
         ));
     }
+    // Not cut to the width: the receipt stays on screen, and a cut line loses
+    // the part that says what to do. The terminal wraps it.
     for ((p, m), text) in groups {
-        out.push(line(
-            &[seg(p, m), seg(Paint::Plain, format!(" {text}"))],
-            w,
-            s,
+        out.push(format!(
+            "{}{}",
+            paint(p, m, s),
+            paint(Paint::Plain, &format!(" {text}"), s)
         ));
     }
     out
@@ -861,6 +882,40 @@ mod tests {
             assert!(c[0].contains("38 eaten"), "{c:?}");
             assert!(c.len() <= 6, "{c:?}");
         }
+    }
+
+    #[test]
+    fn receipt_keeps_actionable_warnings_whole() {
+        let mut r = fixture_run();
+        let w = "Warning: The unit file of warp-svc.service changed on disk. Run 'systemctl daemon-reload' to reload units.";
+        r.apply_line(w, Z);
+        let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 40, "/t", &plain());
+        assert!(
+            c.iter()
+                .any(|l| l.ends_with("'systemctl daemon-reload' to reload units.")),
+            "{c:?}"
+        );
+        assert!(!c.iter().any(|l| l.contains("is newer than")), "{c:?}");
+    }
+
+    #[test]
+    fn warnings_go_up_in_screen_order() {
+        let mut r = empty();
+        r.apply_line("warning: foo: local (2-1) is newer than extra (1-1)", Z);
+        let (f, _) = frame(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            Delivered::default(),
+            120,
+            40,
+            Z,
+            None,
+            &plain(),
+        );
+        assert_eq!(
+            f.above,
+            ["warning: foo: local (2-1) is newer than extra (1-1)"]
+        );
     }
 
     #[test]
