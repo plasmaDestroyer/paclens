@@ -367,10 +367,13 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
                 .max()
                 .unwrap_or(0);
             let name_w = name_w.max(8).min(w / 3);
-            // `100%` + `  1055.4 MiB` + `  1503 KiB/s` + `  01:55`
-            let right = 4 + 2 + 10 + 2 + 11 + 2 + 5;
-            // `  ├─ ` + name + ` [` + bar + `] ` + right
-            let cells = w.saturating_sub(5 + name_w + 2 + 2 + right).clamp(10, 80);
+            // `100%` + `  1055.4 MiB` + `  1503 KiB/s` + `  00:02:51`
+            let right = 4 + 2 + 10 + 2 + 11 + 2 + 8;
+            // `  ├─ ` + name + ` [` + bar + `] ` + right, and one spare column
+            // so the line never touches the edge.
+            let cells = w
+                .saturating_sub(5 + name_w + 2 + 2 + right + 1)
+                .clamp(10, 80);
             run.in_flight
                 .iter()
                 .map(|f| {
@@ -383,7 +386,7 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
                         seg(Paint::Plain, format!("{name} ")),
                         seg(Paint::Plain, format!("[{}] ", bar(f.pct, cells, true, s))),
                         seg(Paint::Plain, format!("{:>3}%", f.pct)),
-                        seg(Paint::Dim, format!("  {size:>10}  {rate:>11}  {eta:>5}")),
+                        seg(Paint::Dim, format!("  {size:>10}  {rate:>11}  {eta:>8}")),
                     ]
                 })
                 .collect()
@@ -1705,6 +1708,33 @@ mod tests {
                 None,
                 &plain(),
             );
+        }
+    }
+
+    #[test]
+    fn download_rows_keep_their_last_column() {
+        let mut r = partial(120);
+        r.in_flight.push(crate::update_view::model::InFlight {
+            name: "zed".into(),
+            pct: 40,
+            detail: "1055.4 MiB 1503 KiB/s 00:02:51".into(),
+            queued: false,
+        });
+        for w in [80u16, 120, 154, 181] {
+            let f = frame(
+                &r,
+                &view(Layout::Inline, Motif::Subtle),
+                Delivered::default(),
+                w,
+                40,
+                Z,
+                None,
+                &plain(),
+            )
+            .0;
+            let row = f.region.iter().find(|l| l.contains("zed")).unwrap();
+            assert!(row.ends_with("00:02:51"), "w={w}: {row:?}");
+            assert!(row.width() < usize::from(w), "w={w}");
         }
     }
 
