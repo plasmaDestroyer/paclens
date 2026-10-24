@@ -148,7 +148,7 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
             }
             waited += step;
             catch_up(&mut log, &mut run, now + waited);
-            run.observe_screen(&settler.tail(8), now + waited);
+            run.observe_screen(&settler.tail(40), now + waited);
             let idle = (waiting && waited >= IDLE).then(|| idle_rows(&settler));
             painter.tick(out, &run, &p.view, now + waited, idle.as_deref(), &p.styles)?;
             if idle.is_some() {

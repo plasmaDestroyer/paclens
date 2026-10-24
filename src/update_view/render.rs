@@ -352,65 +352,235 @@ fn lane(run: &Run, w: usize, s: &Styles) -> String {
     line(&segs, w, s)
 }
 
-/// Phase rows for the inline layouts, roomiest first: every phase; done
-/// ones folded; pending ones dropped too; the running one alone.
-fn phase_variants(run: &Run, now: Duration, s: &Styles) -> [Vec<Vec<Seg>>; 4] {
-    let rows = |keep: fn(&Phase) -> bool| -> Vec<Vec<Seg>> {
-        run.phases
-            .iter()
-            .filter(|p| keep(p))
-            .map(|p| phase_row(p, now, s))
-            .collect()
+/// The children of the running phase: what pacman is doing right now, one
+/// row each — files downloading, the package being upgraded, the hook that
+/// runs and its last lines of output.
+fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
+    let Some(k) = run.current() else {
+        return Vec::new();
     };
-    let folded = |keep: fn(&Phase) -> bool| -> Vec<Vec<Seg>> {
-        let mut v: Vec<Vec<Seg>> = done_summary(run, now, s).into_iter().collect();
-        v.extend(rows(keep));
+    let mut rows: Vec<Vec<Seg>> = match k {
+        PhaseKind::Download => {
+            let width = run
+                .in_flight
+                .iter()
+                .map(|f| f.name.width())
+                .max()
+                .unwrap_or(0);
+            let width = width.min(w / 3);
+            run.in_flight
+                .iter()
+                .map(|f| {
+                    vec![
+                        seg(
+                            Paint::Plain,
+                            format!("{:<width$} ", cut_plain(&f.name, width)),
+                        ),
+                        seg(Paint::Plain, format!("[{}] ", bar(f.pct, 12, true, s))),
+                        seg(Paint::Plain, format!("{:>3}%", f.pct)),
+                        seg(Paint::Dim, format!("  {}", f.detail)),
+                    ]
+                })
+                .collect()
+        }
+        PhaseKind::Packages => {
+            // The last few `(i/n) verb name` lines: done ones dim, the
+            // current one plain.
+            let recent: Vec<(String, String)> = run
+                .lines
+                .iter()
+                .rev()
+                .filter_map(|l| match classify_screen(l, false) {
+                    ScreenEvent::Package { verb, name, .. } => Some((verb, name)),
+                    _ => None,
+                })
+                .take(3)
+                .collect();
+            let n = recent.len();
+            recent
+                .into_iter()
+                .rev()
+                .enumerate()
+                .map(|(i, (verb, name))| {
+                    let versions = run
+                        .packages
+                        .iter()
+                        .find(|p| p.name == name)
+                        .and_then(|p| {
+                            Some(format!(
+                                "  {} {} {}",
+                                p.old.as_ref()?,
+                                s.arrow(),
+                                p.new.as_ref()?
+                            ))
+                        })
+                        .unwrap_or_default();
+                    let paint = if i + 1 == n { Paint::Plain } else { Paint::Dim };
+                    vec![
+                        seg(paint, format!("{verb} {name}")),
+                        seg(Paint::Dim, versions),
+                    ]
+                })
+                .collect()
+        }
+        PhaseKind::PreHooks | PhaseKind::PostHooks => {
+            let list = if k == PhaseKind::PreHooks {
+                &run.pre_hooks
+            } else {
+                &run.post_hooks
+            };
+            let total = phase(run, k)
+                .and_then(|p| p.total)
+                .map_or_else(|| "?".to_string(), |t| t.to_string());
+            let started: Vec<(usize, &Hook)> = list
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| h.started.is_some())
+                .collect();
+            let mut rows: Vec<Vec<Seg>> = Vec::new();
+            let from = started.len().saturating_sub(2);
+            for (i, &(n, h)) in started.iter().enumerate().skip(from) {
+                let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
+                let desc = format!("({}/{total}) {desc}", n + 1);
+                let running = h.ended.is_none() && i + 1 == started.len();
+                let (mark, paint) = if running {
+                    (seg(Paint::Warn, g(s, "▸", ">")), Paint::Plain)
+                } else {
+                    (seg(Paint::Ok, s.check()), Paint::Dim)
+                };
+                rows.push(vec![
+                    mark,
+                    seg(paint, format!(" {desc}")),
+                    seg(Paint::Dim, format!("  {}", hook_time(h, now, s))),
+                ]);
+            }
+            rows
+        }
+        _ => item(run, now, s).into_iter().collect(),
+    };
+    // After the answer: the transaction's own output (hooks, scriptlets),
+    // last few lines, under what produced it.
+    let (_, _, pipe, _) = s.tree_glyphs();
+    for l in log_lines(run, LOG_TAIL) {
+        rows.push(vec![seg(Paint::Dim, format!("  {pipe} {}", l.trim_end()))]);
+    }
+    rows
+}
+
+/// `name` cut to `w` columns with an ellipsis, uncoloured (it is padded after).
+fn cut_plain(name: &str, w: usize) -> String {
+    if name.width() <= w {
+        return name.to_string();
+    }
+    let mut out = String::new();
+    for c in name.chars() {
+        if out.width() + c.width().unwrap_or(0) >= w {
+            break;
+        }
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
+/// The tree: header, each finished phase on one line, the running phase
+/// open with its children, the pending ones on one dim line. At most `max`
+/// rows: finished phases fold into one line first, then children give way
+/// ("+N more").
+fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles) -> Vec<String> {
+    let fit = |segs: &Vec<Seg>| line(segs, w, s);
+    let (branch, last, _, _) = s.tree_glyphs();
+    let done: Vec<Vec<Seg>> = run
+        .phases
+        .iter()
+        .filter(|p| p.state == PhaseState::Done)
+        .map(|p| phase_row(p, now, s))
+        .collect();
+    let running: Option<Vec<Seg>> = run
+        .phases
+        .iter()
+        .find(|p| p.state == PhaseState::Running)
+        .map(|p| {
+            let mut row = phase_row(p, now, s);
+            if let Some(d) = &p.detail {
+                row.push(seg(Paint::Dim, format!("  {d}")));
+            }
+            row
+        });
+    let pending: Vec<&str> = run
+        .phases
+        .iter()
+        .filter(|p| p.state == PhaseState::Pending)
+        .map(|p| name(p.kind))
+        .collect();
+    let pending = (!pending.is_empty()).then(|| {
+        let dot = g(s, "·", ".");
+        vec![seg(
+            Paint::Dim,
+            format!("{dot} {}", pending.join(&format!(" {dot} "))),
+        )]
+    });
+    let kids = children(run, w, now, s);
+
+    let fixed = 1 + usize::from(running.is_some()) + usize::from(pending.is_some());
+    let done_rows: Vec<Vec<Seg>> = if fixed + done.len() + kids.len() > max {
+        done_summary(run, now, s).into_iter().collect()
+    } else {
+        done
+    };
+    let room = max.saturating_sub(fixed + done_rows.len());
+    let kid_rows: Vec<Vec<Seg>> = if kids.len() > room {
+        let keep = room.saturating_sub(1);
+        let mut v: Vec<Vec<Seg>> = kids.iter().take(keep).cloned().collect();
+        if room > 0 {
+            let what = if run.current() == Some(PhaseKind::Download) {
+                " in flight"
+            } else {
+                ""
+            };
+            v.push(vec![seg(
+                Paint::Dim,
+                format!("+{} more{what}", kids.len() - keep),
+            )]);
+        }
         v
+    } else {
+        kids
     };
-    [
-        rows(|_| true),
-        folded(|p| p.state != PhaseState::Done),
-        folded(|p| p.state == PhaseState::Running),
-        rows(|p| p.state == PhaseState::Running),
-    ]
+
+    let mut rows = vec![fit(&header(run, view, now, s))];
+    rows.extend(done_rows.iter().map(fit));
+    if let Some(r) = &running {
+        rows.push(fit(r));
+        let n = kid_rows.len();
+        for (i, mut k) in kid_rows.into_iter().enumerate() {
+            let glyph = if i + 1 == n { last } else { branch };
+            k.insert(0, seg(Paint::Dim, format!("  {glyph} ")));
+            rows.push(fit(&k));
+        }
+    }
+    rows.extend(pending.iter().map(fit));
+    rows.truncate(max.max(1));
+    rows
 }
 
 fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styles) -> Vec<String> {
     let fit = |segs: &Vec<Seg>| line(segs, w, s);
-    let mut tail = log_tail(run, view, w, s);
-    tail.extend(item(run, now, s).iter().map(fit));
-    tail.extend(meter(run, view, w, s));
-    let mut rows = vec![fit(&header(run, view, now, s))];
+    let room = height.saturating_sub(1).max(1);
     match view.layout {
         Layout::Inline => {
             // Fixed height, so the region never jumps.
-            let h = (height / 3).clamp(1, 10);
-            let variants = phase_variants(run, now, s);
-            let pick = variants
-                .iter()
-                .position(|v| 1 + v.len() + tail.len() <= h)
-                .unwrap_or(variants.len() - 1);
-            rows.extend(variants[pick].iter().map(fit));
-            rows.extend(tail);
+            let h = (height / 2).clamp(1, 16);
+            let mut rows = tree(run, view, w, h.saturating_sub(1).max(1), now, s);
+            rows.extend(meter(run, view, w, s));
             rows.truncate(h);
             rows.resize(h, String::new());
-            return rows;
+            rows
         }
-        Layout::InlineGrow => {
-            rows.extend(phase_variants(run, now, s)[1].iter().map(fit));
-            rows.extend(tail);
-        }
-        Layout::Nom => {
-            let (_, last, _, _) = s.tree_glyphs();
-            for p in &run.phases {
-                rows.push(fit(&phase_row(p, now, s)));
-                if p.state == PhaseState::Running
-                    && let Some(mut it) = item(run, now, s)
-                {
-                    it.insert(0, seg(Paint::Dim, format!("  {last}")));
-                    rows.push(fit(&it));
-                }
-            }
+        Layout::InlineGrow | Layout::Nom => {
+            let mut rows = tree(run, view, w, room.saturating_sub(1).max(1), now, s);
+            rows.extend(meter(run, view, w, s));
+            rows
         }
         Layout::Receipt => {
             let one = match run.current().and_then(|k| phase(run, k)) {
@@ -424,13 +594,11 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
                 }
                 None => header(run, view, now, s),
             };
-            let mut rows = log_tail(run, view, w, s);
+            let mut rows = log_tail(run, w, s);
             rows.push(fit(&one));
-            return rows;
+            rows
         }
     }
-    rows.truncate(height.saturating_sub(1).max(1));
-    rows
 }
 
 /// Lines from here on are the transaction's own output: after the plan's
@@ -442,28 +610,33 @@ fn transaction_from(run: &Run) -> Option<usize> {
 /// How many lines of the transaction's output the live region shows.
 const LOG_TAIL: usize = 5;
 
-/// The last few unrecognised lines of the transaction (hook and scriptlet
-/// chatter), dim, for the live region only. The full text stays in the
-/// transcript; a failure shows its own context.
-fn log_tail(run: &Run, view: &View, w: usize, s: &Styles) -> Vec<String> {
-    if view.layout == Layout::Nom {
-        return Vec::new();
-    }
+/// The last `n` unrecognised lines of the transaction (hook and scriptlet
+/// chatter), oldest first. The full text stays in the transcript; a failure
+/// shows its own context.
+fn log_lines(run: &Run, n: usize) -> Vec<&String> {
     let Some(from) = transaction_from(run) else {
         return Vec::new();
     };
-    let (_, _, bar, _) = s.tree_glyphs();
-    let mut tail: Vec<String> = run
+    let mut tail: Vec<&String> = run
         .unknown_at
         .iter()
         .zip(&run.unknown)
         .rev()
         .filter(|(at, _)| **at >= from)
-        .take(LOG_TAIL)
-        .map(|(_, l)| line(&[seg(Paint::Dim, format!("{bar} {}", l.trim_end()))], w, s))
+        .take(n)
+        .map(|(_, l)| l)
         .collect();
     tail.reverse();
     tail
+}
+
+/// [`log_lines`] as dim region rows, for the one-line receipt layout.
+fn log_tail(run: &Run, w: usize, s: &Styles) -> Vec<String> {
+    let (_, _, pipe, _) = s.tree_glyphs();
+    log_lines(run, LOG_TAIL)
+        .into_iter()
+        .map(|l| line(&[seg(Paint::Dim, format!("{pipe} {}", l.trim_end()))], w, s))
+        .collect()
 }
 
 /// The plan as pacman printed it: from `Package (N)` to the last total
@@ -1031,7 +1204,7 @@ mod tests {
         let mid = partial(161);
         for h in [40u16, 15, 6] {
             let f = draw(&mid, &view(Layout::Inline, Motif::Subtle), h, &plain());
-            assert_eq!(f.region.len(), (h as usize / 3).min(10), "h={h}");
+            assert_eq!(f.region.len(), (h as usize / 2).min(16), "h={h}");
         }
         let done = fixture_run();
         let inline = draw(&done, &view(Layout::Inline, Motif::Subtle), 40, &plain());
@@ -1041,8 +1214,8 @@ mod tests {
             40,
             &plain(),
         );
-        assert_eq!(inline.region.len(), 10);
-        assert!(grow.region.len() < 10, "{:?}", grow.region);
+        assert_eq!(inline.region.len(), 16);
+        assert!(grow.region.len() < 16, "{:?}", grow.region);
     }
 
     #[test]

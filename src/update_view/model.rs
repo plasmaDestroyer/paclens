@@ -57,6 +57,15 @@ pub struct Phase {
     pub detail: Option<String>,
 }
 
+/// One file pacman is downloading right now, as its live row shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InFlight {
+    pub name: String,
+    pub pct: u8,
+    /// pacman's `1.8 MiB  460 KiB/s 00:33`: bytes so far, rate, time left.
+    pub detail: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Pkg {
     pub name: String,
@@ -128,6 +137,8 @@ pub struct Run {
     pub lines: Vec<String>,
     /// `lines` with pacman's colours, same index.
     pub styled: Vec<String>,
+    /// Files downloading now (download phase only), in screen order.
+    pub in_flight: Vec<InFlight>,
     /// Unrecognised lines, verbatim, in order — unrecognised hook output too.
     pub unknown: Vec<String>,
     /// Where each `unknown` line sits in `lines`.
@@ -188,6 +199,7 @@ impl Run {
             prompt: None,
             lines: Vec::new(),
             styled: Vec::new(),
+            in_flight: Vec::new(),
             unknown: Vec::new(),
             unknown_at: Vec::new(),
             warning_at: Vec::new(),
@@ -321,8 +333,14 @@ impl Run {
     /// it is read from here while the download runs.
     pub fn observe_screen(&mut self, rows: &[String], at: Duration) {
         if self.current() != Some(PhaseKind::Download) {
+            self.in_flight.clear();
             return;
         }
+        self.in_flight = rows
+            .iter()
+            .filter_map(|r| self.in_flight_row(r))
+            .filter(|f| f.pct < 100)
+            .collect();
         let total = rows
             .iter()
             .rev()
@@ -594,17 +612,34 @@ impl Run {
         let (Some(stem), more) = (words.next(), words.next().is_some()) else {
             return false;
         };
-        let planned = stem
+        self.current() == Some(PhaseKind::Download)
+            && self.planned(stem).is_some()
+            && (!more || bar_pct(t).is_some())
+    }
+
+    /// The planned package a download file stem `name-ver-rel-arch` is for.
+    fn planned(&self, stem: &str) -> Option<String> {
+        let names = stem
             .rsplit_once('-')
-            .and_then(|(nvr, _arch)| plan_names(nvr))
-            .is_some_and(|n| {
-                n.iter().all(|(name, ver)| {
-                    self.packages
-                        .iter()
-                        .any(|p| &p.name == name && p.new.as_ref() == Some(ver))
-                })
-            });
-        self.current() == Some(PhaseKind::Download) && planned && (!more || bar_pct(t).is_some())
+            .and_then(|(nvr, _arch)| plan_names(nvr))?;
+        let all = names.iter().all(|(name, ver)| {
+            self.packages
+                .iter()
+                .any(|p| &p.name == name && p.new.as_ref() == Some(ver))
+        });
+        all.then(|| names.into_iter().next().map(|(n, _)| n))
+            .flatten()
+    }
+
+    /// A live per-file download row: ` stem  1.8 MiB  460 KiB/s 00:33 [bar]  9%`.
+    fn in_flight_row(&self, row: &str) -> Option<InFlight> {
+        let t = row.trim();
+        let stem = t.split_whitespace().next()?;
+        let pct = bar_pct(t)?;
+        let name = self.planned(stem)?;
+        let detail = t[stem.len()..].split('[').next().unwrap_or_default();
+        let detail = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+        Some(InFlight { name, pct, detail })
     }
 
     fn add_names(&mut self, names: Vec<(String, String)>) {
@@ -942,12 +977,26 @@ mod tests {
             " zed-1.25.3-1-x86_64   40.1 MiB  5.0 MiB/s 00:08 [---C o o]  50%".to_string(),
             " Total ( 3/79)   363.0 MiB  5.12 MiB/s 00:02:51 [---C o o] 29%".to_string(),
         ];
+        r.packages.push(Pkg {
+            name: "zed".into(),
+            new: Some("1.25.3-1".into()),
+            ..Pkg::default()
+        });
         r.observe_screen(&rows, Z);
+        assert_eq!(
+            r.in_flight,
+            [InFlight {
+                name: "zed".into(),
+                pct: 50,
+                detail: "40.1 MiB 5.0 MiB/s 00:08".into()
+            }]
+        );
         let d = &r.phases[idx(PhaseKind::Download)];
         assert_eq!((d.done, d.total, d.pct), (3, Some(79), Some(29)));
         assert_eq!(d.detail.as_deref(), Some("363.0 MiB 5.12 MiB/s 00:02:51"));
         r.apply_line(":: Processing package changes...", Z);
         r.observe_screen(&rows, Z);
+        assert!(r.in_flight.is_empty());
         assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
     }
 
