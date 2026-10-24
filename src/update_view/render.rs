@@ -377,7 +377,8 @@ fn phase_variants(run: &Run, now: Duration, s: &Styles) -> [Vec<Vec<Seg>>; 4] {
 
 fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styles) -> Vec<String> {
     let fit = |segs: &Vec<Seg>| line(segs, w, s);
-    let mut tail: Vec<String> = item(run, now, s).iter().map(fit).collect();
+    let mut tail = log_tail(run, view, w, s);
+    tail.extend(item(run, now, s).iter().map(fit));
     tail.extend(meter(run, view, w, s));
     let mut rows = vec![fit(&header(run, view, now, s))];
     match view.layout {
@@ -423,11 +424,46 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
                 }
                 None => header(run, view, now, s),
             };
-            return vec![fit(&one)];
+            let mut rows = log_tail(run, view, w, s);
+            rows.push(fit(&one));
+            return rows;
         }
     }
     rows.truncate(height.saturating_sub(1).max(1));
     rows
+}
+
+/// Lines from here on are the transaction's own output: after the plan's
+/// prompt line settled, i.e. after the user answered.
+fn transaction_from(run: &Run) -> Option<usize> {
+    plan(run).and_then(|(_, _, p)| p).map(|p| p + 1)
+}
+
+/// How many lines of the transaction's output the live region shows.
+const LOG_TAIL: usize = 5;
+
+/// The last few unrecognised lines of the transaction (hook and scriptlet
+/// chatter), dim, for the live region only. The full text stays in the
+/// transcript; a failure shows its own context.
+fn log_tail(run: &Run, view: &View, w: usize, s: &Styles) -> Vec<String> {
+    if view.layout == Layout::Nom {
+        return Vec::new();
+    }
+    let Some(from) = transaction_from(run) else {
+        return Vec::new();
+    };
+    let (_, _, bar, _) = s.tree_glyphs();
+    let mut tail: Vec<String> = run
+        .unknown_at
+        .iter()
+        .zip(&run.unknown)
+        .rev()
+        .filter(|(at, _)| **at >= from)
+        .take(LOG_TAIL)
+        .map(|(_, l)| line(&[seg(Paint::Dim, format!("{bar} {}", l.trim_end()))], w, s))
+        .collect();
+    tail.reverse();
+    tail
 }
 
 /// The plan as pacman printed it: from `Package (N)` to the last total
@@ -485,13 +521,17 @@ pub fn frame(
     let unknown = |above: &mut Vec<String>, d: &mut Delivered, stop: usize, print: bool| {
         let stop = stop.min(run.lines.len());
         if print {
-            // Unknown lines and warnings, merged in screen order.
+            // Unknown lines and warnings, merged in screen order. The
+            // transaction's unknown lines stay in the live tail instead.
+            let quiet_from = transaction_from(run).unwrap_or(usize::MAX);
             let warnings = run
                 .warning_at
                 .iter()
                 .filter_map(|&at| Some((at, shown.get(at)?)));
             let unknown = run.unknown_at.iter().zip(&run.unknown);
-            let unknown = unknown.map(|(&at, l)| (at, shown.get(at).unwrap_or(l)));
+            let unknown = unknown
+                .filter(|(at, _)| **at < quiet_from)
+                .map(|(&at, l)| (at, shown.get(at).unwrap_or(l)));
             let mut new: Vec<(usize, &String)> = unknown
                 .chain(warnings)
                 .filter(|(at, _)| (d.unknown..stop).contains(at))
@@ -1119,8 +1159,14 @@ mod tests {
         for l in ["odd one", "odd two", "odd three"] {
             r.apply_line(l, Z);
         }
+        // The transaction's chatter: the live tail, never scrollback.
         let (f, _) = frame(&r, &v, d, 120, 40, Z, None, &plain());
-        assert_eq!(f.above, ["odd one", "odd two", "odd three"]);
+        assert!(f.above.is_empty(), "{:?}", f.above);
+        assert!(
+            f.region.iter().any(|l| l.ends_with("odd three")),
+            "{:?}",
+            f.region
+        );
     }
 
     #[test]
@@ -1283,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_line_after_an_answered_prompt_goes_up() {
+    fn unknown_line_after_an_answered_prompt_goes_to_the_live_tail() {
         let lines = fixture_lines();
         let mut r = partial(58);
         r.apply_line(&format!("{} y", lines[58]), Z);
@@ -1291,9 +1337,14 @@ mod tests {
         let v = view(Layout::Inline, Motif::Subtle);
         let (f, _) = frame(&r, &v, Delivered::default(), 120, 49, Z, None, &plain());
         assert!(
-            f.above.contains(&"custom hook notice".to_string()),
+            !f.above.contains(&"custom hook notice".to_string()),
             "{:?}",
             f.above
+        );
+        assert!(
+            f.region.iter().any(|l| l.ends_with("custom hook notice")),
+            "{:?}",
+            f.region
         );
     }
 
@@ -1335,12 +1386,16 @@ mod tests {
             r.apply_line("after prompt", Z);
             let (f, _) = frame(&r, &v, d, 120, height, Z, None, &plain());
             above.extend(f.above);
-            for t in ["before plan", "odd notice", "after prompt"] {
+            for t in ["before plan", "odd notice"] {
                 let n = above.iter().filter(|l| *l == t).count();
                 assert_eq!(n, 1, "height {height} {t:?}: {above:?}");
             }
+            assert!(
+                !above.iter().any(|l| l == "after prompt"),
+                "height {height}"
+            );
             let at = |t: &str| above.iter().position(|l| l == t);
-            assert!(at("before plan") < at(&lines[13]) && at(&lines[58]) < at("after prompt"));
+            assert!(at("before plan") < at(&lines[13]));
             assert!(above.contains(&lines[58]), "height {height}");
         }
     }
