@@ -76,16 +76,41 @@ fn line(segs: &[Seg], width: usize, s: &Styles) -> String {
     let mut out = String::new();
     let mut left = width;
     for (p, t) in segs {
-        let w = t.width();
+        let w = visible_width(t);
         if w <= left {
             out += &paint(*p, t, s);
             left -= w;
         } else {
-            out += &paint(*p, &cut(t, left, s), s);
+            // A segment that is already coloured (a bar) is never cut.
+            if !t.contains('\u{1b}') {
+                out += &paint(*p, &cut(t, left, s), s);
+            }
             break;
         }
     }
     out
+}
+
+/// Columns `t` takes on screen, colour escapes left out.
+fn visible_width(t: &str) -> usize {
+    if !t.contains('\u{1b}') {
+        return t.width();
+    }
+    let mut esc = false;
+    t.chars()
+        .filter(|&c| match (esc, c) {
+            (false, '\u{1b}') => {
+                esc = true;
+                false
+            }
+            (true, c) => {
+                esc = !c.is_ascii_alphabetic();
+                false
+            }
+            (false, _) => true,
+        })
+        .map(|c| c.width().unwrap_or(0))
+        .sum()
 }
 
 /// `t` cut to `w` columns, the last of them an ellipsis.
@@ -1722,21 +1747,16 @@ mod tests {
             detail: "1055.4 MiB 1503 KiB/s 00:02:51".into(),
             queued: false,
         });
-        for w in [80u16, 120, 154, 181] {
-            let f = frame(
-                &r,
-                &view(Layout::Inline, Motif::Subtle),
-                Delivered::default(),
-                w,
-                40,
-                Z,
-                None,
-                &plain(),
-            )
-            .0;
-            let row = f.region.iter().find(|l| l.contains("zed")).unwrap();
-            assert!(row.ends_with("00:02:51"), "w={w}: {row:?}");
-            assert!(row.width() < usize::from(w), "w={w}");
+        // Colour too: the bar's escape codes must not eat the line's width.
+        for st in [plain(), colour()] {
+            for w in [80u16, 120, 154, 181] {
+                let v = view(Layout::Inline, Motif::Subtle);
+                let f = frame(&r, &v, Delivered::default(), w, 40, Z, None, &st).0;
+                let row = f.region.iter().find(|l| l.contains("zed")).unwrap();
+                let row = strip(row);
+                assert!(row.ends_with("00:02:51"), "w={w}: {row:?}");
+                assert!(row.width() < usize::from(w), "w={w}");
+            }
         }
     }
 
