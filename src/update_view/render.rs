@@ -736,6 +736,23 @@ fn transaction_from(run: &Run) -> Option<usize> {
     plan(run).and_then(|(_, _, p)| p).map(|p| p + 1)
 }
 
+/// Is line `at` hook output? Inside `:: Running pre-transaction hooks...`
+/// up to `:: Processing package changes...`, or after `:: Running
+/// post-transaction hooks...`. A package's own install text (scriptlet
+/// messages such as "add yourself to the input group") is not: it is a
+/// message for the user and stays in scrollback.
+fn in_hooks(run: &Run, at: usize) -> bool {
+    let mut hooks = false;
+    for l in run.lines.iter().take(at + 1) {
+        match classify_screen(l, false) {
+            ScreenEvent::PreHooks | ScreenEvent::PostHooks => hooks = true,
+            ScreenEvent::Processing => hooks = false,
+            _ => {}
+        }
+    }
+    hooks
+}
+
 /// How many lines of the transaction's output the live region shows.
 const LOG_TAIL: usize = 5;
 
@@ -776,7 +793,7 @@ fn log_lines(run: &Run, n: usize) -> Vec<&String> {
     let mut tail: Vec<&String> = all
         .into_iter()
         .rev()
-        .filter(|(at, _)| *at >= from)
+        .filter(|(at, _)| *at >= from && in_hooks(run, *at))
         .take(n)
         .map(|(_, l)| l)
         .collect();
@@ -856,11 +873,11 @@ pub fn frame(
             let warnings = run
                 .warning_at
                 .iter()
-                .filter(|&&at| at < quiet_from)
+                .filter(|&&at| at < quiet_from || !in_hooks(run, at))
                 .filter_map(|&at| Some((at, shown.get(at)?)));
             let unknown = run.unknown_at.iter().zip(&run.unknown);
             let unknown = unknown
-                .filter(|(at, _)| **at < quiet_from)
+                .filter(|(at, _)| **at < quiet_from || !in_hooks(run, **at))
                 .map(|(&at, l)| (at, shown.get(at).unwrap_or(l)));
             let mut new: Vec<(usize, &String)> = unknown
                 .chain(warnings)
@@ -1477,10 +1494,11 @@ mod tests {
         }
         let v = view(Layout::Inline, Motif::Subtle);
         let (_, d) = frame(&r, &v, Delivered::default(), 120, 40, Z, None, &plain());
+        r.apply_line(":: Running post-transaction hooks...", Z);
         for l in ["odd one", "odd two", "odd three"] {
             r.apply_line(l, Z);
         }
-        // The transaction's chatter: the live tail, never scrollback.
+        // Hook chatter: the live tail, never scrollback.
         let (f, _) = frame(&r, &v, d, 120, 40, Z, None, &plain());
         assert!(f.above.is_empty(), "{:?}", f.above);
         assert!(
@@ -1672,6 +1690,7 @@ mod tests {
         let lines = fixture_lines();
         let mut r = partial(58);
         r.apply_line(&format!("{} y", lines[58]), Z);
+        r.apply_line(":: Running post-transaction hooks...", Z);
         r.apply_line("custom hook notice", Z);
         let v = view(Layout::Inline, Motif::Subtle);
         let (f, _) = frame(&r, &v, Delivered::default(), 120, 49, Z, None, &plain());
@@ -1771,11 +1790,31 @@ mod tests {
             Z,
         );
         let _ = lines;
+        // Outside the hooks a warning is a message for the user: it goes up
+        // at once and stays.
         let f = draw(&r, &view(Layout::Inline, Motif::Subtle), 40, &plain());
         assert!(
-            f.region.iter().any(|l| l.contains("daemon-reload")),
+            f.above.iter().any(|l| l.contains("daemon-reload")),
             "{:?}",
-            f.region
+            f.above
+        );
+    }
+
+    #[test]
+    fn package_install_message_stays_in_scrollback() {
+        let lines = fixture_lines();
+        let mut r = partial(58);
+        r.apply_line(&format!("{} y", lines[58]), Z);
+        r.apply_line(":: Processing package changes...", Z);
+        r.apply_line("(1/38) upgrading ydotool", Z);
+        r.apply_line("Make sure your user is in the `input` group", Z);
+        r.apply_line("(2/38) upgrading zed", Z);
+        let v = view(Layout::Inline, Motif::Subtle);
+        let (f, _) = frame(&r, &v, Delivered::default(), 120, 49, Z, None, &plain());
+        assert!(
+            f.above.iter().any(|l| l.contains("`input` group")),
+            "{:?}",
+            f.above
         );
     }
 
@@ -1814,6 +1853,7 @@ mod tests {
             let (f, d) = frame(&r, &v, d, 120, height, Z, Some(&prompt), &plain());
             above.extend(f.above);
             r.apply_line(&lines[59], Z);
+            r.apply_line(":: Running post-transaction hooks...", Z);
             r.apply_line("after prompt", Z);
             let (f, _) = frame(&r, &v, d, 120, height, Z, None, &plain());
             above.extend(f.above);
