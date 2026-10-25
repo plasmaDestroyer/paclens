@@ -366,7 +366,9 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
                 .map(|p| p.name.width())
                 .max()
                 .unwrap_or(0);
-            let name_w = name_w.max(8).min(w / 3);
+            // ponytail: capped at 24 so a few long names don't push every
+            // bar right; longer ones end in `…`.
+            let name_w = name_w.clamp(8, 24).min(w / 3);
             // `100%` + `  1055.4 MiB` + `  1503 KiB/s` + `  00:02:51`
             let right = 4 + 2 + 10 + 2 + 11 + 2 + 8;
             // `  ├─ ` + name + ` [` + bar + `] ` + right, and one spare column

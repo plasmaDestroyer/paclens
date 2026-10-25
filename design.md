@@ -1987,6 +1987,26 @@ YYYY-MM-DD | no --noconfirm for pacman
            | `--logfile`, `--config`): the view would be watching the wrong
            | log.
 
+2026-10-25 | the live view is a tree, and the plan does not outlive the answer (#81)
+           | The first real run, recorded and watched, looked worse than
+           | plain pacman: one bar over everything, pacman's colours gone,
+           | download progress counted in files, and every hook line piled
+           | into scrollback. Now: finished phases fold to one line each
+           | and the running phase opens into the work in flight — every
+           | downloading file with its own bar, the packages being
+           | upgraded, the running hook with its own output under it (the
+           | nom / zig build pattern). Percentages are pacman's own byte
+           | counts; hook phases move by time against each hook's median
+           | from past runs, because one initramfs rebuild can take most
+           | of the phase. The plan shown at `[Y/n]` lives in the live
+           | region only and is wiped when answered: it was there to
+           | decide on. The transaction's chatter (hook and scriptlet
+           | output) is a short live tail, not scrollback; warnings still
+           | show and stay in the receipt, a failure still keeps its
+           | errors, and the full text is in the transcript (2026-10-16:
+           | folded is not hidden only if it can be read back). Visual
+           | changes are now checked by recording a run, not by tests alone.
+
 ```
 
 ---
