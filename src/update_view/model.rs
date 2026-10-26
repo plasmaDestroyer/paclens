@@ -97,6 +97,8 @@ impl Phase {
 pub struct Pkg {
     pub name: String,
     pub repo: Option<String>,
+    /// Download size from pacman's verbose plan (`1.99 MiB`).
+    pub download: Option<String>,
     pub old: Option<String>,
     pub new: Option<String>,
     pub verb: Option<String>,
@@ -292,6 +294,7 @@ impl Run {
             S::PlanRow(row) => {
                 let p = self.pkg(&row.name);
                 p.repo = Some(row.repo);
+                p.download = row.download;
                 p.old = row.old;
                 p.new = Some(row.new);
                 self.count_plan();

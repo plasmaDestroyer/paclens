@@ -656,77 +656,151 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
     }
 }
 
-/// The plan when pacman's own text is taller than the screen: a header,
-/// `name old → new` packed into columns, the totals. At most `max` rows;
-/// past that, "+N more".
+/// `old → new` with the shared front dimmed and the changed part green:
+/// `1.24.4-1 → 1.25.3-1` shows `1.` dim on both sides, `25.3-1` green.
+fn version_diff(old: &str, new: &str) -> (Vec<Seg>, Vec<Seg>) {
+    let same = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Back to the start of the component the first change is in.
+    let cut = new
+        .char_indices()
+        .take(same)
+        .filter(|(_, c)| matches!(c, '.' | '-' | ':' | '+'))
+        .map(|(i, c)| i + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+    let (o1, o2) = old.split_at(cut.min(old.len()));
+    let (n1, n2) = new.split_at(cut);
+    (
+        vec![seg(Paint::Dim, o1), seg(Paint::Plain, o2)],
+        vec![seg(Paint::Dim, n1), seg(Paint::Ok, n2)],
+    )
+}
+
+/// The plan at `[Y/n]`: one summary line, then the packages grouped by the
+/// repo they come from, each group under its own heading and spread over as
+/// many columns as the width allows (20 packages in 2 columns: 10 and 10;
+/// in 3: 7, 7, 6), read down then across. Versions line up across groups.
+/// At most `max` rows; past that, "+N more".
 fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
     let arrow = s.arrow();
-    let entries: Vec<(String, String)> = run
-        .packages
-        .iter()
-        .map(|p| {
-            let v = match (&p.old, &p.new) {
-                (Some(o), Some(n)) => format!("{o} {arrow} {n}"),
-                (None, Some(n)) => n.clone(),
-                _ => String::new(),
-            };
-            (p.name.clone(), v)
-        })
-        .collect();
-    // Sized to most entries, not the longest: one long version string
-    // would cost every column; the few longer ones are cut.
-    let mut widths: Vec<usize> = entries
-        .iter()
-        .map(|(n, v)| n.width() + 1 + v.width())
-        .collect();
-    widths.sort_unstable();
-    let col = widths.get(widths.len() * 9 / 10).copied().unwrap_or(1) + 3;
-    let cols = (w / col).max(1);
-    let totals: Vec<String> = run
-        .totals
-        .iter()
-        .map(|(l, v)| {
-            line(
-                &[
-                    seg(Paint::Bold, format!("{l}:")),
-                    seg(Paint::Plain, format!(" {v}")),
-                ],
-                w,
-                s,
-            )
-        })
-        .collect();
-    let mut out = vec![line(
-        &[seg(Paint::Bold, format!("Packages ({})", entries.len()))],
-        w,
-        s,
-    )];
-    let room = max.saturating_sub(1 + totals.len()).max(1);
-    let needed = entries.len().div_ceil(cols);
-    let (shown_rows, hidden) = if needed > room {
-        let rows = room.saturating_sub(1).max(1);
-        (rows, entries.len().saturating_sub(rows * cols))
-    } else {
-        (needed, 0)
+    let pk = &run.packages;
+    // Sized to nine in ten entries, not the longest: one long version
+    // (luajit's) would cost every column; the few longer ones end in `…`.
+    let width = |f: &dyn Fn(&crate::update_view::model::Pkg) -> usize, cap: usize| {
+        let mut v: Vec<usize> = pk.iter().map(f).collect();
+        v.sort_unstable();
+        v.get(v.len().saturating_sub(1) * 9 / 10)
+            .copied()
+            .unwrap_or(0)
+            .min(cap)
     };
-    for r in 0..shown_rows {
-        let mut segs = Vec::new();
-        for c in 0..cols {
-            // Column-major, like `ls`: read down, then across.
-            let Some((n, v)) = entries.get(c * shown_rows + r) else {
-                break;
-            };
-            let v = cut_plain(v, col.saturating_sub(n.width() + 4));
-            let pad = col.saturating_sub(n.width() + 1 + v.width());
-            segs.push(seg(Paint::Plain, format!("{n} ")));
-            segs.push(seg(Paint::Dim, format!("{v}{}", " ".repeat(pad))));
+    let name_w = width(&|p| p.name.width(), 28);
+    let old_w = width(&|p| p.old.as_deref().map_or(0, |v| v.width()), 20);
+    let new_w = width(&|p| p.new.as_deref().map_or(0, |v| v.width()), 20);
+    // Sizes are short; the widest one sets the column so they line up.
+    let size_w = pk
+        .iter()
+        .map(|p| p.download.as_deref().map_or(0, |v| v.width()))
+        .max()
+        .unwrap_or(0);
+    let cell = name_w + 1 + old_w + 3 + new_w + if size_w > 0 { 2 + size_w } else { 0 };
+    let gap = 4;
+    let cols = ((w + gap) / (cell + gap)).max(1);
+
+    let entry = |p: &crate::update_view::model::Pkg| -> Vec<Seg> {
+        let name = cut_plain(&p.name, name_w);
+        let mut segs = vec![seg(Paint::Plain, format!("{name:<name_w$} "))];
+        let (old, new) = match (&p.old, &p.new) {
+            (Some(o), Some(n)) => {
+                let (o, n) = version_diff(&cut_plain(o, old_w), &cut_plain(n, new_w));
+                (o, n)
+            }
+            (None, Some(n)) => (vec![], vec![seg(Paint::Ok, cut_plain(n, new_w))]),
+            _ => (vec![], vec![]),
+        };
+        let ow: usize = old.iter().map(|(_, t)| t.width()).sum();
+        let nw: usize = new.iter().map(|(_, t)| t.width()).sum();
+        segs.push(seg(Paint::Plain, " ".repeat(old_w.saturating_sub(ow))));
+        segs.extend(old);
+        let a = if p.old.is_some() { arrow } else { " " };
+        segs.push(seg(Paint::Dim, format!(" {a} ")));
+        segs.extend(new);
+        segs.push(seg(Paint::Plain, " ".repeat(new_w.saturating_sub(nw))));
+        if size_w > 0 {
+            let d = p.download.as_deref().unwrap_or("");
+            segs.push(seg(Paint::Dim, format!("  {d:>size_w$}")));
         }
-        out.push(line(&segs, w, s));
+        segs
+    };
+
+    // Groups in the order pacman lists their first package.
+    let mut groups: Vec<(&str, Vec<&crate::update_view::model::Pkg>)> = Vec::new();
+    for p in pk {
+        let repo = p.repo.as_deref().unwrap_or("packages");
+        match groups.iter_mut().find(|g| g.0 == repo) {
+            Some(g) => g.1.push(p),
+            None => groups.push((repo, vec![p])),
+        }
     }
-    if hidden > 0 {
-        out.push(line(&[seg(Paint::Dim, format!("+{hidden} more"))], w, s));
+    groups.sort_by(|a, b| a.0.cmp(b.0));
+
+    let b = s.bullet();
+    let mut head = vec![seg(Paint::Bold, format!("{} packages", pk.len()))];
+    for (label, value) in &run.totals {
+        let label = label
+            .to_lowercase()
+            .replace("total ", "")
+            .replace(" size", "");
+        head.push(seg(Paint::Dim, format!(" {b} ")));
+        head.push(seg(Paint::Plain, format!("{value} {label}")));
     }
-    out.extend(totals);
+    let mut out = vec![line(&head, w, s)];
+    let mut shown = 0;
+    for (repo, list) in &groups {
+        let rows = list.len().div_ceil(cols);
+        if out.len() + 1 + rows > max {
+            break;
+        }
+        out.push(line(
+            &[
+                seg(Paint::Bold, (*repo).to_string()),
+                seg(Paint::Dim, format!(" ({})", list.len())),
+            ],
+            w,
+            s,
+        ));
+        for r in 0..rows {
+            let mut segs = Vec::new();
+            for c in 0..cols {
+                let Some(p) = list.get(c * rows + r) else {
+                    break;
+                };
+                if c > 0 {
+                    segs.push(seg(Paint::Plain, " ".repeat(gap)));
+                }
+                segs.extend(entry(p));
+            }
+            out.push(line(&segs, w, s));
+        }
+        shown += list.len();
+    }
+    if shown < pk.len() {
+        let more = pk.len() - shown;
+        out.push(line(
+            &[seg(
+                Paint::Dim,
+                format!(
+                    "+{more} more {b} the full list is in pacman's own output: paclens transcript"
+                ),
+            )],
+            w,
+            s,
+        ));
+    }
     out
 }
 
@@ -935,18 +1009,10 @@ pub fn frame(
         Some(rows) => {
             let prompt = rows.last().cloned().unwrap_or_default();
             match plan {
-                // The whole plan as pacman printed it, if it fits; else the
-                // same plan packed into columns. Either way it lives in the
-                // region only, so answering wipes it.
-                Some((a, b, None)) if is_prompt(&prompt) => {
-                    let lines = &run.lines[a..b];
-                    let mut r = if lines.len() < height.saturating_sub(1)
-                        && lines.iter().chain([&prompt]).all(|l| l.width() <= w)
-                    {
-                        shown[a..b].to_vec()
-                    } else {
-                        compact_plan(run, w, height.saturating_sub(2), s)
-                    };
+                // The plan, grouped by repo; it lives in the region only, so
+                // answering wipes it.
+                Some((_, _, None)) if is_prompt(&prompt) => {
+                    let mut r = compact_plan(run, w, height.saturating_sub(2), s);
                     r.push(prompt);
                     r
                 }
@@ -1546,7 +1612,7 @@ mod tests {
         let r = partial(58);
         let prompt = vec![lines[58].clone()];
         let v = view(Layout::Inline, Motif::Subtle);
-        let (f, _) = frame(
+        let (f, d) = frame(
             &r,
             &v,
             Delivered::default(),
@@ -1556,41 +1622,62 @@ mod tests {
             Some(&prompt),
             &plain(),
         );
-        for row in &lines[13..57] {
-            assert!(f.region.contains(row), "missing {row:?}");
+        assert!(f.region[0].starts_with("38 packages"), "{:?}", f.region);
+        for repo in ["cachyos (", "core (", "extra (", "multilib ("] {
+            assert!(
+                f.region.iter().any(|l| l.starts_with(repo)),
+                "no {repo}: {:?}",
+                f.region
+            );
         }
+        assert!(
+            f.region
+                .iter()
+                .any(|l| l.contains("zed") && l.contains("1.24.2-1"))
+        );
         assert_eq!(f.region.last(), Some(&lines[58]));
-        assert!(f.region.len() <= 48);
-
-        let (f, d) = frame(
+        // Lives in the region only.
+        assert!(f.above.iter().all(|l| !l.contains("zed")), "{:?}", f.above);
+        let (f, _) = frame(&r, &v, d, 120, 49, Z, Some(&prompt), &plain());
+        assert!(f.above.is_empty());
+        // Too short for all groups: the rest is counted, not dropped silently.
+        let (f, _) = frame(
             &r,
             &v,
             Delivered::default(),
             120,
-            20,
+            12,
             Z,
             Some(&prompt),
             &plain(),
         );
-        // Too tall: packed into columns, still in the region only.
-        assert_eq!(f.region.first().map(String::as_str), Some("Packages (38)"));
-        assert_eq!(f.region.last(), Some(&lines[58]));
-        assert!(f.region.len() <= 19, "{:?}", f.region);
         assert!(
-            f.region.iter().any(
-                |l| l.contains("brave-origin-bin") && l.contains("breeze-cursors")
-                    || l.matches("->").count() >= 2
-            ),
+            f.region.iter().any(|l| l.contains(" more")),
             "{:?}",
             f.region
         );
-        assert!(
-            f.above.iter().all(|l| !l.starts_with("Package (")),
-            "{:?}",
-            f.above
-        );
-        let (f, _) = frame(&r, &v, d, 120, 20, Z, Some(&prompt), &plain());
-        assert!(f.above.is_empty());
+    }
+
+    #[test]
+    fn plan_group_is_split_evenly_over_the_columns() {
+        let mut r = empty();
+        for i in 0..20 {
+            r.packages.push(crate::update_view::model::Pkg {
+                name: format!("pkg{i:02}"),
+                repo: Some("cachyos".into()),
+                old: Some("1.0-1".into()),
+                new: Some("1.1-1".into()),
+                ..Default::default()
+            });
+        }
+        let rows_under_heading = |w: usize| {
+            let out = compact_plan(&r, w, 40, &plain());
+            out.iter().skip(2).count()
+        };
+        let cell = 5 + 1 + 5 + 3 + 5;
+        assert_eq!(rows_under_heading(cell), 20);
+        assert_eq!(rows_under_heading(2 * cell + 4), 10);
+        assert_eq!(rows_under_heading(3 * cell + 8), 7);
     }
 
     #[test]
