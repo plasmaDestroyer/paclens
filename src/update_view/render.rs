@@ -464,7 +464,11 @@ fn size_pair(got: &str, total: Option<&str>) -> String {
         (1024.0, "KiB", 0)
     };
     match t {
-        Some(t) => format!("{:.dec$}/{:.dec$} {unit}", g / div, t / div),
+        // Fixed halves, so a column of them lines up on the `/`.
+        Some(t) => {
+            let (a, b) = (format!("{:.dec$}", g / div), format!("{:.dec$}", t / div));
+            format!("{a:>6}/{b:<6} {unit}")
+        }
         None => format!("{:.dec$} {unit}", g / div),
     }
 }
@@ -656,16 +660,26 @@ fn children(
             // current one bold. Columns fixed for the whole phase from the
             // plan, so the arrows never move; the verb only when it is not
             // the usual `upgrading`.
-            let recent: Vec<(String, String)> = run
+            // Settled lines are the packages done; the live row (when
+            // pacman is still on one) is the current one, with its percent.
+            let live = run.live_package.as_ref();
+            let cap = room.clamp(1, 8);
+            let mut recent: Vec<(String, String, Option<u8>)> = run
                 .lines
                 .iter()
                 .rev()
                 .filter_map(|l| match classify_screen(l, false) {
-                    ScreenEvent::Package { verb, name, .. } => Some((verb, name)),
+                    ScreenEvent::Package { verb, name, .. } => Some((verb, name, None)),
                     _ => None,
                 })
-                .take(room.clamp(1, 8))
+                .filter(|(_, n, _)| live.is_none_or(|(_, l, _)| l != n))
+                .take(cap - usize::from(live.is_some() && cap > 1))
                 .collect();
+            recent.reverse();
+            if let Some((v, n, p)) = live {
+                recent.push((v.clone(), n.clone(), Some(*p)));
+            }
+            recent.reverse();
             let n = recent.len();
             let verb_of = |v: &str| {
                 if v == "upgrading" {
@@ -676,7 +690,7 @@ fn children(
             };
             let verb_w = recent
                 .iter()
-                .map(|(v, _)| verb_of(v).width())
+                .map(|(v, _, _)| verb_of(v).width())
                 .max()
                 .unwrap_or(0);
             let name_w = run
@@ -700,7 +714,7 @@ fn children(
                 .into_iter()
                 .rev()
                 .enumerate()
-                .map(|(i, (verb, name))| {
+                .map(|(i, (verb, name, pct))| {
                     let current = i + 1 == n;
                     let mut row = vec![
                         seg(Paint::Dim, format!("{:<verb_w$}", verb_of(&verb))),
@@ -711,7 +725,7 @@ fn children(
                     ];
                     let pkg = run.packages.iter().find(|p| p.name == name);
                     if let Some((Some(old), Some(new))) = pkg.map(|p| (&p.old, &p.new)) {
-                        let old = cut_front(old, old_w);
+                        let old = cut_version(old, Some(new), old_w);
                         row.push(seg(
                             Paint::Plain,
                             " ".repeat(old_w.saturating_sub(old.width())),
@@ -724,6 +738,10 @@ fn children(
                         } else {
                             row.push(seg(Paint::Dim, format!("{old} {} {new}", s.arrow())));
                         }
+                    }
+                    // pacman's own percent for the one it is on.
+                    if let Some(p) = pct {
+                        row.push(seg(Paint::Dim, format!("  {p}%")));
                     }
                     row
                 })
@@ -741,57 +759,80 @@ fn children(
             // the run's columns, marked as the estimate it is (`~`).
             let started: Vec<&Hook> = list.iter().filter(|h| h.started.is_some()).collect();
             let from = started.len().saturating_sub(2);
+            // pacman's trailing `...` says "running" and a `.` ends a
+            // sentence; the mark says the first, the row needs neither.
+            let desc_of = |h: &Hook| {
+                h.desc
+                    .as_deref()
+                    .or(h.file.as_deref())
+                    .unwrap_or_default()
+                    .trim_end_matches('.')
+                    .to_string()
+            };
+            // Done times in one column after the longest name shown.
+            let desc_w = started[from..]
+                .iter()
+                .map(|h| desc_of(h).width())
+                .max()
+                .unwrap_or(0)
+                .min(w.saturating_sub(5 + 2 + 8));
             let mut rows = Vec::new();
             for (i, h) in started[from..].iter().enumerate() {
-                let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
-                // pacman's `...` says "running"; the mark says that here.
-                let desc = desc.trim_end_matches("...");
+                let desc = cut_plain(&desc_of(h), desc_w);
                 let running = h.ended.is_none() && from + i + 1 == started.len();
                 let took = took(h.started, h.ended, now).unwrap_or_default();
                 if !running {
                     rows.push(vec![
                         seg(Paint::Ok, s.check()),
-                        seg(Paint::Dim, format!(" {desc}  {}", duration(took))),
+                        seg(
+                            Paint::Dim,
+                            format!(" {desc:<desc_w$}  {:>6}", duration(took)),
+                        ),
                     ]);
                     continue;
                 }
                 let median = h.median.filter(|m| m.secs >= 2);
                 let mut row = vec![
                     seg(Paint::Warn, g(s, "▸", ">")),
-                    seg(Paint::Bold, format!(" {desc}")),
+                    seg(Paint::Bold, format!(" {desc:<desc_w$}")),
                 ];
                 // The time goes on the bar's row when there is one.
                 if median.is_none() {
-                    row.push(seg(Paint::Dim, format!("  {}", duration(took))));
+                    row.push(seg(Paint::Dim, format!("  {:>6}", duration(took))));
                 }
                 rows.push(row);
                 if let Some(Median { secs, .. }) = median {
                     let typical = Duration::from_secs(secs);
-                    let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis())
-                        .unwrap_or(99)
-                        .min(99);
-                    // Under the hook's name, at its indent: the times, then a
-                    // bar to the run's right edge.
-                    let (_, _, pipe, _) = s.tree_glyphs();
+                    // Under the hook's name, at its indent: the times in a
+                    // fixed cell (so the bar never moves), then the bar to
+                    // the run's right edge. Past the median the bar is
+                    // full, Pac-Man waits dim at its end, and the overrun
+                    // counts up: an estimate never claims more than it knows.
+                    let over = took.saturating_sub(typical);
                     let times = format!(
-                        "{} {} usually {}  ",
+                        "{:>6} {} usually {:<6}  ",
                         duration(took),
                         s.bullet(),
                         duration(typical)
                     );
                     let edge = ga.left + numbers_w(ga) + 3 + ga.cells;
-                    let cells = edge.saturating_sub(5 + pipe.width() + times.width() + 3);
-                    let mut row = vec![
-                        seg(Paint::Dim, format!("{NESTED}{pipe}")),
-                        seg(Paint::Dim, times),
-                    ];
+                    let cells = edge.saturating_sub(5 + 2 + times.width() + 3);
+                    let mut row = vec![seg(Paint::Dim, format!("{NESTED}  {times}"))];
+                    let (track, label) = if over.is_zero() {
+                        let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
+                            .unwrap_or(99)
+                            .min(99);
+                        (bar(pct, cells, true, s), format!("~{pct}%"))
+                    } else {
+                        (
+                            s.dim(&format!("{}c", "-".repeat(cells.saturating_sub(1)))),
+                            format!("+{}", duration(over)),
+                        )
+                    };
                     if cells >= 6 {
-                        row.push(seg(
-                            Paint::Plain,
-                            format!("[{}] ", bar(pct, cells, true, s)),
-                        ));
+                        row.push(seg(Paint::Plain, format!("[{track}] ")));
                     }
-                    row.push(seg(Paint::Plain, format!("{:>4}", format!("~{pct}%"))));
+                    row.push(seg(Paint::Plain, format!("{label:>4}")));
                     rows.push(row);
                 }
             }
@@ -826,13 +867,12 @@ fn children(
     };
     // After the answer: the transaction's own output (hooks, scriptlets),
     // last few lines, under what produced it; the newest one reads plain.
-    let (_, _, pipe, _) = s.tree_glyphs();
     let tail = log_lines(run, LOG_TAIL);
     let n = tail.len();
     for (i, l) in tail.into_iter().enumerate() {
         let paint = if i + 1 == n { Paint::Plain } else { Paint::Dim };
         rows.push(vec![
-            seg(Paint::Dim, format!("{NESTED}{pipe}")),
+            seg(Paint::Dim, format!("{NESTED}  ")),
             seg(paint, l.trim_end().to_string()),
         ]);
     }
@@ -843,22 +883,38 @@ fn children(
 /// running hook), so the tree gives it no branch of its own.
 const NESTED: &str = "\u{0}";
 
-/// `v` cut to `w` columns from the front: `…6.8.2110-1`.
-fn cut_front(v: &str, w: usize) -> String {
+/// `v` in `w` columns, cut where it agrees with `other` first: the front
+/// both share, back to a component edge (`…8.2110-1` against `2026.8.2115-1`);
+/// if that is not enough, the end. The first changed component stays in
+/// view as long as anything does (`…155.0.8059…` keeps the 155).
+fn cut_version(v: &str, other: Option<&str>, w: usize) -> String {
     if v.width() <= w {
         return v.to_string();
     }
-    let mut out: Vec<char> = Vec::new();
-    let mut used = 1;
-    for c in v.chars().rev() {
-        let cw = c.width().unwrap_or(0);
-        if used + cw > w {
-            break;
-        }
-        used += cw;
-        out.push(c);
-    }
-    std::iter::once('…').chain(out.into_iter().rev()).collect()
+    let same = other.map_or(0, |o| {
+        let n = v.chars().zip(o.chars()).take_while(|(a, b)| a == b).count();
+        v.char_indices()
+            .take(n)
+            .filter(|(_, c)| matches!(c, '.' | '-' | ':' | '+'))
+            .map(|(i, c)| i + c.len_utf8())
+            .last()
+            .unwrap_or(0)
+    });
+    // Drop as much of the shared front as it takes, never more.
+    let over = v.width() + 1 - w;
+    let drop = v
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(v.len()))
+        .find(|&i| i >= over.min(same))
+        .unwrap_or(0)
+        .min(same);
+    let rest = if drop > 0 {
+        format!("…{}", &v[drop..])
+    } else {
+        v.to_string()
+    };
+    cut_plain(&rest, w)
 }
 
 /// `name` cut to `w` columns with an ellipsis, uncoloured (it is padded after).
@@ -1212,14 +1268,15 @@ fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
     out
 }
 
-/// GiB past 1024 MiB, one unit per figure: `1.19 GiB`, `36.9 MiB`.
+/// The unit that suits the figure: `1.19 GiB`, `36.9 MiB`, `12 KiB`
+/// (pacman writes `0.01 MiB`).
 fn tidy_size(v: &str) -> String {
     match bytes(v) {
-        Some(b) if b.abs() >= 1024.0 * 1024.0 => {
+        Some(b) => {
             let neg = if b < 0.0 { "-" } else { "" };
             format!("{neg}{}", size_pair(&format!("{} B", b.abs()), None))
         }
-        _ => v.to_string(),
+        None => v.to_string(),
     }
 }
 
@@ -1283,7 +1340,7 @@ fn plan_rows(
     // Sizes are short; the widest one sets the column so they line up.
     let size_w = if detail == Detail::Full {
         pk.iter()
-            .map(|p| p.download.as_deref().map_or(0, |v| v.width()))
+            .map(|p| p.download.as_deref().map_or(0, |v| tidy_size(v).width()))
             .max()
             .unwrap_or(0)
     } else {
@@ -1328,12 +1385,17 @@ fn plan_rows(
     // whole.
     let versions = |old: &Option<String>, new: &Option<String>, pad: bool| -> Vec<Seg> {
         let mut segs = Vec::new();
-        // Cut from the front: versions share their front, the change is at
-        // the end (`…6.8.2110-1 → …6.8.2115-1`).
-        let fit = |v: &str, w: usize| if pad { cut_front(v, w) } else { v.to_string() };
+        // Only what both versions share is cut, so the change stays.
+        let fit = |v: &str, other: Option<&String>, w: usize| {
+            if pad {
+                cut_version(v, other.map(String::as_str), w)
+            } else {
+                v.to_string()
+            }
+        };
         let (o, n) = match (old, new) {
-            (Some(o), Some(n)) => version_diff(&fit(o, old_w), &fit(n, new_w)),
-            (None, Some(n)) => (vec![], vec![seg(Paint::Ok, fit(n, new_w))]),
+            (Some(o), Some(n)) => version_diff(&fit(o, Some(n), old_w), &fit(n, Some(o), new_w)),
+            (None, Some(n)) => (vec![], vec![seg(Paint::Ok, fit(n, None, new_w))]),
             _ => (vec![], vec![]),
         };
         let nw: usize = n.iter().map(|(_, t)| t.width()).sum();
@@ -1364,7 +1426,7 @@ fn plan_rows(
         segs.push(seg(Paint::Plain, " "));
         segs.extend(versions(&p.old, &p.new, true));
         if size_w > 0 {
-            let d = p.download.as_deref().unwrap_or("");
+            let d = p.download.as_deref().map(tidy_size).unwrap_or_default();
             segs.push(seg(Paint::Dim, format!("  {d:>size_w$}")));
         }
         segs
@@ -2004,12 +2066,28 @@ fn end_segs(run: &Run, motif: Motif, s: &Styles) -> Vec<Seg> {
     let b = s.bullet();
     let ((p, mark), text) = match run.outcome() {
         Outcome::Succeeded => {
-            let got = run
-                .totals
-                .iter()
-                .find(|t| t.0 == "Total Download Size")
-                .map(|t| format!(" {b} {} downloaded", size_pair(&t.1, None)))
+            let total = |name: &str| run.totals.iter().find(|t| t.0 == name).map(|t| &t.1);
+            // What came down and how fast on average, then what it did to
+            // the disk: pacman's own figures.
+            let dl = phase(run, PhaseKind::Download)
+                .and_then(|p| p.ended.zip(p.started).map(|(e, s)| e.saturating_sub(s)))
+                .filter(|t| t.as_secs() > 0);
+            let mut got = total("Total Download Size")
+                .map(|t| {
+                    let at = dl
+                        .zip(bytes(t))
+                        .map(|(d, b)| {
+                            format!(" at {}", rate(&format!("{} B", b / d.as_secs_f64())))
+                        })
+                        .unwrap_or_default();
+                    format!(" {b} {} downloaded{at}", size_pair(t, None))
+                })
                 .unwrap_or_default();
+            if let Some(n) = total("Net Upgrade Size") {
+                let n = tidy_size(n);
+                let sign = if n.starts_with('-') { "" } else { "+" };
+                got += &format!(" {b} {sign}{n} on disk");
+            }
             (ok, format!(" {eaten} eaten in {took}{got}"))
         }
         Outcome::NothingChanged => {
@@ -2303,6 +2381,22 @@ mod tests {
     }
 
     #[test]
+    fn version_cut_keeps_the_change() {
+        // Shared front goes first.
+        assert_eq!(
+            cut_version("2026.8.2110-1", Some("2026.8.2115-1"), 11),
+            "…6.8.2110-1"
+        );
+        // Nothing shared past the first component: the end goes, the 155 stays.
+        assert_eq!(
+            cut_version("155.0.8059.84-1", Some("156.0.8078.47-1"), 11),
+            "155.0.8059…"
+        );
+        assert_eq!(cut_version("1.2-1", Some("1.3-1"), 11), "1.2-1");
+        assert_eq!(cut_version("1:20260916-1", None, 10), "1:2026091…");
+    }
+
+    #[test]
     fn plain_warning_gets_pacmans_colour() {
         let t = "Warning: unit changed";
         assert_eq!(warning_mark(t, &plain()), t);
@@ -2390,6 +2484,44 @@ mod tests {
             "{:?}",
             f.region
         );
+    }
+
+    #[test]
+    fn hook_past_its_median_counts_the_overrun() {
+        use crate::update_view::medians::Median;
+        let medians = HashMap::from([("60-x.hook".to_string(), Median { secs: 23, runs: 51 })]);
+        let mut r = Run::new("pacman -Syu", medians, HashMap::new());
+        r.apply_log(
+            crate::update_view::log_line::classify_log(
+                "[2026-10-16T11:37:21+0530] [ALPM] transaction completed",
+            )
+            .map(|x| x.1)
+            .unwrap_or(crate::update_view::log_line::LogEvent::Other),
+            secs(1),
+        );
+        r.apply_log(
+            crate::update_view::log_line::classify_log(
+                "[2026-10-16T11:37:21+0530] [ALPM] running '60-x.hook'...",
+            )
+            .map(|x| x.1)
+            .unwrap_or(crate::update_view::log_line::LogEvent::Other),
+            secs(1),
+        );
+        r.apply_line(":: Running post-transaction hooks...", secs(1));
+        r.apply_line("(1/2) Doing x...", secs(3));
+        let f = frame(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            Delivered::default(),
+            120,
+            40,
+            secs(30),
+            None,
+            &uni(),
+        )
+        .0;
+        let t = f.region.join("\n");
+        assert!(t.contains("+4s") && !t.contains("~99%"), "{t}");
     }
 
     #[test]
@@ -2583,7 +2715,7 @@ mod tests {
         assert!(t.contains("1.0-1 -> 1.1-1"), "{t}");
         // Roomy: everything, sizes too.
         let t = compact_plan(&r, 40, 40, &plain()).join("\n");
-        assert!(t.contains("1.00 MiB"), "{t}");
+        assert!(t.contains("1.0 MiB"), "{t}");
     }
 
     #[test]
@@ -2995,15 +3127,15 @@ mod tests {
         r.finish(Some(0), secs(124));
         assert_eq!(
             end_line(&r, Motif::Arcade, &uni()),
-            "ᗧ·· 38 eaten in 2m04s · 702.9 MiB downloaded"
+            "ᗧ·· 38 eaten in 2m04s · 702.9 MiB downloaded · +1.3 MiB on disk"
         );
         assert_eq!(
             end_line(&r, Motif::Subtle, &uni()),
-            "✓ 38 eaten in 2m04s · 702.9 MiB downloaded"
+            "✓ 38 eaten in 2m04s · 702.9 MiB downloaded · +1.3 MiB on disk"
         );
         assert_eq!(
             end_line(&r, Motif::Arcade, &plain()),
-            "C.. 38 eaten in 2m04s - 702.9 MiB downloaded"
+            "C.. 38 eaten in 2m04s - 702.9 MiB downloaded - +1.3 MiB on disk"
         );
         let mut f = empty();
         f.finish(Some(1), Z);

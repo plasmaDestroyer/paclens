@@ -178,6 +178,9 @@ pub struct Run {
     /// Every file that has shown progress of its own, in the order it first
     /// did, with its last real row: a started file never goes back to queued.
     pub started_files: Vec<InFlight>,
+    /// The package pacman is working on now (verb, name, percent), read
+    /// from its live row: settled lines only say which ones are done.
+    pub live_package: Option<(String, String, u8)>,
     /// Unrecognised lines, verbatim, in order — unrecognised hook output too.
     pub unknown: Vec<String>,
     /// Where each `unknown` line sits in `lines`.
@@ -241,6 +244,7 @@ impl Run {
             in_flight: Vec::new(),
             totals_seen: Default::default(),
             started_files: Vec::new(),
+            live_package: None,
             unknown: Vec::new(),
             unknown_at: Vec::new(),
             warning_at: Vec::new(),
@@ -377,6 +381,19 @@ impl Run {
     /// `Total` row in place and settles it only when the download ends, so
     /// it is read from here while the download runs.
     pub fn observe_screen(&mut self, rows: &[String], at: Duration) {
+        // The package pacman is on now: its row is drawn, not yet settled.
+        self.live_package = None;
+        if self.current() == Some(PhaseKind::Packages) {
+            self.live_package = rows
+                .iter()
+                .rev()
+                .find_map(|r| match classify_screen(r, false) {
+                    ScreenEvent::Package {
+                        verb, name, pct, ..
+                    } if pct < 100 => Some((verb, name, pct)),
+                    _ => None,
+                });
+        }
         if self.current() != Some(PhaseKind::Download) {
             self.in_flight.clear();
             return;
@@ -1140,6 +1157,22 @@ mod tests {
         r.observe_screen(&rows, Z);
         assert!(r.in_flight.is_empty());
         assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
+    }
+
+    #[test]
+    fn live_package_row_is_the_current_one() {
+        let mut r = run();
+        r.apply_line(":: Processing package changes...", Z);
+        r.apply_line("( 1/38) upgrading alpha     [----] 100%", Z);
+        let rows = [
+            "( 1/38) upgrading alpha     [----] 100%".to_string(),
+            "( 2/38) upgrading beta      [--C ]  50%".to_string(),
+        ];
+        r.observe_screen(&rows, Z);
+        assert_eq!(
+            r.live_package,
+            Some(("upgrading".to_string(), "beta".to_string(), 50))
+        );
     }
 
     #[test]
