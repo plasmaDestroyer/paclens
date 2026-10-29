@@ -465,7 +465,7 @@ fn size_pair(got: &str, total: Option<&str>) -> String {
         // Fixed halves, so a column of them lines up on the `/`.
         Some(t) => {
             let (a, b) = (format!("{:.dec$}", g / div), format!("{:.dec$}", t / div));
-            format!("{a:>6}/{b:<6} {unit}")
+            format!("{a:>6}/{:<10}", format!("{b} {unit}"))
         }
         None => format!("{:.dec$} {unit}", g / div),
     }
