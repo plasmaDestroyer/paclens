@@ -1030,7 +1030,12 @@ fn plan_rows(
             .unwrap_or(0)
             .min(cap)
     };
-    let name_w = width(&|p| p.name.width(), 28);
+    // Names alone: every name whole if it can be, they are all there is.
+    let name_w = if detail == Detail::Names {
+        pk.iter().map(|p| p.name.width()).max().unwrap_or(0).min(28)
+    } else {
+        width(&|p| p.name.width(), 28)
+    };
     let old_w = if matches!(detail, Detail::Full | Detail::Versions) {
         width(&|p| p.old.as_deref().map_or(0, |v| v.width()), 20)
     } else {
