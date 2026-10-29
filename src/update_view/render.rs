@@ -957,8 +957,10 @@ enum Detail {
     Versions,
     /// name, new version
     New,
-    /// name only
+    /// name only, whole
     Names,
+    /// name only, the longest few cut: one more column
+    TightNames,
 }
 
 /// The plan at `[Y/n]`: one summary line, then the packages grouped by the
@@ -975,6 +977,7 @@ fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
         (Detail::New, false),
         (Detail::New, true),
         (Detail::Names, true),
+        (Detail::TightNames, true),
     ];
     let mut out = Vec::new();
     for (detail, fold) in ladder {
@@ -1041,7 +1044,8 @@ fn plan_rows(
     } else {
         0
     };
-    let new_w = if detail == Detail::Names {
+    let names = matches!(detail, Detail::Names | Detail::TightNames);
+    let new_w = if names {
         0
     } else {
         width(&|p| p.new.as_deref().map_or(0, |v| v.width()), 20)
@@ -1060,13 +1064,13 @@ fn plan_rows(
         + if new_w > 0 && old_w == 0 { 1 } else { 0 }
         + new_w
         + if size_w > 0 { 2 + size_w } else { 0 };
-    let gap = if detail == Detail::Names { 2 } else { 4 };
+    let gap = if names { 2 } else { 4 };
     let cols = ((w + gap) / (cell + gap)).max(1);
 
     let entry = |p: &Pkg| -> Vec<Seg> {
         let name = cut_plain(&p.name, name_w);
         let mut segs = vec![seg(Paint::Plain, format!("{name:<name_w$}"))];
-        if detail == Detail::Names {
+        if names {
             return segs;
         }
         segs.push(seg(Paint::Plain, " "));
