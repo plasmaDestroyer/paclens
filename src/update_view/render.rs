@@ -704,16 +704,19 @@ fn children(
                 .max()
                 .unwrap_or(0)
                 .min(w / 3);
-            // ponytail: 16 holds every common version; longer ones are cut
-            // from the front, where versions agree.
-            let old_w = run
-                .packages
-                .iter()
-                .filter_map(|p| p.old.as_deref())
-                .map(UnicodeWidthStr::width)
-                .max()
-                .unwrap_or(0)
-                .min(16);
+            // As wide as the longest old version, while the row keeps room
+            // for the new one beside it; past that, cut where versions agree.
+            let longest = |f: fn(&Pkg) -> Option<&str>| {
+                run.packages
+                    .iter()
+                    .filter_map(f)
+                    .map(UnicodeWidthStr::width)
+                    .max()
+                    .unwrap_or(0)
+            };
+            let room =
+                w.saturating_sub(5 + verb_w + name_w + 2 + 3 + longest(|p| p.new.as_deref()) + 6);
+            let old_w = longest(|p| p.old.as_deref()).min(room.max(16));
             recent
                 .into_iter()
                 .rev()
@@ -781,97 +784,83 @@ fn children(
                 .unwrap_or(0)
                 .min(w.saturating_sub(5 + 2 + 8));
             let mut rows = Vec::new();
+            // Every hook time ends in one column: the end of the number
+            // cells, just before the bar column (or a short way after the
+            // longest name when there are no number cells).
+            let cells_w = numbers_w(ga).saturating_sub(2);
+            let edge = if cells_w >= 6 {
+                ga.left + cells_w
+            } else {
+                5 + 2 + desc_w + 2 + 6
+            };
             for (i, h) in started[from..].iter().enumerate() {
-                let desc = cut_plain(&desc_of(h), desc_w);
+                let desc = desc_of(h);
                 let running = h.ended.is_none() && from + i + 1 == started.len();
                 let took = took(h.started, h.ended, now).unwrap_or_default();
-                if !running {
-                    rows.push(vec![
-                        seg(Paint::Ok, s.check()),
-                        seg(
-                            Paint::Dim,
-                            format!(" {desc:<desc_w$}  {:>6}", duration(took)),
-                        ),
-                    ]);
-                    continue;
-                }
-                let median = h.median.filter(|m| m.secs >= 2);
+                let median = h.median.filter(|m| m.secs >= 2).filter(|_| running);
+                let times = match median {
+                    Some(Median { secs, .. }) => format!(
+                        "{} {} usually {}",
+                        duration(took),
+                        s.bullet(),
+                        duration(Duration::from_secs(secs))
+                    ),
+                    None => duration(took),
+                };
+                // Room for the name before the times on the same row.
+                let room = edge.saturating_sub(5 + 2 + 2 + times.width());
+                let (mark, paint) = if running {
+                    (seg(Paint::Warn, g(s, "▸", ">")), Paint::Bold)
+                } else {
+                    (seg(Paint::Ok, s.check()), Paint::Dim)
+                };
+                let one_row = desc.width() <= room;
+                let shown = if one_row || !running {
+                    cut_plain(&desc, room)
+                } else {
+                    desc.clone()
+                };
+                let mut row = vec![mark, seg(paint, format!(" {shown}"))];
+                let used = 5 + 2 + shown.width();
+                let pad = |used: usize| " ".repeat(edge.saturating_sub(used + times.width()));
                 let Some(Median { secs, .. }) = median else {
-                    rows.push(vec![
-                        seg(Paint::Warn, g(s, "▸", ">")),
-                        seg(Paint::Bold, format!(" {desc:<desc_w$}")),
-                        seg(Paint::Dim, format!("  {:>6}", duration(took))),
-                    ]);
+                    row.push(seg(Paint::Dim, format!("{}{times}", pad(used))));
+                    rows.push(row);
                     continue;
                 };
-                // Its time so far against the median of past runs, in the
-                // run's own columns: the times in the number cells, the bar
-                // in the bar column, marked as the estimate it is (`~`).
-                // Past the median the bar is full, Pac-Man waits dim at its
-                // end, and the overrun counts up.
+                // The time so far against the median of past runs: a bar in
+                // the run's bar column, marked as the estimate it is (`~`).
+                // Past the median by a second or more the bar is full,
+                // Pac-Man waits dim at its end, and the overrun counts up.
                 let typical = Duration::from_secs(secs);
                 let over = took.saturating_sub(typical);
-                let (track, label) = if over.is_zero() {
+                let (track, label) = if over.as_secs() == 0 {
                     let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
                         .unwrap_or(99)
                         .min(99);
                     (bar(pct, ga.cells, true, s), format!("~{pct}%"))
-                } else if over.as_secs() == 0 {
-                    // Under a second over: past the estimate, no figure yet.
-                    (
-                        s.dim(&format!("{}c", "-".repeat(ga.cells.saturating_sub(1)))),
-                        "over".into(),
-                    )
                 } else {
                     (
                         s.dim(&format!("{}c", "-".repeat(ga.cells.saturating_sub(1)))),
                         format!("+{}", duration(over)),
                     )
                 };
-                let times = format!(
-                    "{} {} usually {}",
-                    duration(took),
-                    s.bullet(),
-                    duration(typical)
-                );
-                let cells_w = numbers_w(ga).saturating_sub(2);
                 let mut tail = Vec::new();
-                if cells_w >= times.width() {
-                    tail.push(seg(Paint::Dim, format!("{times:>cells_w$}  ")));
-                }
                 if ga.cells >= 6 {
-                    tail.push(seg(Paint::Plain, format!("[{track}] ")));
+                    tail.push(seg(Paint::Plain, format!("  [{track}]")));
                 }
-                tail.push(seg(Paint::Plain, format!("{label:>4}")));
-                let title_w = ga.left.saturating_sub(5 + 2);
-                let mut title = vec![seg(Paint::Warn, g(s, "▸", ">"))];
-                if cells_w < times.width() {
-                    // No number cells: the times ride on the title.
-                    title.push(seg(Paint::Bold, format!(" {desc}")));
-                    title.push(seg(Paint::Dim, format!("  {times}")));
-                    rows.push(title);
-                    let mut row = vec![seg(
-                        Paint::Plain,
-                        format!("{NESTED}{}", " ".repeat(ga.left.saturating_sub(5))),
-                    )];
+                tail.push(seg(Paint::Plain, format!(" {label:>4}")));
+                if one_row {
+                    row.push(seg(Paint::Dim, format!("{}{times}", pad(used))));
                     row.extend(tail);
                     rows.push(row);
-                } else if desc.width() <= title_w {
-                    // One row: the name, then its bar where every bar is.
-                    title.push(seg(Paint::Bold, format!(" {desc:<title_w$}")));
-                    title.extend(tail);
-                    rows.push(title);
                 } else {
-                    // A long name keeps its row; the bar goes under it, in
-                    // the same columns.
-                    title.push(seg(Paint::Bold, format!(" {desc}")));
-                    rows.push(title);
-                    let mut row = vec![seg(
-                        Paint::Plain,
-                        format!("{NESTED}{}", " ".repeat(ga.left.saturating_sub(5))),
-                    )];
-                    row.extend(tail);
+                    // A long name keeps its own row; times and bar go under
+                    // it, in the same columns.
                     rows.push(row);
+                    let mut under = vec![seg(Paint::Dim, format!("{NESTED}{}{times}", pad(5)))];
+                    under.extend(tail);
+                    rows.push(under);
                 }
             }
             rows
@@ -1449,7 +1438,12 @@ fn plan_rows(
 
     // `pad`: in a column, so cut and padded to it; else (a family row)
     // whole.
-    let versions = |old: &Option<String>, new: &Option<String>, pad: bool| -> Vec<Seg> {
+    let versions = |old: &Option<String>,
+                    new: &Option<String>,
+                    pad: bool,
+                    old_w: usize,
+                    new_w: usize|
+     -> Vec<Seg> {
         let mut segs = Vec::new();
         // Only what both versions share is cut, so the change stays.
         let fit = |v: &str, other: Option<&String>, w: usize| {
@@ -1474,7 +1468,7 @@ fn plan_rows(
                 segs.extend(o);
                 segs.push(seg(Paint::Dim, format!(" {arrow} ")));
             } else if pad {
-                segs.push(seg(Paint::Plain, "   "));
+                segs.push(seg(Paint::Plain, " ".repeat(2 + arrow.width())));
             }
         }
         segs.extend(n);
@@ -1483,14 +1477,16 @@ fn plan_rows(
         }
         segs
     };
-    let entry = |p: &Pkg, name_w: usize| -> Vec<Seg> {
+    // `cw`: this column's widths — name, old version, new version.
+    let entry = |p: &Pkg, cw: [usize; 3]| -> Vec<Seg> {
+        let [name_w, old_w, new_w] = cw;
         let name = cut_plain(&p.name, name_w);
         let mut segs = vec![seg(Paint::Plain, format!("{name:<name_w$}"))];
         if names {
             return segs;
         }
         segs.push(seg(Paint::Plain, " "));
-        segs.extend(versions(&p.old, &p.new, true));
+        segs.extend(versions(&p.old, &p.new, true, old_w, new_w));
         if size_w > 0 {
             let d = p.download.as_deref().map(tidy_size).unwrap_or_default();
             segs.push(seg(Paint::Dim, format!("  {d:>size_w$}")));
@@ -1500,7 +1496,7 @@ fn plan_rows(
     let family = |f: &Family| -> Vec<Vec<Seg>> {
         let mut tail = Vec::new();
         if !names {
-            tail = versions(&f.old, &f.new, false);
+            tail = versions(&f.old, &f.new, false, old_w, new_w);
             if size_w > 0
                 && let Some(sz) = &f.size
             {
@@ -1521,6 +1517,51 @@ fn plan_rows(
         head.push(seg(Paint::Plain, format!("{} {label}", tidy_size(value))));
     }
     let mut out = vec![line(&head, w, s)];
+    // Versions: each column as wide as its own entries need, across every
+    // group so the columns still line up — when that fits the width. It
+    // does whenever one long name or version, not every column, set the
+    // shared widths; versions past 16 columns are still cut, keeping the
+    // change.
+    let per_col: Option<Vec<[usize; 3]>> = (!names)
+        .then(|| {
+            let mut cw = vec![[0usize; 3]; cols];
+            for (_, _, list, _) in &groups {
+                for (c, &(a, n)) in split(list.len(), cols.min(list.len().max(1)))
+                    .iter()
+                    .enumerate()
+                {
+                    for p in &list[a..a + n] {
+                        let v = |x: &Option<String>| {
+                            x.as_deref().map_or(0, UnicodeWidthStr::width).min(16)
+                        };
+                        cw[c][0] = cw[c][0].max(p.name.width());
+                        cw[c][1] = cw[c][1].max(if old_w > 0 { v(&p.old) } else { 0 });
+                        cw[c][2] = cw[c][2].max(if new_w > 0 { v(&p.new) } else { 0 });
+                    }
+                }
+            }
+            cw
+        })
+        .filter(|cw| {
+            let total: usize = cw
+                .iter()
+                .map(|[n, o, nn]| {
+                    n + if old_w > 0 {
+                        1 + o + 2 + arrow.width()
+                    } else {
+                        0
+                    } + if new_w > 0 && old_w == 0 { 1 } else { 0 }
+                        + nn
+                        + if size_w > 0 { 2 + size_w } else { 0 }
+                })
+                .sum();
+            total + gap * cols.saturating_sub(1) <= w
+        });
+    // A form with versions is only good if nothing in it is cut (but a
+    // version past 16 columns): else the next, sparer form.
+    if !names && per_col.is_none() {
+        return (Vec::new(), false);
+    }
     let mut shown = 0;
     let mut left: Vec<String> = Vec::new();
     for (gi, (repo, n, list, fams)) in groups.iter().enumerate() {
@@ -1554,6 +1595,13 @@ fn plan_rows(
         } else {
             let k = cols.min(list.len().max(1));
             (k, vec![name_w; k])
+        };
+        let widths: Vec<[usize; 3]> = if names {
+            widths.iter().map(|&n| [n, 0, 0]).collect()
+        } else {
+            per_col
+                .clone()
+                .unwrap_or_else(|| vec![[name_w, old_w, new_w]; k])
         };
         let parts = split(list.len(), k);
         let rows = parts.first().map_or(0, |p| p.1);

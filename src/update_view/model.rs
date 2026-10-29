@@ -414,7 +414,10 @@ impl Run {
         }
         let rows: Vec<InFlight> = rows.iter().filter_map(|r| self.in_flight_row(r)).collect();
         let mut flight: Vec<InFlight> = Vec::new();
-        for mut f in rows.into_iter().filter(|f| f.pct < 100) {
+        // Finished files leave, except the last one: it stays at 100%
+        // until pacman closes the download, so the tree never stands empty.
+        let open = rows.iter().any(|f| f.pct < 100);
+        for mut f in rows.into_iter().filter(|f| f.pct < 100 || !open) {
             if self.totals_seen.contains(&(f.pct, f.detail.clone())) {
                 f.queued = true;
             }
