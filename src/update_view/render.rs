@@ -1253,9 +1253,32 @@ fn plan_rows(
         + if size_w > 0 { 2 + size_w } else { 0 };
     let gap = if names { 2 } else { 4 };
     let cols = ((w + gap) / (cell + gap)).max(1);
-    // Width the columns leave over goes to the names, so fewer are cut.
-    let spare = ((w + gap) / cols).saturating_sub(gap + cell);
-    let name_w = (name_w + spare).min(longest);
+    // Width the columns leave over goes to the versions, then the names,
+    // so fewer are cut.
+    let mut spare = ((w + gap) / cols).saturating_sub(gap + cell);
+    let mut grow = |have: usize, most: usize| {
+        let more = most.saturating_sub(have).min(spare);
+        spare -= more;
+        have + more
+    };
+    let widest = |f: &dyn Fn(&Pkg) -> usize| pk.iter().map(|p| f(p)).max().unwrap_or(0).min(24);
+    let old_w = if old_w > 0 {
+        grow(
+            old_w,
+            widest(&|p| p.old.as_deref().map_or(0, |v| v.width())),
+        )
+    } else {
+        0
+    };
+    let new_w = if new_w > 0 {
+        grow(
+            new_w,
+            widest(&|p| p.new.as_deref().map_or(0, |v| v.width())),
+        )
+    } else {
+        0
+    };
+    let name_w = grow(name_w, longest);
 
     // `pad`: in a column, so cut and padded to it; else (a family row)
     // whole.
