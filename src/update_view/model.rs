@@ -419,7 +419,13 @@ impl Run {
         // stays, at 100%, until the download closes.
         if !rows.is_empty() && rows.iter().all(|f| f.pct >= 100) {
             for f in &mut self.in_flight {
+                // Its final size from the redraw; no rate, no time left:
+                // it is done.
+                let src = rows.iter().find(|r| r.name == f.name).unwrap_or(f);
+                let size: Vec<&str> = src.detail.split_whitespace().take(2).collect();
+                f.detail = size.join(" ");
                 f.pct = 100;
+                f.stalled = false;
             }
             if let Some(ev) = total {
                 self.apply_screen(ev, at);
