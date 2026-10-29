@@ -985,7 +985,8 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         .filter(|p| p.state == PhaseState::Done)
         .map(|p| {
             let mut row = phase_row(p, now, s);
-            // The download keeps what it moved, and how fast on average.
+            // The download keeps what it moved, and how fast on average,
+            // in the columns those figures had while it ran.
             if p.kind == PhaseKind::Download
                 && let Some(t) = run.totals.iter().find(|t| t.0 == "Total Download Size")
                 && let Some(b) = bytes(&t.1)
@@ -994,11 +995,24 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
                     .unwrap_or_default()
                     .as_secs_f64();
                 let avg = if secs > 0.0 {
-                    format!(" {} {}", s.bullet(), rate(&format!("{} B", b / secs)))
+                    rate(&format!("{} B", b / secs))
                 } else {
                     String::new()
                 };
-                row.push(seg(Paint::Dim, format!("  {}{avg}", size_pair(&t.1, None))));
+                let size = size_pair(&t.1, None);
+                let used: usize = row.iter().map(|(_, t)| t.width()).sum();
+                if gauge.size {
+                    let mut cells = format!(
+                        "{}{size:>SIZE_W$}",
+                        " ".repeat(gauge.left.saturating_sub(used))
+                    );
+                    if gauge.rate {
+                        cells += &format!("  {avg:>RATE_W$}");
+                    }
+                    row.push(seg(Paint::Dim, cells));
+                } else {
+                    row.push(seg(Paint::Dim, format!("  {size} {} {avg}", s.bullet())));
+                }
             }
             row
         })
