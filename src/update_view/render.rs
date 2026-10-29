@@ -798,47 +798,81 @@ fn children(
                     continue;
                 }
                 let median = h.median.filter(|m| m.secs >= 2);
-                let mut row = vec![
-                    seg(Paint::Warn, g(s, "▸", ">")),
-                    seg(Paint::Bold, format!(" {desc:<desc_w$}")),
-                ];
-                // The time goes on the bar's row when there is one.
-                if median.is_none() {
-                    row.push(seg(Paint::Dim, format!("  {:>6}", duration(took))));
+                let Some(Median { secs, .. }) = median else {
+                    rows.push(vec![
+                        seg(Paint::Warn, g(s, "▸", ">")),
+                        seg(Paint::Bold, format!(" {desc:<desc_w$}")),
+                        seg(Paint::Dim, format!("  {:>6}", duration(took))),
+                    ]);
+                    continue;
+                };
+                // Its time so far against the median of past runs, in the
+                // run's own columns: the times in the number cells, the bar
+                // in the bar column, marked as the estimate it is (`~`).
+                // Past the median the bar is full, Pac-Man waits dim at its
+                // end, and the overrun counts up.
+                let typical = Duration::from_secs(secs);
+                let over = took.saturating_sub(typical);
+                let (track, label) = if over.is_zero() {
+                    let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
+                        .unwrap_or(99)
+                        .min(99);
+                    (bar(pct, ga.cells, true, s), format!("~{pct}%"))
+                } else if over.as_secs() == 0 {
+                    // Under a second over: past the estimate, no figure yet.
+                    (
+                        s.dim(&format!("{}c", "-".repeat(ga.cells.saturating_sub(1)))),
+                        "over".into(),
+                    )
+                } else {
+                    (
+                        s.dim(&format!("{}c", "-".repeat(ga.cells.saturating_sub(1)))),
+                        format!("+{}", duration(over)),
+                    )
+                };
+                let times = format!(
+                    "{} {} usually {}",
+                    duration(took),
+                    s.bullet(),
+                    duration(typical)
+                );
+                let cells_w = numbers_w(ga).saturating_sub(2);
+                let mut tail = Vec::new();
+                if cells_w >= times.width() {
+                    tail.push(seg(Paint::Dim, format!("{times:>cells_w$}  ")));
                 }
-                rows.push(row);
-                if let Some(Median { secs, .. }) = median {
-                    let typical = Duration::from_secs(secs);
-                    // Under the hook's name, at its indent: the times in a
-                    // fixed cell (so the bar never moves), then the bar to
-                    // the run's right edge. Past the median the bar is
-                    // full, Pac-Man waits dim at its end, and the overrun
-                    // counts up: an estimate never claims more than it knows.
-                    let over = took.saturating_sub(typical);
-                    let times = format!(
-                        "{:>6} {} usually {:<6}  ",
-                        duration(took),
-                        s.bullet(),
-                        duration(typical)
-                    );
-                    let edge = ga.left + numbers_w(ga) + 3 + ga.cells;
-                    let cells = edge.saturating_sub(5 + 2 + times.width() + 3);
-                    let mut row = vec![seg(Paint::Dim, format!("{NESTED}  {times}"))];
-                    let (track, label) = if over.is_zero() {
-                        let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
-                            .unwrap_or(99)
-                            .min(99);
-                        (bar(pct, cells, true, s), format!("~{pct}%"))
-                    } else {
-                        (
-                            s.dim(&format!("{}c", "-".repeat(cells.saturating_sub(1)))),
-                            format!("+{}", duration(over)),
-                        )
-                    };
-                    if cells >= 6 {
-                        row.push(seg(Paint::Plain, format!("[{track}] ")));
-                    }
-                    row.push(seg(Paint::Plain, format!("{label:>4}")));
+                if ga.cells >= 6 {
+                    tail.push(seg(Paint::Plain, format!("[{track}] ")));
+                }
+                tail.push(seg(Paint::Plain, format!("{label:>4}")));
+                let title_w = ga.left.saturating_sub(5 + 2);
+                let mut title = vec![seg(Paint::Warn, g(s, "▸", ">"))];
+                if cells_w < times.width() {
+                    // No number cells: the times ride on the title.
+                    title.push(seg(Paint::Bold, format!(" {desc}")));
+                    title.push(seg(Paint::Dim, format!("  {times}")));
+                    rows.push(title);
+                    let mut row = vec![seg(
+                        Paint::Plain,
+                        format!("{NESTED}{}", " ".repeat(ga.left.saturating_sub(5))),
+                    )];
+                    row.extend(tail);
+                    rows.push(row);
+                } else if desc.width() <= title_w {
+                    // One row: the name, then its bar where every bar is.
+                    title.push(seg(Paint::Bold, format!(" {desc:<title_w$}")));
+                    title.extend(tail);
+                    rows.push(title);
+                } else {
+                    // A long name keeps its row; the bar goes under it, in
+                    // the same columns.
+                    title.push(seg(Paint::Bold, format!(" {desc}")));
+                    rows.push(title);
+                    let mut row = vec![seg(
+                        Paint::Plain,
+                        format!("{NESTED}{}", " ".repeat(ga.left.saturating_sub(5))),
+                    )];
+                    row.extend(tail);
                     rows.push(row);
                 }
             }
@@ -1286,6 +1320,16 @@ fn tidy_size(v: &str) -> String {
     }
 }
 
+/// `n` entries over `k` columns, read down: each column's (start, length),
+/// the first `n % k` one longer — 40 in 3 is 14, 13, 13.
+fn split(n: usize, k: usize) -> Vec<(usize, usize)> {
+    let k = k.max(1);
+    let (q, rem) = (n / k, n % k);
+    (0..k)
+        .map(|c| (c * q + c.min(rem), q + usize::from(c < rem)))
+        .collect()
+}
+
 /// The plan in one form; `true` when every package made it in.
 fn plan_rows(
     run: &Run,
@@ -1427,7 +1471,7 @@ fn plan_rows(
         }
         segs
     };
-    let entry = |p: &Pkg| -> Vec<Seg> {
+    let entry = |p: &Pkg, name_w: usize| -> Vec<Seg> {
         let name = cut_plain(&p.name, name_w);
         let mut segs = vec![seg(Paint::Plain, format!("{name:<name_w$}"))];
         if names {
@@ -1468,13 +1512,39 @@ fn plan_rows(
     let mut shown = 0;
     let mut left: Vec<String> = Vec::new();
     for (gi, (repo, n, list, fams)) in groups.iter().enumerate() {
-        // Column c holds `n / cols` entries, one more for the first
-        // `n % cols`: 40 in 3 is 14, 13, 13.
-        let k = cols.min(list.len().max(1));
-        let (q, rem) = (list.len() / k, list.len() % k);
-        let len = |c: usize| q + usize::from(c < rem);
-        let start = |c: usize| c * q + c.min(rem);
-        let rows = len(0);
+        // Column c holds `n / k` entries, one more for the first `n % k`:
+        // 40 in 3 is 14, 13, 13. Names alone: each column as wide as its
+        // own longest name, and as many columns as then fit.
+        let (k, widths) = if names {
+            let cap = if detail == Detail::TightNames {
+                name_w
+            } else {
+                w
+            };
+            let fits = |k: usize| {
+                let ws: Vec<usize> = split(list.len(), k)
+                    .iter()
+                    .map(|&(a, n)| {
+                        list[a..a + n]
+                            .iter()
+                            .map(|p| p.name.width())
+                            .max()
+                            .unwrap_or(0)
+                            .min(cap)
+                    })
+                    .collect();
+                (ws.iter().sum::<usize>() + gap * (k - 1) <= w).then_some(ws)
+            };
+            (1..=list.len().max(1))
+                .rev()
+                .find_map(|k| fits(k).map(|ws| (k, ws)))
+                .unwrap_or_else(|| (1, vec![name_w.min(w)]))
+        } else {
+            let k = cols.min(list.len().max(1));
+            (k, vec![name_w; k])
+        };
+        let parts = split(list.len(), k);
+        let rows = parts.first().map_or(0, |p| p.1);
         let fam_rows: Vec<Vec<Seg>> = fams.iter().flat_map(&family).collect();
         // Room for this group, and — unless it is the last — a line to
         // say what is left after it.
@@ -1505,17 +1575,17 @@ fn plan_rows(
         }
         for r in 0..rows {
             let mut segs = Vec::new();
-            for c in 0..k {
-                if r >= len(c) {
+            for (c, &(a, n)) in parts.iter().enumerate() {
+                if r >= n {
                     break;
                 }
-                let Some(p) = list.get(start(c) + r) else {
+                let Some(p) = list.get(a + r) else {
                     break;
                 };
                 if c > 0 {
                     segs.push(seg(Paint::Plain, " ".repeat(gap)));
                 }
-                segs.extend(entry(p));
+                segs.extend(entry(p, widths[c]));
             }
             out.push(line(&segs, w, s));
         }
@@ -2744,6 +2814,24 @@ mod tests {
         // Roomy: everything, sizes too.
         let t = compact_plan(&r, 40, 40, &plain()).join("\n");
         assert!(t.contains("1.0 MiB"), "{t}");
+    }
+
+    #[test]
+    fn names_only_columns_take_their_own_width() {
+        let mut r = empty();
+        for n in ["a-very-long-package-x", "b", "c", "d"] {
+            r.packages.push(crate::update_view::model::Pkg {
+                name: n.into(),
+                repo: Some("extra".into()),
+                ..Default::default()
+            });
+        }
+        // One shared width (21) would fit one column in 30; each column at
+        // its own width fits all four on one row, nothing cut.
+        let out = compact_plan(&r, 30, 3, &plain());
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(out[2].trim_end(), "a-very-long-package-x  b  c  d");
+        assert_eq!(split(40, 3), [(0, 14), (14, 13), (27, 13)]);
     }
 
     #[test]
