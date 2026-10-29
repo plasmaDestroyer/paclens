@@ -420,8 +420,26 @@ fn gauge(run: &Run, w: usize) -> Gauge {
     } else {
         0
     };
+    // Hooks: `  └─ ▸ ` + the longest description so far, so none is cut.
+    let hooks: &[Hook] = match run.current() {
+        Some(PhaseKind::PreHooks) => &run.pre_hooks,
+        Some(PhaseKind::PostHooks) => &run.post_hooks,
+        _ => &[],
+    };
+    let desc_w = hooks
+        .iter()
+        .filter(|h| h.started.is_some())
+        .map(|h| {
+            h.desc
+                .as_deref()
+                .or(h.file.as_deref())
+                .map_or(0, UnicodeWidthStr::width)
+        })
+        .max()
+        .map_or(0, |d| 5 + 2 + d + 1)
+        .min(w / 2);
     let mut g = Gauge {
-        left: PHASE_W.max(5 + name_w + 1),
+        left: PHASE_W.max(5 + name_w + 1).max(desc_w),
         cells: 0,
         size: download,
         rate: download,
@@ -1187,10 +1205,12 @@ fn plan_rows(
     };
     let names = matches!(detail, Detail::Names | Detail::TightNames);
     // Every name whole unless this is the last resort.
-    let name_w = if detail == Detail::TightNames {
-        width(&|p| p.name.width(), 28)
-    } else {
-        pk.iter().map(|p| p.name.width()).max().unwrap_or(0).min(32)
+    let longest = pk.iter().map(|p| p.name.width()).max().unwrap_or(0);
+    let name_w = match detail {
+        Detail::TightNames => width(&|p| p.name.width(), 28),
+        // Names alone: they get the room versions would have had.
+        Detail::Names => longest.min(32),
+        _ => longest.min(27),
     };
     let old_w = if matches!(detail, Detail::Full | Detail::Versions) {
         width(&|p| p.old.as_deref().map_or(0, |v| v.width()), 20)
@@ -1219,11 +1239,14 @@ fn plan_rows(
     let gap = if names { 2 } else { 4 };
     let cols = ((w + gap) / (cell + gap)).max(1);
 
+    // `pad`: in a column, so cut and padded to it; else (a family row)
+    // whole.
     let versions = |old: &Option<String>, new: &Option<String>, pad: bool| -> Vec<Seg> {
         let mut segs = Vec::new();
+        let fit = |v: &str, w: usize| if pad { cut_plain(v, w) } else { v.to_string() };
         let (o, n) = match (old, new) {
-            (Some(o), Some(n)) => version_diff(&cut_plain(o, old_w), &cut_plain(n, new_w)),
-            (None, Some(n)) => (vec![], vec![seg(Paint::Ok, cut_plain(n, new_w))]),
+            (Some(o), Some(n)) => version_diff(&fit(o, old_w), &fit(n, new_w)),
+            (None, Some(n)) => (vec![], vec![seg(Paint::Ok, fit(n, new_w))]),
             _ => (vec![], vec![]),
         };
         let nw: usize = n.iter().map(|(_, t)| t.width()).sum();
