@@ -496,7 +496,13 @@ fn gauge_tail(
     // Live figures read plain; a stall is amber.
     let mut segs = Vec::new();
     if g.size {
-        segs.push(seg(Paint::Plain, format!("{size:>SIZE_W$}  ")));
+        let p = if size.starts_with("stalled") {
+            Paint::Warn
+        } else {
+            Paint::Plain
+        };
+        segs.push(seg(p, format!("{size:>SIZE_W$}")));
+        segs.push(seg(Paint::Plain, "  "));
     }
     if g.rate {
         let p = if rate.starts_with("stalled") {
@@ -1351,7 +1357,7 @@ fn plan_rows(
         + if new_w > 0 && old_w == 0 { 1 } else { 0 }
         + new_w
         + if size_w > 0 { 2 + size_w } else { 0 };
-    let gap = if names { 2 } else { 4 };
+    let gap = if names { 2 } else { 3 };
     let cols = ((w + gap) / (cell + gap)).max(1);
     // Width the columns leave over goes to the names, then the versions,
     // so fewer are cut.
@@ -1856,7 +1862,7 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     // Set apart from pacman's own last lines, under the command it is for.
     let mut out = vec![
         String::new(),
-        line(&[seg(Paint::Bold, run.command.clone())], w, s),
+        line(&[seg(Paint::Dim, run.command.clone())], w, s),
         line(&end_segs(run, view.motif, s), w, s),
     ];
     // Where the time went: each phase that took a second or more.
@@ -1997,11 +2003,17 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     }
     // Not cut to the width: the receipt stays on screen, and a cut line loses
     // the part that says what to do. The terminal wraps it.
+    // Things to do read plain; records (`·`) step back.
     for ((p, m), text) in groups {
+        let tp = if m == s.bullet() {
+            Paint::Dim
+        } else {
+            Paint::Plain
+        };
         out.push(format!(
             "{}{}",
             paint(p, m, s),
-            paint(Paint::Plain, &format!(" {text}"), s)
+            paint(tp, &format!(" {text}"), s)
         ));
     }
     out
@@ -2109,7 +2121,7 @@ fn end_segs(run: &Run, motif: Motif, s: &Styles) -> Vec<Seg> {
             " pacman running".to_string(),
         ),
     };
-    vec![seg(p, mark), seg(Paint::Plain, text)]
+    vec![seg(p, mark), seg(Paint::Bold, text)]
 }
 
 /// `ᗧ·· 38 eaten in 2m04s` and its clean-board, unknown and failure variants.
