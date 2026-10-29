@@ -407,56 +407,25 @@ struct Gauge {
 }
 
 fn gauge(run: &Run, w: usize) -> Gauge {
-    let download = run.current() == Some(PhaseKind::Download);
+    // One set of columns for the whole run, so no phase moves the bars:
     // `  ├─ ` + the longest planned name + a space, unless the phase label
     // is wider; a third of the screen at most.
-    let name_w = if download {
-        run.packages
-            .iter()
-            .map(|p| p.name.width())
-            .max()
-            .unwrap_or(0)
-            .min(w / 3)
-    } else {
-        0
-    };
-    // Hooks: `  └─ ▸ ` + the longest description so far, so none is cut.
-    let hooks: &[Hook] = match run.current() {
-        Some(PhaseKind::PreHooks) => &run.pre_hooks,
-        Some(PhaseKind::PostHooks) => &run.post_hooks,
-        _ => &[],
-    };
-    let desc_w = hooks
+    let name_w = run
+        .packages
         .iter()
-        .filter(|h| h.started.is_some())
-        .map(|h| {
-            h.desc
-                .as_deref()
-                .or(h.file.as_deref())
-                .map_or(0, UnicodeWidthStr::width)
-        })
+        .map(|p| p.name.width())
         .max()
-        .map_or(0, |d| 5 + 2 + d + 1)
-        .min(w / 2);
+        .unwrap_or(0)
+        .min(w / 3);
     let mut g = Gauge {
-        left: PHASE_W.max(5 + name_w + 1).max(desc_w),
+        left: PHASE_W.max(5 + name_w + 1),
         cells: 0,
-        size: download,
-        rate: download,
+        size: true,
+        rate: true,
     };
-    // A running hook's `12s · usually 23s` after its bar.
-    let hooks = matches!(
-        run.current(),
-        Some(PhaseKind::PreHooks | PhaseKind::PostHooks)
-    );
-    let extra = if hooks { 2 + 20 } else { 0 };
     // Numbers give way before the bar gets short: the rate first, then sizes.
     loop {
-        let right = 5
-            + extra
-            + if g.size { 2 + SIZE_W } else { 0 }
-            + if g.rate { 2 + RATE_W + 2 + ETA_W } else { 0 };
-        g.cells = w.saturating_sub(g.left + 3 + right + 1);
+        g.cells = w.saturating_sub(g.left + numbers_w(&g) + 3 + 5 + 1);
         if g.cells >= 24 || !(g.size || g.rate) {
             return g;
         }
@@ -466,6 +435,11 @@ fn gauge(run: &Run, w: usize) -> Gauge {
             g.size = false;
         }
     }
+}
+
+/// Columns the numbers before a bar take, gaps included.
+fn numbers_w(g: &Gauge) -> usize {
+    (if g.size { SIZE_W + 2 } else { 0 }) + if g.rate { RATE_W + 2 + ETA_W + 2 } else { 0 }
 }
 
 /// `"53.7 MiB"` or `"939 KiB/s"` in bytes.
@@ -511,8 +485,10 @@ fn rate(t: &str) -> String {
     )
 }
 
-/// `[----C o  o ]  42%  53.7/155.5 MiB  2.86 MiB/s  00:29`, as much as
-/// the gauge has room for. `approx`: the percent is an estimate (`~42%`).
+/// `  53.7/155.5 MiB  2.86 MiB/s  00:29  [----C o  o ]  42%`, pacman's
+/// own order: the numbers by the name, the bar after them. Columns the
+/// gauge has no room for are left out whole. `approx`: the percent is an
+/// estimate (`~42%`).
 fn gauge_tail(
     g: &Gauge,
     pct: u8,
@@ -520,7 +496,15 @@ fn gauge_tail(
     numbers: Option<(String, String, String)>,
     s: &Styles,
 ) -> Vec<Seg> {
-    let mut segs = Vec::new();
+    let (size, rate, eta) = numbers.unwrap_or_default();
+    let mut t = String::new();
+    if g.size {
+        t += &format!("{size:>SIZE_W$}  ");
+    }
+    if g.rate {
+        t += &format!("{rate:>RATE_W$}  {eta:>ETA_W$}  ");
+    }
+    let mut segs = vec![seg(Paint::Dim, t)];
     if g.cells >= 6 {
         segs.push(seg(
             Paint::Plain,
@@ -533,16 +517,6 @@ fn gauge_tail(
         format!("{pct}%")
     };
     segs.push(seg(Paint::Plain, format!("{p:>4}")));
-    if let Some((size, rate, eta)) = numbers {
-        let mut t = String::new();
-        if g.size {
-            t += &format!("  {size:>SIZE_W$}");
-        }
-        if g.rate {
-            t += &format!("  {rate:>RATE_W$}  {eta:>ETA_W$}");
-        }
-        segs.push(seg(Paint::Dim, t));
-    }
     segs
 }
 
@@ -564,9 +538,9 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
     let pct = match p.kind {
         // Each check fills its own bar in a blink; its name says more.
         PhaseKind::Checks => None,
-        // Hooks done out of hooks to run, measured; the running hook
-        // carries its own time estimate.
-        PhaseKind::PreHooks | PhaseKind::PostHooks => p.share(),
+        // The count says how many hooks are done; the one bar is the
+        // running hook's own, under it.
+        PhaseKind::PreHooks | PhaseKind::PostHooks => None,
         _ => run.progress(now),
     };
     let Some(pct) = pct else {
@@ -621,17 +595,14 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                     } else {
                         (rate(&r), eta)
                     };
+                    // No rate column: the size column says it instead.
+                    let size = if f.stalled && !ga.rate {
+                        "last seen".to_string()
+                    } else {
+                        size_pair(&got, total)
+                    };
                     let mut row = vec![seg(Paint::Plain, name)];
-                    row.extend(gauge_tail(
-                        ga,
-                        f.pct,
-                        false,
-                        Some((size_pair(&got, total), r, eta)),
-                        s,
-                    ));
-                    if f.stalled && !ga.rate {
-                        row.push(seg(Paint::Dim, "  last seen"));
-                    }
+                    row.extend(gauge_tail(ga, f.pct, false, Some((size, r, eta)), s));
                     row
                 })
                 .collect();
@@ -738,42 +709,60 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
             } else {
                 &run.post_hooks
             };
-            // The one before (done, dim) and the one running (bold), the
-            // bars in the phase's columns: the running hook's is its time
-            // so far against the median of past runs, an estimate (`~`).
+            // The one before (done, dim) and the one running (bold), each
+            // whole. Under the running one, when it usually takes a while,
+            // its time so far against the median of past runs: a bar in
+            // the run's columns, marked as the estimate it is (`~`).
             let started: Vec<&Hook> = list.iter().filter(|h| h.started.is_some()).collect();
             let from = started.len().saturating_sub(2);
-            let desc_w = ga.left.saturating_sub(5 + 2 + 1);
-            started[from..]
-                .iter()
-                .enumerate()
-                .map(|(i, h)| {
-                    let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
-                    let desc = format!(" {:<desc_w$} ", cut_plain(desc, desc_w));
-                    let running = h.ended.is_none() && from + i + 1 == started.len();
-                    let took = took(h.started, h.ended, now).unwrap_or_default();
-                    if !running {
-                        return vec![
-                            seg(Paint::Ok, s.check()),
-                            seg(Paint::Dim, desc),
-                            seg(Paint::Dim, duration(took)),
-                        ];
-                    }
-                    let mut row = vec![seg(Paint::Warn, g(s, "▸", ">")), seg(Paint::Bold, desc)];
-                    match h.median {
-                        Some(Median { secs, .. }) => {
-                            let typical = Duration::from_secs(secs).max(Duration::from_secs(1));
-                            let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis())
-                                .unwrap_or(99)
-                                .min(99);
-                            row.extend(gauge_tail(ga, pct, true, None, s));
-                            row.push(seg(Paint::Dim, format!("  {}", hook_time(h, now, s))));
-                        }
-                        None => row.push(seg(Paint::Dim, duration(took))),
-                    }
-                    row
-                })
-                .collect()
+            let mut rows = Vec::new();
+            for (i, h) in started[from..].iter().enumerate() {
+                let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
+                let running = h.ended.is_none() && from + i + 1 == started.len();
+                let took = took(h.started, h.ended, now).unwrap_or_default();
+                if !running {
+                    rows.push(vec![
+                        seg(Paint::Ok, s.check()),
+                        seg(Paint::Dim, format!(" {desc}  {}", duration(took))),
+                    ]);
+                    continue;
+                }
+                let median = h.median.filter(|m| m.secs >= 2);
+                let mut row = vec![
+                    seg(Paint::Warn, g(s, "▸", ">")),
+                    seg(Paint::Bold, format!(" {desc}")),
+                ];
+                // The time goes on the bar's row when there is one.
+                if median.is_none() || !ga.size {
+                    row.push(seg(Paint::Dim, format!("  {}", duration(took))));
+                }
+                rows.push(row);
+                if let Some(Median { secs, .. }) = median {
+                    let typical = Duration::from_secs(secs);
+                    let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis())
+                        .unwrap_or(99)
+                        .min(99);
+                    let mut row = vec![seg(
+                        Paint::Plain,
+                        format!("{NESTED}{}", " ".repeat(ga.left.saturating_sub(5))),
+                    )];
+                    let times = format!(
+                        "{} {} usually {}",
+                        duration(took),
+                        s.bullet(),
+                        duration(typical)
+                    );
+                    row.extend(gauge_tail(
+                        ga,
+                        pct,
+                        true,
+                        Some((times, String::new(), String::new())),
+                        s,
+                    ));
+                    rows.push(row);
+                }
+            }
+            rows
         }
         PhaseKind::Checks => {
             // Each check pacman finished (its line settled), then the one
@@ -820,6 +809,24 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
 /// Marks a child row that hangs under the one before it (output of the
 /// running hook), so the tree gives it no branch of its own.
 const NESTED: &str = "\u{0}";
+
+/// `v` cut to `w` columns from the front: `…6.8.2110-1`.
+fn cut_front(v: &str, w: usize) -> String {
+    if v.width() <= w {
+        return v.to_string();
+    }
+    let mut out: Vec<char> = Vec::new();
+    let mut used = 1;
+    for c in v.chars().rev() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw > w {
+            break;
+        }
+        used += cw;
+        out.push(c);
+    }
+    std::iter::once('…').chain(out.into_iter().rev()).collect()
+}
 
 /// `name` cut to `w` columns with an ellipsis, uncoloured (it is padded after).
 fn cut_plain(name: &str, w: usize) -> String {
@@ -1238,12 +1245,17 @@ fn plan_rows(
         + if size_w > 0 { 2 + size_w } else { 0 };
     let gap = if names { 2 } else { 4 };
     let cols = ((w + gap) / (cell + gap)).max(1);
+    // Width the columns leave over goes to the names, so fewer are cut.
+    let spare = ((w + gap) / cols).saturating_sub(gap + cell);
+    let name_w = (name_w + spare).min(longest);
 
     // `pad`: in a column, so cut and padded to it; else (a family row)
     // whole.
     let versions = |old: &Option<String>, new: &Option<String>, pad: bool| -> Vec<Seg> {
         let mut segs = Vec::new();
-        let fit = |v: &str, w: usize| if pad { cut_plain(v, w) } else { v.to_string() };
+        // Cut from the front: versions share their front, the change is at
+        // the end (`…6.8.2110-1 → …6.8.2115-1`).
+        let fit = |v: &str, w: usize| if pad { cut_front(v, w) } else { v.to_string() };
         let (o, n) = match (old, new) {
             (Some(o), Some(n)) => version_diff(&fit(o, old_w), &fit(n, new_w)),
             (None, Some(n)) => (vec![], vec![seg(Paint::Ok, fit(n, new_w))]),
@@ -1387,6 +1399,29 @@ fn package_at(run: &Run, at: usize) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
+/// `t` broken at spaces into lines of at most `w` columns, each after the
+/// first indented two; a word longer than a line stands alone.
+fn wrap_words(t: &str, w: usize) -> Vec<String> {
+    if t.width() <= w || w < 20 {
+        return vec![t.to_string()];
+    }
+    let lead = t.len() - t.trim_start().len();
+    let mut out = vec![t[..lead].to_string()];
+    for word in t.split_whitespace() {
+        let Some(cur) = out.last_mut() else { break };
+        let fresh = cur.trim().is_empty();
+        if !fresh && cur.width() + 1 + word.width() > w {
+            out.push(format!("  {word}"));
+        } else {
+            if !fresh {
+                cur.push(' ');
+            }
+            cur.push_str(word);
+        }
+    }
+    out
+}
+
 /// `Warning:` painted as pacman paints its own `warning:`, when nothing
 /// coloured it yet (systemd's, from a scriptlet).
 fn warning_mark(l: &str, s: &Styles) -> String {
@@ -1456,14 +1491,25 @@ fn log_lines(run: &Run, n: usize) -> Vec<&String> {
         .chain(warnings)
         .collect();
     all.sort_by_key(|&(at, _)| at);
-    let mut tail: Vec<&String> = all
+    let mine: Vec<&String> = all
         .into_iter()
-        .rev()
         .filter(|(at, _)| *at >= from && in_hooks(run, *at))
-        .take(n)
         .map(|(_, l)| l)
         .collect();
-    tail.reverse();
+    let mut tail: Vec<&String> = mine.iter().rev().take(n).rev().copied().collect();
+    // A hook that builds one thing after another (an initramfs per kernel)
+    // repeats the same steps: keep the latest heading that says which.
+    let heading = mine
+        .iter()
+        .rev()
+        .find(|l| l.contains("==> Starting build:") || l.contains("Building initramfs"));
+    if let Some(h) = heading
+        && !tail.contains(h)
+        && n > 1
+    {
+        tail.remove(0);
+        tail.insert(0, h);
+    }
     tail
 }
 
@@ -1550,15 +1596,36 @@ pub fn frame(
                 .filter(|(at, _)| (d.unknown..stop).contains(at))
                 .collect();
             new.sort_by_key(|&(at, _)| at);
-            above.extend(new.into_iter().map(|(at, l)| {
+            for (at, l) in new {
                 // A package's own message says whose it is.
                 let whose = (at >= quiet_from)
                     .then(|| package_at(run, at))
                     .flatten()
-                    .map(|n| s.dim(&format!("{n}: ")))
+                    .map(|n| format!("{n}: "))
                     .unwrap_or_default();
-                format!("{whose}{}", warning_mark(l, s))
-            }));
+                // Plain text wraps at spaces under its own start; a line
+                // pacman coloured goes up as it is.
+                let body = if l.contains('\u{1b}') {
+                    vec![l.clone()]
+                } else {
+                    wrap_words(l, w.saturating_sub(whose.width()))
+                };
+                for (i, b) in body.iter().enumerate() {
+                    let lead = if whose.is_empty() {
+                        String::new()
+                    } else if i == 0 {
+                        s.dim(&whose)
+                    } else {
+                        " ".repeat(whose.width())
+                    };
+                    let b = if i == 0 {
+                        warning_mark(b, s)
+                    } else {
+                        b.clone()
+                    };
+                    above.push(format!("{lead}{b}"));
+                }
+            }
         }
         d.unknown = d.unknown.max(stop);
     };
@@ -1655,6 +1722,23 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         line(&[seg(Paint::Bold, run.command.clone())], w, s),
         line(&end_segs(run, view.motif, s), w, s),
     ];
+    // Where the time went: each phase that took a second or more.
+    let times: Vec<String> = run
+        .phases
+        .iter()
+        .filter_map(|p| {
+            let t = took(p.started, p.ended, Duration::ZERO)?;
+            (t.as_secs() >= 1).then(|| format!("{} {}", name(p.kind), duration(t)))
+        })
+        .collect();
+    if run.outcome() == Outcome::Succeeded && !times.is_empty() {
+        let b = format!(" {} ", s.bullet());
+        out.push(line(
+            &[seg(Paint::Dim, format!("  {}", times.join(&b)))],
+            w,
+            s,
+        ));
+    }
     if let Outcome::Failed(_) = run.outcome() {
         // pacman's errors verbatim, a little context, where the rest is.
         let errors = all_notes(run).filter(|n| matches!(n.kind, NoteKind::Error { .. }));
@@ -2130,6 +2214,20 @@ mod tests {
     }
 
     #[test]
+    fn long_message_wraps_at_spaces_under_itself() {
+        let t = "Warning: The unit file of warp-svc.service changed on disk. Run 'systemctl daemon-reload' to reload units.";
+        let out = wrap_words(t, 40);
+        assert!(out.iter().all(|l| l.width() <= 40), "{out:?}");
+        assert!(out[1..].iter().all(|l| l.starts_with("  ")), "{out:?}");
+        let joined: Vec<&str> = out.iter().flat_map(|l| l.split_whitespace()).collect();
+        assert_eq!(joined, t.split_whitespace().collect::<Vec<_>>());
+        assert_eq!(
+            wrap_words("  $ usermod -aG input", 40),
+            ["  $ usermod -aG input"]
+        );
+    }
+
+    #[test]
     fn plain_warning_gets_pacmans_colour() {
         let t = "Warning: unit changed";
         assert_eq!(warning_mark(t, &plain()), t);
@@ -2216,7 +2314,7 @@ mod tests {
         assert!(
             f.region
                 .iter()
-                .any(|l| l.contains("Doing x...") && l.ends_with("12s · usually 23s")),
+                .any(|l| l.contains("12s · usually 23s") && l.ends_with("~52%")),
             "{:?}",
             f.region
         );
@@ -2669,8 +2767,8 @@ mod tests {
                 let row = f.region.iter().find(|l| l.contains("zed")).unwrap();
                 let row = strip(row);
                 // A narrow screen drops the numbers whole rather than cut them.
-                let last = if w >= 120 { "00:02:51" } else { "%" };
-                assert!(row.ends_with(last), "w={w}: {row:?}");
+                assert!(row.ends_with("40%"), "w={w}: {row:?}");
+                assert_eq!(row.contains("00:02:51"), w >= 120, "w={w}: {row:?}");
                 assert!(row.width() < usize::from(w), "w={w}");
             }
         }

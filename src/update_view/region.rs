@@ -38,6 +38,9 @@ impl Region {
         rows: u16,
         cols: u16,
     ) -> io::Result<()> {
+        // One synchronized update (mode 2026): a terminal that knows it
+        // shows the whole frame at once, never half drawn; others ignore it.
+        write!(out, "\x1b[?2026h")?;
         self.erase(out)?;
         for l in &frame.above {
             write!(out, "{l}\r\n")?;
@@ -66,6 +69,7 @@ impl Region {
             write!(out, "{end}\r\n")?;
         }
         self.height = u16::try_from(used).unwrap_or(u16::MAX);
+        write!(out, "\x1b[?2026l")?;
         out.flush()
     }
 
@@ -257,7 +261,13 @@ mod tests {
     fn draw(r: &mut Region, f: &Frame, rows: u16) -> String {
         let mut out = Vec::new();
         r.draw(&mut out, f, rows, 80).unwrap();
-        String::from_utf8(out).unwrap()
+        let s = String::from_utf8(out).unwrap();
+        // Every frame is one synchronized update; the tests read inside it.
+        assert!(
+            s.starts_with("\x1b[?2026h") && s.ends_with("\x1b[?2026l"),
+            "{s:?}"
+        );
+        s["\x1b[?2026h".len()..s.len() - "\x1b[?2026l".len()].to_string()
     }
 
     #[test]
@@ -320,7 +330,7 @@ mod tests {
         let mut out = Vec::new();
         r.draw(&mut out, &f, 4, 10).unwrap();
         let s = String::from_utf8(out).unwrap();
-        assert!(s.ends_with("? [Y/n]\r\n"), "{s:?}");
+        assert!(s.ends_with("? [Y/n]\r\n\x1b[?2026l"), "{s:?}");
         assert_eq!(r.height, 3);
     }
 
