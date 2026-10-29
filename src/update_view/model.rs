@@ -414,10 +414,19 @@ impl Run {
         }
         let rows: Vec<InFlight> = rows.iter().filter_map(|r| self.in_flight_row(r)).collect();
         let mut flight: Vec<InFlight> = Vec::new();
-        // Finished files leave, except the last one: it stays at 100%
-        // until pacman closes the download, so the tree never stands empty.
-        let open = rows.iter().any(|f| f.pct < 100);
-        for mut f in rows.into_iter().filter(|f| f.pct < 100 || !open) {
+        // Finished files leave. When the last one finishes, pacman redraws
+        // every row at 100%; those are not live again: the last row seen
+        // stays, at 100%, until the download closes.
+        if !rows.is_empty() && rows.iter().all(|f| f.pct >= 100) {
+            for f in &mut self.in_flight {
+                f.pct = 100;
+            }
+            if let Some(ev) = total {
+                self.apply_screen(ev, at);
+            }
+            return;
+        }
+        for mut f in rows.into_iter().filter(|f| f.pct < 100) {
             if self.totals_seen.contains(&(f.pct, f.detail.clone())) {
                 f.queued = true;
             }
@@ -1161,6 +1170,32 @@ mod tests {
         r.observe_screen(&rows, Z);
         assert!(r.in_flight.is_empty());
         assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
+    }
+
+    #[test]
+    fn final_redraw_at_100_brings_no_finished_file_back() {
+        let mut r = run();
+        r.apply_line(":: Retrieving packages...", Z);
+        for n in ["zed", "deno"] {
+            r.packages.push(Pkg {
+                name: n.into(),
+                new: Some("1-1".into()),
+                ..Pkg::default()
+            });
+        }
+        let live = [" zed-1-1-x86_64   40.1 MiB  5.0 MiB/s 00:08 [---C o o]  95%".to_string()];
+        r.observe_screen(&live, Z);
+        let last = [
+            " deno-1-1-x86_64   4.0 MiB  1.0 MiB/s 00:04 [------]  100%".to_string(),
+            " zed-1-1-x86_64   42.0 MiB  5.0 MiB/s 00:09 [------]  100%".to_string(),
+        ];
+        r.observe_screen(&last, Z);
+        let names: Vec<(&str, u8)> = r
+            .in_flight
+            .iter()
+            .map(|f| (f.name.as_str(), f.pct))
+            .collect();
+        assert_eq!(names, [("zed", 100)]);
     }
 
     #[test]

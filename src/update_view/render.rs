@@ -565,6 +565,12 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
             .iter()
             .find(|t| t.0 == "Total Download Size")
             .map(|t| t.1.as_str());
+        // At 100% pacman's last figure is the time taken, not time left.
+        let eta = if p.pct.unwrap_or(0) >= 100 {
+            String::new()
+        } else {
+            eta
+        };
         (size_pair(&got, total), rate(&r), eta)
     });
     row.extend(gauge_tail(g, pct, false, numbers, s));
@@ -746,9 +752,19 @@ fn children(
                             row.push(seg(Paint::Dim, format!("{old} {} {new}", s.arrow())));
                         }
                     }
-                    // pacman's own percent for the one it is on.
+                    // pacman's own percent for the one it is on, in the run's
+                    // percent column, under the phase's own.
                     if let Some(p) = pct {
-                        row.push(seg(Paint::Dim, format!("  {p}%")));
+                        let used: usize = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
+                        let end = ga.left
+                            + numbers_w(ga)
+                            + if ga.cells >= 6 { ga.cells + 3 } else { 0 }
+                            + 4;
+                        let gap = end.saturating_sub(used + 4).max(2);
+                        row.push(seg(
+                            Paint::Dim,
+                            format!("{}{:>4}", " ".repeat(gap), format!("{p}%")),
+                        ));
                     }
                     row
                 })
@@ -815,8 +831,12 @@ fn children(
                     (seg(Paint::Ok, s.check()), Paint::Dim)
                 };
                 let one_row = desc.width() <= room;
-                let shown = if one_row || !running {
-                    cut_plain(&desc, room)
+                // A finished hook too long for the time column keeps its
+                // whole name (to the screen's edge), its time just after.
+                let shown = if one_row {
+                    desc.clone()
+                } else if !running {
+                    cut_plain(&desc, w.saturating_sub(5 + 2 + 2 + times.width() + 1))
                 } else {
                     desc.clone()
                 };
@@ -824,7 +844,8 @@ fn children(
                 let used = 5 + 2 + shown.width();
                 let pad = |used: usize| " ".repeat(edge.saturating_sub(used + times.width()));
                 let Some(Median { secs, .. }) = median else {
-                    row.push(seg(Paint::Dim, format!("{}{times}", pad(used))));
+                    let gap = if one_row { pad(used) } else { "  ".to_string() };
+                    row.push(seg(Paint::Dim, format!("{gap}{times}")));
                     rows.push(row);
                     continue;
                 };
@@ -1061,7 +1082,13 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         if let Some(d) = d {
             let (_, r, eta) = split_detail(d);
             let b = s.bullet();
-            head.push(seg(Paint::Dim, format!(" {b} {} {b} {eta} left", rate(&r))));
+            let done = phase(run, PhaseKind::Download)
+                .and_then(|p| p.pct)
+                .unwrap_or(0)
+                >= 100;
+            if !done {
+                head.push(seg(Paint::Dim, format!(" {b} {} {b} {eta} left", rate(&r))));
+            }
         }
     }
     let mut rows = vec![fit(&head)];
@@ -1457,6 +1484,13 @@ fn plan_rows(
             (Some(o), Some(n)) => version_diff(&fit(o, Some(n), old_w), &fit(n, Some(o), new_w)),
             (None, Some(n)) => (vec![], vec![seg(Paint::Ok, fit(n, None, new_w))]),
             _ => (vec![], vec![]),
+        };
+        // Old versions not shown: the new one still lights only its change.
+        let (o, n) = match (old, new) {
+            (Some(ov), Some(nv)) if old_w == 0 => {
+                (o, version_diff(ov, &fit(nv, Some(ov), new_w)).1)
+            }
+            _ => (o, n),
         };
         let nw: usize = n.iter().map(|(_, t)| t.width()).sum();
         if old_w > 0 {
