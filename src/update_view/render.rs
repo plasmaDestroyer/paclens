@@ -237,7 +237,7 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
         (PhaseKind::PreHooks | PhaseKind::PostHooks, _) => "hooks",
         _ => "pkgs",
     };
-    let text = format!(" {:<10} {n:>7} {noun:<5} {time}", name(p.kind));
+    let text = format!(" {:<10} {n:>7} {noun:<5}  {time}", name(p.kind));
     // The running phase stands out; finished ones step back.
     let text_paint = match p.state {
         PhaseState::Running => Paint::Bold,
