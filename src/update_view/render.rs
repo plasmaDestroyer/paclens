@@ -201,17 +201,9 @@ fn elapsed(run: &Run, now: Duration) -> Duration {
 /// wants the user (arcade).
 fn header(run: &Run, view: &View, now: Duration, s: &Styles) -> Vec<Seg> {
     let b = s.bullet();
-    let at = match run.current() {
-        Some(k) => name(k),
-        None if run.finished => "done",
-        None => "starting",
-    };
     let mut segs = vec![
         seg(Paint::Bold, run.command.clone()),
-        seg(
-            Paint::Dim,
-            format!(" {b} {at} {b} {}", duration(elapsed(run, now))),
-        ),
+        seg(Paint::Dim, format!(" {b} {}", duration(elapsed(run, now)))),
     ];
     if view.motif == Motif::Arcade {
         let ghosts = [
@@ -497,20 +489,20 @@ fn gauge_tail(
     s: &Styles,
 ) -> Vec<Seg> {
     let (size, rate, eta) = numbers.unwrap_or_default();
-    let mut t = String::new();
-    if rate.is_empty() && eta.is_empty() && g.size {
-        // One figure (a hook's times): flush against the bar.
-        let w = numbers_w(g).saturating_sub(2);
-        t += &format!("{size:>w$}  ");
-    } else {
-        if g.size {
-            t += &format!("{size:>SIZE_W$}  ");
-        }
-        if g.rate {
-            t += &format!("{rate:>RATE_W$}  {eta:>ETA_W$}  ");
-        }
+    // Live figures read plain; a stall is amber.
+    let mut segs = Vec::new();
+    if g.size {
+        segs.push(seg(Paint::Plain, format!("{size:>SIZE_W$}  ")));
     }
-    let mut segs = vec![seg(Paint::Dim, t)];
+    if g.rate {
+        let p = if rate.starts_with("stalled") {
+            Paint::Warn
+        } else {
+            Paint::Plain
+        };
+        segs.push(seg(p, format!("{rate:>RATE_W$}")));
+        segs.push(seg(Paint::Plain, format!("  {eta:>ETA_W$}  ")));
+    }
     if g.cells >= 6 {
         segs.push(seg(
             Paint::Plain,
@@ -574,7 +566,14 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
 /// The children of the running phase: what pacman is doing right now, one
 /// row each — files downloading, the packages being upgraded, the hook that
 /// runs and its last lines of output.
-fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
+fn children(
+    run: &Run,
+    ga: &Gauge,
+    w: usize,
+    room: usize,
+    now: Duration,
+    s: &Styles,
+) -> Vec<Vec<Seg>> {
     let Some(k) = run.current() else {
         return Vec::new();
     };
@@ -595,17 +594,23 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                         .iter()
                         .find(|p| p.name == f.name)
                         .and_then(|p| p.download.as_deref());
-                    // Stalled: the last numbers pacman drew, said to be so.
-                    let (r, eta) = if f.stalled {
-                        ("last seen".to_string(), String::new())
-                    } else {
-                        (rate(&r), eta)
+                    // Stalled: the last bytes pacman drew, and for how long
+                    // no new ones came.
+                    let stall = f.stalled.then(|| {
+                        let t = f
+                            .stalled_since
+                            .map(|t| now.saturating_sub(t))
+                            .unwrap_or_default();
+                        format!("stalled {}", duration(t))
+                    });
+                    let (r, eta) = match &stall {
+                        Some(st) => (st.clone(), String::new()),
+                        None => (rate(&r), eta),
                     };
                     // No rate column: the size column says it instead.
-                    let size = if f.stalled && !ga.rate {
-                        "last seen".to_string()
-                    } else {
-                        size_pair(&got, total)
+                    let size = match stall {
+                        Some(st) if !ga.rate => st,
+                        _ => size_pair(&got, total),
                     };
                     let mut row = vec![seg(Paint::Plain, name)];
                     row.extend(gauge_tail(ga, f.pct, false, Some((size, r, eta)), s));
@@ -647,8 +652,10 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
             rows
         }
         PhaseKind::Packages => {
-            // The last few `(i/n) verb name` lines: done ones dim, the
-            // current one bold, versions in aligned columns.
+            // The last `(i/n) verb name` lines that fit: done ones dim, the
+            // current one bold. Columns fixed for the whole phase from the
+            // plan, so the arrows never move; the verb only when it is not
+            // the usual `upgrading`.
             let recent: Vec<(String, String)> = run
                 .lines
                 .iter()
@@ -657,10 +664,21 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                     ScreenEvent::Package { verb, name, .. } => Some((verb, name)),
                     _ => None,
                 })
-                .take(3)
+                .take(room.clamp(1, 8))
                 .collect();
             let n = recent.len();
-            let verb_w = recent.iter().map(|(v, _)| v.width()).max().unwrap_or(0);
+            let verb_of = |v: &str| {
+                if v == "upgrading" {
+                    String::new()
+                } else {
+                    format!("{v} ")
+                }
+            };
+            let verb_w = recent
+                .iter()
+                .map(|(v, _)| verb_of(v).width())
+                .max()
+                .unwrap_or(0);
             let name_w = run
                 .packages
                 .iter()
@@ -668,15 +686,16 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                 .max()
                 .unwrap_or(0)
                 .min(w / 3);
-            let old_of = |name: &str| {
-                run.packages
-                    .iter()
-                    .find(|p| p.name == name)
-                    .and_then(|p| p.old.as_deref())
-                    .map_or(0, UnicodeWidthStr::width)
-            };
-            // Old versions right-aligned, so the arrows line up.
-            let old_w = recent.iter().map(|(_, n)| old_of(n)).max().unwrap_or(0);
+            // ponytail: 16 holds every common version; longer ones are cut
+            // from the front, where versions agree.
+            let old_w = run
+                .packages
+                .iter()
+                .filter_map(|p| p.old.as_deref())
+                .map(UnicodeWidthStr::width)
+                .max()
+                .unwrap_or(0)
+                .min(16);
             recent
                 .into_iter()
                 .rev()
@@ -684,7 +703,7 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                 .map(|(i, (verb, name))| {
                     let current = i + 1 == n;
                     let mut row = vec![
-                        seg(Paint::Dim, format!("{verb:<verb_w$} ")),
+                        seg(Paint::Dim, format!("{:<verb_w$}", verb_of(&verb))),
                         seg(
                             if current { Paint::Bold } else { Paint::Dim },
                             format!("{:<name_w$}  ", cut_plain(&name, name_w)),
@@ -692,12 +711,13 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                     ];
                     let pkg = run.packages.iter().find(|p| p.name == name);
                     if let Some((Some(old), Some(new))) = pkg.map(|p| (&p.old, &p.new)) {
+                        let old = cut_front(old, old_w);
                         row.push(seg(
                             Paint::Plain,
                             " ".repeat(old_w.saturating_sub(old.width())),
                         ));
                         if current {
-                            let (o, n) = version_diff(old, new);
+                            let (o, n) = version_diff(&old, new);
                             row.extend(o);
                             row.push(seg(Paint::Dim, format!(" {} ", s.arrow())));
                             row.extend(n);
@@ -724,6 +744,8 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
             let mut rows = Vec::new();
             for (i, h) in started[from..].iter().enumerate() {
                 let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
+                // pacman's `...` says "running"; the mark says that here.
+                let desc = desc.trim_end_matches("...");
                 let running = h.ended.is_none() && from + i + 1 == started.len();
                 let took = took(h.started, h.ended, now).unwrap_or_default();
                 if !running {
@@ -739,7 +761,7 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                     seg(Paint::Bold, format!(" {desc}")),
                 ];
                 // The time goes on the bar's row when there is one.
-                if median.is_none() || !ga.size {
+                if median.is_none() {
                     row.push(seg(Paint::Dim, format!("  {}", duration(took))));
                 }
                 rows.push(row);
@@ -748,25 +770,28 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                     let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis())
                         .unwrap_or(99)
                         .min(99);
+                    // Under the hook's name, at its indent: the times, then a
+                    // bar to the run's right edge.
                     let (_, _, pipe, _) = s.tree_glyphs();
-                    let pad = ga.left.saturating_sub(5 + pipe.width());
-                    let mut row = vec![
-                        seg(Paint::Dim, format!("{NESTED}{pipe}")),
-                        seg(Paint::Plain, " ".repeat(pad)),
-                    ];
                     let times = format!(
-                        "{} {} usually {}",
+                        "{} {} usually {}  ",
                         duration(took),
                         s.bullet(),
                         duration(typical)
                     );
-                    row.extend(gauge_tail(
-                        ga,
-                        pct,
-                        true,
-                        Some((times, String::new(), String::new())),
-                        s,
-                    ));
+                    let edge = ga.left + numbers_w(ga) + 3 + ga.cells;
+                    let cells = edge.saturating_sub(5 + pipe.width() + times.width() + 3);
+                    let mut row = vec![
+                        seg(Paint::Dim, format!("{NESTED}{pipe}")),
+                        seg(Paint::Dim, times),
+                    ];
+                    if cells >= 6 {
+                        row.push(seg(
+                            Paint::Plain,
+                            format!("[{}] ", bar(pct, cells, true, s)),
+                        ));
+                    }
+                    row.push(seg(Paint::Plain, format!("{:>4}", format!("~{pct}%"))));
                     rows.push(row);
                 }
             }
@@ -864,7 +889,25 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         .phases
         .iter()
         .filter(|p| p.state == PhaseState::Done)
-        .map(|p| phase_row(p, now, s))
+        .map(|p| {
+            let mut row = phase_row(p, now, s);
+            // The download keeps what it moved, and how fast on average.
+            if p.kind == PhaseKind::Download
+                && let Some(t) = run.totals.iter().find(|t| t.0 == "Total Download Size")
+                && let Some(b) = bytes(&t.1)
+            {
+                let secs = took(p.started, p.ended, now)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                let avg = if secs > 0.0 {
+                    format!(" {} {}", s.bullet(), rate(&format!("{} B", b / secs)))
+                } else {
+                    String::new()
+                };
+                row.push(seg(Paint::Dim, format!("  {}{avg}", size_pair(&t.1, None))));
+            }
+            row
+        })
         .collect();
     let running: Option<Vec<Seg>> = run
         .phases
@@ -884,8 +927,6 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
             format!("{dot} {}", pending.join(&format!(" {dot} "))),
         )]
     });
-    let kids = children(run, &gauge, w, now, s);
-
     let fixed = 1 + usize::from(running.is_some()) + usize::from(pending.is_some());
     // Folded by the screen's size alone, so the shape does not flip as
     // children come and go: a dozen rows for them, or fold.
@@ -895,6 +936,8 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         done
     };
     let room = max.saturating_sub(fixed + done_rows.len());
+    // Room left after the transaction's output tail.
+    let kids = children(run, &gauge, w, room.saturating_sub(LOG_TAIL), now, s);
     let kid_rows: Vec<Vec<Seg>> = if kids.len() > room {
         let keep = room.saturating_sub(1);
         let mut v: Vec<Vec<Seg>> = kids.iter().take(keep).cloned().collect();
@@ -1253,7 +1296,7 @@ fn plan_rows(
         + if size_w > 0 { 2 + size_w } else { 0 };
     let gap = if names { 2 } else { 4 };
     let cols = ((w + gap) / (cell + gap)).max(1);
-    // Width the columns leave over goes to the versions, then the names,
+    // Width the columns leave over goes to the names, then the versions,
     // so fewer are cut.
     let mut spare = ((w + gap) / cols).saturating_sub(gap + cell);
     let mut grow = |have: usize, most: usize| {
@@ -1261,7 +1304,9 @@ fn plan_rows(
         spare -= more;
         have + more
     };
-    let widest = |f: &dyn Fn(&Pkg) -> usize| pk.iter().map(|p| f(p)).max().unwrap_or(0).min(24);
+    // ponytail: 16 holds every common version; a 27-column git build (luajit) is cut.
+    let widest = |f: &dyn Fn(&Pkg) -> usize| pk.iter().map(|p| f(p)).max().unwrap_or(0).min(16);
+    let name_w = grow(name_w, longest);
     let old_w = if old_w > 0 {
         grow(
             old_w,
@@ -1278,7 +1323,6 @@ fn plan_rows(
     } else {
         0
     };
-    let name_w = grow(name_w, longest);
 
     // `pad`: in a column, so cut and padded to it; else (a family row)
     // whole.
@@ -2298,13 +2342,10 @@ mod tests {
             &uni(),
         );
         let t = f.region.join("\n");
-        assert!(
-            f.region[0].starts_with("pacman -Syu · packages · 2m00s"),
-            "{t}"
-        );
+        assert!(f.region[0].starts_with("pacman -Syu · 2m00s"), "{t}");
         assert!(t.contains("download"), "{t}");
         assert!(t.contains("13/38"), "{t}");
-        assert!(t.contains("upgrading openssh"), "{t}");
+        assert!(t.contains("openssh"), "{t}");
         assert!(t.contains("] 34%") || t.contains("]  34%"), "{t}");
     }
 
@@ -2765,6 +2806,7 @@ mod tests {
             detail: "1.0 MiB 1.0 MiB/s 00:10".into(),
             queued: false,
             stalled: false,
+            stalled_since: None,
         });
         for w in [1u16, 10, 23, 24] {
             let _ = frame(
@@ -2789,6 +2831,7 @@ mod tests {
             detail: "1055.4 MiB 1503 KiB/s 00:02:51".into(),
             queued: false,
             stalled: false,
+            stalled_since: None,
         });
         // Colour too: the bar's escape codes must not eat the line's width.
         for st in [plain(), colour()] {

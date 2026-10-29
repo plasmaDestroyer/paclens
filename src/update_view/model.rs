@@ -69,6 +69,8 @@ pub struct InFlight {
     /// Started, but pacman shows no time left now (`--:--`): the numbers
     /// are the last ones it drew.
     pub stalled: bool,
+    /// When it stalled.
+    pub stalled_since: Option<Duration>,
 }
 
 impl InFlight {
@@ -406,6 +408,7 @@ impl Run {
                 // A started file that looks queued has stalled: keep what
                 // it last showed, and say so.
                 (true, Some(k)) => {
+                    k.stalled_since.get_or_insert(at);
                     f = k.clone();
                     f.stalled = true;
                 }
@@ -774,6 +777,7 @@ impl Run {
             detail,
             queued,
             stalled: false,
+            stalled_since: None,
         })
     }
 
@@ -1126,6 +1130,7 @@ mod tests {
                 detail: "40.1 MiB 5.0 MiB/s 00:08".into(),
                 queued: false,
                 stalled: false,
+                stalled_since: None,
             }]
         );
         let d = &r.phases[idx(PhaseKind::Download)];
