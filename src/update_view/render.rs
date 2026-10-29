@@ -498,11 +498,17 @@ fn gauge_tail(
 ) -> Vec<Seg> {
     let (size, rate, eta) = numbers.unwrap_or_default();
     let mut t = String::new();
-    if g.size {
-        t += &format!("{size:>SIZE_W$}  ");
-    }
-    if g.rate {
-        t += &format!("{rate:>RATE_W$}  {eta:>ETA_W$}  ");
+    if rate.is_empty() && eta.is_empty() && g.size {
+        // One figure (a hook's times): flush against the bar.
+        let w = numbers_w(g).saturating_sub(2);
+        t += &format!("{size:>w$}  ");
+    } else {
+        if g.size {
+            t += &format!("{size:>SIZE_W$}  ");
+        }
+        if g.rate {
+            t += &format!("{rate:>RATE_W$}  {eta:>ETA_W$}  ");
+        }
     }
     let mut segs = vec![seg(Paint::Dim, t)];
     if g.cells >= 6 {
@@ -742,10 +748,12 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                     let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis())
                         .unwrap_or(99)
                         .min(99);
-                    let mut row = vec![seg(
-                        Paint::Plain,
-                        format!("{NESTED}{}", " ".repeat(ga.left.saturating_sub(5))),
-                    )];
+                    let (_, _, pipe, _) = s.tree_glyphs();
+                    let pad = ga.left.saturating_sub(5 + pipe.width());
+                    let mut row = vec![
+                        seg(Paint::Dim, format!("{NESTED}{pipe}")),
+                        seg(Paint::Plain, " ".repeat(pad)),
+                    ];
                     let times = format!(
                         "{} {} usually {}",
                         duration(took),
