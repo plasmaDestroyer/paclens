@@ -66,6 +66,9 @@ pub struct InFlight {
     pub detail: String,
     /// Listed but not started: no numbers of its own yet.
     pub queued: bool,
+    /// Started, but pacman shows no time left now (`--:--`): the numbers
+    /// are the last ones it drew.
+    pub stalled: bool,
 }
 
 impl InFlight {
@@ -170,6 +173,9 @@ pub struct Run {
     pub in_flight: Vec<InFlight>,
     /// Every download Total row seen, to spot its numbers left on a file row.
     pub totals_seen: std::collections::HashSet<(u8, String)>,
+    /// Every file that has shown progress of its own, in the order it first
+    /// did, with its last real row: a started file never goes back to queued.
+    pub started_files: Vec<InFlight>,
     /// Unrecognised lines, verbatim, in order — unrecognised hook output too.
     pub unknown: Vec<String>,
     /// Where each `unknown` line sits in `lines`.
@@ -232,6 +238,7 @@ impl Run {
             styled: Vec::new(),
             in_flight: Vec::new(),
             totals_seen: Default::default(),
+            started_files: Vec::new(),
             unknown: Vec::new(),
             unknown_at: Vec::new(),
             warning_at: Vec::new(),
@@ -323,11 +330,14 @@ impl Run {
                 ph.pct = Some(pct);
                 ph.detail = Some(detail);
             }
-            S::Check { done, total, .. } => {
+            S::Check {
+                done, total, name, ..
+            } => {
                 self.enter(PhaseKind::Checks, at);
                 let ph = self.phase_mut(PhaseKind::Checks);
                 ph.done = done;
                 ph.total = Some(total);
+                ph.detail = Some(name);
             }
             S::PreHooks | S::PostHooks | S::Processing => {
                 let kind = match ev {
@@ -383,16 +393,36 @@ impl Run {
             self.totals_seen.insert((*pct, detail.clone()));
         }
         let rows: Vec<InFlight> = rows.iter().filter_map(|r| self.in_flight_row(r)).collect();
-        self.in_flight = rows
-            .into_iter()
-            .filter(|f| f.pct < 100)
-            .map(|mut f| {
-                if self.totals_seen.contains(&(f.pct, f.detail.clone())) {
-                    f.queued = true;
+        let mut flight: Vec<InFlight> = Vec::new();
+        for mut f in rows.into_iter().filter(|f| f.pct < 100) {
+            if self.totals_seen.contains(&(f.pct, f.detail.clone())) {
+                f.queued = true;
+            }
+            let known = self.started_files.iter_mut().find(|k| k.name == f.name);
+            match (f.queued, known) {
+                // Real numbers: remember them.
+                (false, Some(k)) => *k = f.clone(),
+                (false, None) => self.started_files.push(f.clone()),
+                // A started file that looks queued has stalled: keep what
+                // it last showed, and say so.
+                (true, Some(k)) => {
+                    f = k.clone();
+                    f.stalled = true;
                 }
-                f
-            })
-            .collect();
+                (true, None) => {}
+            }
+            flight.push(f);
+        }
+        // Started files in the order they started, then the queue: rows
+        // never swap places while pacman reshuffles its own.
+        let order = |f: &InFlight| {
+            self.started_files
+                .iter()
+                .position(|k| k.name == f.name)
+                .unwrap_or(usize::MAX)
+        };
+        flight.sort_by_key(|f| order(f));
+        self.in_flight = flight;
         if let Some(ev) = total {
             self.apply_screen(ev, at);
         }
@@ -537,6 +567,15 @@ impl Run {
                 .unwrap_or(100)
                 .min(100),
         )
+    }
+
+    /// Is [`Run::progress`] a time estimate from past runs (hooks), not a
+    /// measure?
+    pub fn progress_estimated(&self) -> bool {
+        matches!(
+            self.current(),
+            Some(PhaseKind::PreHooks | PhaseKind::PostHooks)
+        ) && !self.medians.is_empty()
     }
 
     pub fn outcome(&self) -> Outcome {
@@ -740,6 +779,7 @@ impl Run {
             pct,
             detail,
             queued,
+            stalled: false,
         })
     }
 
@@ -1091,6 +1131,7 @@ mod tests {
                 pct: 50,
                 detail: "40.1 MiB 5.0 MiB/s 00:08".into(),
                 queued: false,
+                stalled: false,
             }]
         );
         let d = &r.phases[idx(PhaseKind::Download)];
@@ -1100,6 +1141,35 @@ mod tests {
         r.observe_screen(&rows, Z);
         assert!(r.in_flight.is_empty());
         assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
+    }
+
+    #[test]
+    fn started_file_that_stalls_keeps_its_numbers_and_its_place() {
+        let mut r = run();
+        r.apply_line(":: Retrieving packages...", Z);
+        for n in ["zed", "deno"] {
+            r.packages.push(Pkg {
+                name: n.into(),
+                new: Some("1-1".into()),
+                ..Pkg::default()
+            });
+        }
+        let first = [
+            " zed-1-1-x86_64   40.1 MiB  5.0 MiB/s 00:08 [---C o o]  50%".to_string(),
+            " deno-1-1-x86_64   2.0 MiB  1.0 MiB/s 00:30 [C o o o]   5%".to_string(),
+        ];
+        r.observe_screen(&first, Z);
+        // pacman swaps the rows, and zed's rate drops to nothing.
+        let later = [
+            " deno-1-1-x86_64   4.0 MiB  1.0 MiB/s 00:28 [-C o o]  10%".to_string(),
+            " zed-1-1-x86_64   40.1 MiB  0.00 B/s --:-- [---C o o]  50%".to_string(),
+        ];
+        r.observe_screen(&later, Z);
+        let names: Vec<&str> = r.in_flight.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["zed", "deno"]);
+        let zed = &r.in_flight[0];
+        assert!(zed.stalled && !zed.queued, "{zed:?}");
+        assert_eq!(zed.detail, "40.1 MiB 5.0 MiB/s 00:08");
     }
 
     #[test]

@@ -155,6 +155,9 @@ fn name(k: PhaseKind) -> &'static str {
 fn count(p: &Phase) -> String {
     match (p.state, p.total) {
         (PhaseState::Pending, _) => String::new(),
+        // Each check counts the packages again; the check's name says more.
+        (PhaseState::Running, _) if p.kind == PhaseKind::Checks => String::new(),
+        (PhaseState::Running, None) if p.done == 0 => String::new(),
         (PhaseState::Running, Some(t)) => format!("{}/{t}", p.done),
         _ => p.done.to_string(),
     }
@@ -222,7 +225,14 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
     let time = took(p.started, p.ended, now)
         .map(duration)
         .unwrap_or_default();
-    let text = format!(" {:<10} {:>7}  {time}", name(p.kind), count(p));
+    let n = count(p);
+    let noun = match (p.kind, n.is_empty()) {
+        (_, true) => "",
+        (PhaseKind::Sync, _) => "dbs",
+        (PhaseKind::PreHooks | PhaseKind::PostHooks, _) => "hooks",
+        _ => "pkgs",
+    };
+    let text = format!(" {:<10} {n:>7} {noun:<5} {time}", name(p.kind));
     // The running phase stands out; finished ones step back.
     let text_paint = match p.state {
         PhaseState::Running => Paint::Bold,
@@ -262,17 +272,19 @@ fn done_summary(run: &Run, now: Duration, s: &Styles) -> Option<Vec<Seg>> {
     ])
 }
 
-/// `⏱ 12s · median 23s (51 runs)` — an estimate from past runs.
+/// `12s · usually 23s`: the time so far, and the median of past runs.
 fn hook_time(h: &Hook, now: Duration, s: &Styles) -> String {
     let t = took(h.started, h.ended, now)
         .map(duration)
         .unwrap_or_default();
-    let typical = |m: Median| duration(Duration::from_secs(m.secs));
-    match (h.median, s.plain()) {
-        (Some(m), false) => format!("⏱ {t} · median {} ({} runs)", typical(m), m.runs),
-        (Some(m), true) => format!("{t} - median {} ({} runs)", typical(m), m.runs),
-        (None, false) => format!("⏱ {t}"),
-        (None, true) => t,
+    match h.median {
+        // Only while it runs: once done, its own time says it all.
+        Some(Median { secs, .. }) if h.ended.is_none() => format!(
+            "{t} {} usually {}",
+            s.bullet(),
+            duration(Duration::from_secs(secs))
+        ),
+        _ => t,
     }
 }
 
@@ -334,21 +346,10 @@ fn item(run: &Run, now: Duration, s: &Styles) -> Option<Vec<Seg>> {
     }
 }
 
-/// The measured bar of the running phase (`[-----C o  ] 50%`), or — arcade,
-/// once packages are known — the package lane.
-fn meter(run: &Run, view: &View, w: usize, now: Duration, s: &Styles) -> Option<String> {
-    if view.motif == Motif::Arcade && !run.packages.is_empty() {
-        return Some(lane(run, w, s));
-    }
-    // pacman's measured percent wins: for downloads it counts bytes, and a
-    // file count sits at 0% while twenty big files are halfway done.
-    let pct = run.progress(now)?;
-    // `[` + cells + `] ` + up to `100%`: the row is `cells + 7` wide.
-    let cells = w.saturating_sub(7).min(120);
-    if cells == 0 {
-        return Some(line(&[seg(Paint::Plain, format!("{pct}%"))], w, s));
-    }
-    Some(format!("[{}] {pct}%", bar(pct, cells, view.candy, s)))
+/// Arcade's package lane under the tree, once packages are known; the
+/// measured bar itself sits on the running phase's row.
+fn arcade_lane(run: &Run, view: &View, w: usize, s: &Styles) -> Option<String> {
+    (view.motif == Motif::Arcade && !run.packages.is_empty()).then(|| lane(run, w, s))
 }
 
 /// One `·` per real package, `ᗧ` at the done count, a pellet `●` at the end
@@ -373,54 +374,256 @@ fn lane(run: &Run, w: usize, s: &Styles) -> String {
     line(&segs, w, s)
 }
 
+/// Width of a phase row's label: mark, name, count, noun, time.
+const PHASE_W: usize = 35;
+/// `1048.1/1223.3 MiB`, `10.12 MiB/s`, `00:02:51`.
+const SIZE_W: usize = 17;
+const RATE_W: usize = 11;
+const ETA_W: usize = 8;
+
+/// Columns the running phase row and its download rows share, so every bar
+/// starts and ends in the same place: `left` columns of label, `[` + `cells`
+/// + `] `, the percent, then the numbers that fit.
+struct Gauge {
+    left: usize,
+    cells: usize,
+    size: bool,
+    rate: bool,
+}
+
+fn gauge(run: &Run, w: usize) -> Gauge {
+    let download = run.current() == Some(PhaseKind::Download);
+    // `  ├─ ` + the longest planned name + a space, unless the phase label
+    // is wider; a third of the screen at most.
+    let name_w = if download {
+        run.packages
+            .iter()
+            .map(|p| p.name.width())
+            .max()
+            .unwrap_or(0)
+            .min(w / 3)
+    } else {
+        0
+    };
+    let mut g = Gauge {
+        left: PHASE_W.max(5 + name_w + 1),
+        cells: 0,
+        size: download,
+        rate: download,
+    };
+    // Numbers give way before the bar gets short: the rate first, then sizes.
+    loop {
+        let right = 5
+            + if g.size { 2 + SIZE_W } else { 0 }
+            + if g.rate { 2 + RATE_W + 2 + ETA_W } else { 0 };
+        g.cells = w.saturating_sub(g.left + 3 + right + 1);
+        if g.cells >= 24 || !(g.size || g.rate) {
+            return g;
+        }
+        if g.rate {
+            g.rate = false;
+        } else {
+            g.size = false;
+        }
+    }
+}
+
+/// `"53.7 MiB"` or `"939 KiB/s"` in bytes.
+fn bytes(t: &str) -> Option<f64> {
+    let mut it = t.split_whitespace();
+    let n: f64 = it.next()?.parse().ok()?;
+    let mul = match it.next()?.trim_end_matches("/s") {
+        "B" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some(n * mul)
+}
+
+/// `53.7/155.5 MiB`: bytes so far over the planned size, both in the unit
+/// that suits the total. Without a total, just the bytes.
+fn size_pair(got: &str, total: Option<&str>) -> String {
+    let Some(g) = bytes(got) else {
+        return got.to_string();
+    };
+    let t = total.and_then(bytes);
+    let top = t.unwrap_or(g);
+    let (div, unit, dec) = if top >= 1024.0 * 1024.0 * 1024.0 {
+        (1024.0 * 1024.0 * 1024.0, "GiB", 2)
+    } else if top >= 1024.0 * 1024.0 {
+        (1024.0 * 1024.0, "MiB", 1)
+    } else {
+        (1024.0, "KiB", 0)
+    };
+    match t {
+        Some(t) => format!("{:.dec$}/{:.dec$} {unit}", g / div, t / div),
+        None => format!("{:.dec$} {unit}", g / div),
+    }
+}
+
+/// Every rate in MiB/s, so the column reads down.
+fn rate(t: &str) -> String {
+    bytes(t).map_or_else(
+        || t.to_string(),
+        |b| format!("{:.2} MiB/s", b / (1024.0 * 1024.0)),
+    )
+}
+
+/// `[----C o  o ]  42%  53.7/155.5 MiB  2.86 MiB/s  00:29`, as much as
+/// the gauge has room for. `approx`: the percent is an estimate (`~42%`).
+fn gauge_tail(
+    g: &Gauge,
+    pct: u8,
+    approx: bool,
+    numbers: Option<(String, String, String)>,
+    s: &Styles,
+) -> Vec<Seg> {
+    let mut segs = Vec::new();
+    if g.cells >= 6 {
+        segs.push(seg(
+            Paint::Plain,
+            format!("[{}] ", bar(pct, g.cells, true, s)),
+        ));
+    }
+    let p = if approx {
+        format!("~{pct}%")
+    } else {
+        format!("{pct}%")
+    };
+    segs.push(seg(Paint::Plain, format!("{p:>4}")));
+    if let Some((size, rate, eta)) = numbers {
+        let mut t = String::new();
+        if g.size {
+            t += &format!("  {size:>SIZE_W$}");
+        }
+        if g.rate {
+            t += &format!("  {rate:>RATE_W$}  {eta:>ETA_W$}");
+        }
+        segs.push(seg(Paint::Dim, t));
+    }
+    segs
+}
+
+/// pacman's `363.0 MiB 5.12 MiB/s 00:02:51` split into its three parts.
+fn split_detail(d: &str) -> (String, String, String) {
+    let t: Vec<&str> = d.split_whitespace().collect();
+    let two = |i: usize| t.get(i..i + 2).map(|p| p.join(" ")).unwrap_or_default();
+    (
+        two(0),
+        two(2),
+        t.get(4).copied().unwrap_or_default().to_string(),
+    )
+}
+
+/// The running phase's own row: its label, then — when there is a measure —
+/// the bar, in the same columns as its children's.
+fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Vec<Seg> {
+    let mut row = phase_row(p, now, s);
+    let pct = match p.kind {
+        // Each check fills its own bar in a blink; its name says more.
+        PhaseKind::Checks => None,
+        _ => run.progress(now),
+    };
+    let Some(pct) = pct else {
+        if let Some(d) = &p.detail {
+            row.push(seg(Paint::Dim, format!("  {d}")));
+        }
+        return row;
+    };
+    let used: usize = row.iter().map(|(_, t)| t.width()).sum();
+    row.push(seg(Paint::Plain, " ".repeat(g.left.saturating_sub(used))));
+    let numbers = (p.kind == PhaseKind::Download).then(|| {
+        let (got, r, eta) = split_detail(p.detail.as_deref().unwrap_or_default());
+        let total = run
+            .totals
+            .iter()
+            .find(|t| t.0 == "Total Download Size")
+            .map(|t| t.1.as_str());
+        (size_pair(&got, total), rate(&r), eta)
+    });
+    row.extend(gauge_tail(g, pct, run.progress_estimated(), numbers, s));
+    row
+}
+
 /// The children of the running phase: what pacman is doing right now, one
-/// row each — files downloading, the package being upgraded, the hook that
+/// row each — files downloading, the packages being upgraded, the hook that
 /// runs and its last lines of output.
-fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
+fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
     let Some(k) = run.current() else {
         return Vec::new();
     };
     let mut rows: Vec<Vec<Seg>> = match k {
         PhaseKind::Download => {
-            // Fixed columns for the whole download, so rows do not shift as
-            // files come and go: the name as wide as the longest planned
-            // package, then the bar takes what is left of the line.
-            let name_w = run
-                .packages
+            // The name column ends where the phase label does, so the bars
+            // line up with the phase's own.
+            let name_w = ga.left.saturating_sub(5 + 1);
+            let mut rows: Vec<Vec<Seg>> = run
+                .in_flight
                 .iter()
-                .map(|p| p.name.width())
-                .max()
-                .unwrap_or(0);
-            // ponytail: capped at 24 so a few long names don't push every
-            // bar right; longer ones end in `…`.
-            let name_w = name_w.clamp(8, 24).min(w / 3);
-            // `100%` + `  1055.4 MiB` + `  1503 KiB/s` + `  00:02:51`
-            let right = 4 + 2 + 10 + 2 + 11 + 2 + 8;
-            // `  ├─ ` + name + ` [` + bar + `] ` + right, and one spare column
-            // so the line never touches the edge.
-            let cells = w
-                .saturating_sub(5 + name_w + 2 + 2 + right + 1)
-                .clamp(10, 80);
-            run.in_flight
-                .iter()
+                .filter(|f| !f.queued)
                 .map(|f| {
-                    let name = format!("{:<name_w$}", cut_plain(&f.name, name_w));
-                    if f.queued {
-                        return vec![seg(Paint::Dim, format!("{name}  queued"))];
-                    }
-                    let (size, rate, eta) = f.parts();
-                    vec![
-                        seg(Paint::Plain, format!("{name} ")),
-                        seg(Paint::Plain, format!("[{}] ", bar(f.pct, cells, true, s))),
-                        seg(Paint::Plain, format!("{:>3}%", f.pct)),
-                        seg(Paint::Dim, format!("  {size:>10}  {rate:>11}  {eta:>8}")),
-                    ]
+                    let name = format!("{:<name_w$} ", cut_plain(&f.name, name_w));
+                    let (got, r, eta) = f.parts();
+                    let total = run
+                        .packages
+                        .iter()
+                        .find(|p| p.name == f.name)
+                        .and_then(|p| p.download.as_deref());
+                    let (r, eta) = if f.stalled {
+                        ("stalled".to_string(), String::new())
+                    } else {
+                        (rate(&r), eta)
+                    };
+                    let mut row = vec![seg(Paint::Plain, name)];
+                    row.extend(gauge_tail(
+                        ga,
+                        f.pct,
+                        false,
+                        Some((size_pair(&got, total), r, eta)),
+                        s,
+                    ));
+                    row
                 })
-                .collect()
+                .collect();
+            // The queue on one line: names until the width runs out.
+            let queued: Vec<&str> = run
+                .in_flight
+                .iter()
+                .filter(|f| f.queued)
+                .map(|f| f.name.as_str())
+                .collect();
+            if !queued.is_empty() {
+                let sep = format!(" {} ", s.bullet());
+                let mut text = String::from("queued  ");
+                let mut n = 0;
+                for q in &queued {
+                    let more = format!("{sep}+{}", queued.len() - n);
+                    let add = if n == 0 {
+                        q.to_string()
+                    } else {
+                        format!("{sep}{q}")
+                    };
+                    if 5 + text.width() + add.width() + more.width() > w {
+                        break;
+                    }
+                    text += &add;
+                    n += 1;
+                }
+                if n < queued.len() {
+                    if n > 0 {
+                        text += &sep;
+                    }
+                    text += &format!("+{}", queued.len() - n);
+                }
+                rows.push(vec![seg(Paint::Dim, text)]);
+            }
+            rows
         }
         PhaseKind::Packages => {
             // The last few `(i/n) verb name` lines: done ones dim, the
-            // current one plain.
+            // current one bold, versions in aligned columns.
             let recent: Vec<(String, String)> = run
                 .lines
                 .iter()
@@ -432,29 +635,39 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
                 .take(3)
                 .collect();
             let n = recent.len();
+            let verb_w = recent.iter().map(|(v, _)| v.width()).max().unwrap_or(0);
+            let name_w = run
+                .packages
+                .iter()
+                .map(|p| p.name.width())
+                .max()
+                .unwrap_or(0)
+                .min(w / 3);
             recent
                 .into_iter()
                 .rev()
                 .enumerate()
                 .map(|(i, (verb, name))| {
-                    let versions = run
-                        .packages
-                        .iter()
-                        .find(|p| p.name == name)
-                        .and_then(|p| {
-                            Some(format!(
-                                "  {} {} {}",
-                                p.old.as_ref()?,
-                                s.arrow(),
-                                p.new.as_ref()?
-                            ))
-                        })
-                        .unwrap_or_default();
-                    let paint = if i + 1 == n { Paint::Plain } else { Paint::Dim };
-                    vec![
-                        seg(paint, format!("{verb} {name}")),
-                        seg(Paint::Dim, versions),
-                    ]
+                    let current = i + 1 == n;
+                    let mut row = vec![
+                        seg(Paint::Dim, format!("{verb:<verb_w$} ")),
+                        seg(
+                            if current { Paint::Bold } else { Paint::Dim },
+                            format!("{:<name_w$}  ", cut_plain(&name, name_w)),
+                        ),
+                    ];
+                    let pkg = run.packages.iter().find(|p| p.name == name);
+                    if let Some((Some(old), Some(new))) = pkg.map(|p| (&p.old, &p.new)) {
+                        if current {
+                            let (o, n) = version_diff(old, new);
+                            row.extend(o);
+                            row.push(seg(Paint::Dim, format!(" {} ", s.arrow())));
+                            row.extend(n);
+                        } else {
+                            row.push(seg(Paint::Dim, format!("{old} {} {new}", s.arrow())));
+                        }
+                    }
+                    row
                 })
                 .collect()
         }
@@ -464,43 +677,43 @@ fn children(run: &Run, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
             } else {
                 &run.post_hooks
             };
-            let total = phase(run, k)
-                .and_then(|p| p.total)
-                .map_or_else(|| "?".to_string(), |t| t.to_string());
-            let started: Vec<(usize, &Hook)> = list
+            // The one before (done, dim) and the one running (bold); the
+            // phase row carries the count.
+            let started: Vec<&Hook> = list.iter().filter(|h| h.started.is_some()).collect();
+            let from = started.len().saturating_sub(2);
+            started[from..]
                 .iter()
                 .enumerate()
-                .filter(|(_, h)| h.started.is_some())
-                .collect();
-            let mut rows: Vec<Vec<Seg>> = Vec::new();
-            let from = started.len().saturating_sub(2);
-            for (i, &(n, h)) in started.iter().enumerate().skip(from) {
-                let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
-                let desc = format!("({}/{total}) {desc}", n + 1);
-                let running = h.ended.is_none() && i + 1 == started.len();
-                let (mark, paint) = if running {
-                    (seg(Paint::Warn, g(s, "▸", ">")), Paint::Bold)
-                } else {
-                    (seg(Paint::Ok, s.check()), Paint::Dim)
-                };
-                rows.push(vec![
-                    mark,
-                    seg(paint, format!(" {desc}")),
-                    seg(Paint::Dim, format!("  {}", hook_time(h, now, s))),
-                ]);
-            }
-            rows
+                .map(|(i, h)| {
+                    let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
+                    let running = h.ended.is_none() && from + i + 1 == started.len();
+                    let (mark, paint) = if running {
+                        (seg(Paint::Warn, g(s, "▸", ">")), Paint::Bold)
+                    } else {
+                        (seg(Paint::Ok, s.check()), Paint::Dim)
+                    };
+                    vec![
+                        mark,
+                        seg(paint, format!(" {desc}")),
+                        seg(Paint::Dim, format!("  {}", hook_time(h, now, s))),
+                    ]
+                })
+                .collect()
         }
+        PhaseKind::Checks => Vec::new(),
         _ => item(run, now, s).into_iter().collect(),
     };
     // After the answer: the transaction's own output (hooks, scriptlets),
-    // last few lines, under what produced it.
+    // last few lines, under what produced it; the newest one reads plain.
     let (_, _, pipe, _) = s.tree_glyphs();
-    for l in log_lines(run, LOG_TAIL) {
-        rows.push(vec![seg(
-            Paint::Dim,
-            format!("{NESTED}{pipe}{}", l.trim_end()),
-        )]);
+    let tail = log_lines(run, LOG_TAIL);
+    let n = tail.len();
+    for (i, l) in tail.into_iter().enumerate() {
+        let paint = if i + 1 == n { Paint::Plain } else { Paint::Dim };
+        rows.push(vec![
+            seg(Paint::Dim, format!("{NESTED}{pipe}")),
+            seg(paint, l.trim_end().to_string()),
+        ]);
     }
     rows
 }
@@ -531,6 +744,7 @@ fn cut_plain(name: &str, w: usize) -> String {
 /// ("+N more").
 fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles) -> Vec<String> {
     let fit = |segs: &Vec<Seg>| line(segs, w, s);
+    let gauge = gauge(run, w);
     let (branch, last, pipe, blank) = s.tree_glyphs();
     let done: Vec<Vec<Seg>> = run
         .phases
@@ -542,13 +756,7 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         .phases
         .iter()
         .find(|p| p.state == PhaseState::Running)
-        .map(|p| {
-            let mut row = phase_row(p, now, s);
-            if let Some(d) = &p.detail {
-                row.push(seg(Paint::Dim, format!("  {d}")));
-            }
-            row
-        });
+        .map(|p| running_row(run, p, &gauge, now, s));
     let pending: Vec<&str> = run
         .phases
         .iter()
@@ -562,10 +770,12 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
             format!("{dot} {}", pending.join(&format!(" {dot} "))),
         )]
     });
-    let kids = children(run, w, now, s);
+    let kids = children(run, &gauge, w, now, s);
 
     let fixed = 1 + usize::from(running.is_some()) + usize::from(pending.is_some());
-    let done_rows: Vec<Vec<Seg>> = if fixed + done.len() + kids.len() > max {
+    // Folded by the screen's size alone, so the shape does not flip as
+    // children come and go: a dozen rows for them, or fold.
+    let done_rows: Vec<Vec<Seg>> = if fixed + done.len() + 12 > max {
         done_summary(run, now, s).into_iter().collect()
     } else {
         done
@@ -624,17 +834,33 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
     let room = height.saturating_sub(1).max(1);
     match view.layout {
         Layout::Inline => {
-            // Up to two thirds of the screen: room for every download in
-            // flight on a big terminal, and the shell above stays in view.
-            let h = (height * 2 / 3).max(6).min(room);
-            let mut rows = tree(run, view, w, h.saturating_sub(1).max(1), now, s);
-            rows.extend(meter(run, view, w, now, s));
+            // All but two rows: every download in flight gets a row, and
+            // a line of what came before stays in view.
+            let h = height.saturating_sub(2).max(6).min(room);
+            let lane = arcade_lane(run, view, w, s);
+            let mut rows = tree(
+                run,
+                view,
+                w,
+                h.saturating_sub(usize::from(lane.is_some())).max(1),
+                now,
+                s,
+            );
+            rows.extend(lane);
             rows.truncate(h);
             rows
         }
         Layout::InlineGrow | Layout::Nom => {
-            let mut rows = tree(run, view, w, room.saturating_sub(1).max(1), now, s);
-            rows.extend(meter(run, view, w, now, s));
+            let lane = arcade_lane(run, view, w, s);
+            let mut rows = tree(
+                run,
+                view,
+                w,
+                room.saturating_sub(usize::from(lane.is_some())).max(1),
+                now,
+                s,
+            );
+            rows.extend(lane);
             rows
         }
         Layout::Receipt => {
@@ -680,18 +906,124 @@ fn version_diff(old: &str, new: &str) -> (Vec<Seg>, Vec<Seg>) {
     )
 }
 
+type Pkg = crate::update_view::model::Pkg;
+
+/// Packages that share a name up to their last `-`, three or more in one
+/// repo, as one entry: `linux-firmware-* (15)`, with the versions when they
+/// all share them.
+fn fold_families(list: &[&Pkg]) -> Vec<Pkg> {
+    let key = |p: &Pkg| p.name.rfind('-').map(|i| p.name[..=i].to_string());
+    let mut out: Vec<Pkg> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for p in list {
+        let Some(k) = key(p) else {
+            out.push((*p).clone());
+            continue;
+        };
+        let members: Vec<&&Pkg> = list
+            .iter()
+            .filter(|q| key(q).as_ref() == Some(&k))
+            .collect();
+        if members.len() < 3 {
+            out.push((*p).clone());
+        } else if !seen.contains(&k) {
+            let same = |f: &dyn Fn(&Pkg) -> &Option<String>| {
+                let first = f(members[0]);
+                members
+                    .iter()
+                    .all(|m| f(m) == first)
+                    .then(|| first.clone())
+                    .flatten()
+            };
+            out.push(Pkg {
+                name: format!("{k}* ({})", members.len()),
+                old: same(&|m| &m.old),
+                new: same(&|m| &m.new),
+                ..Pkg::default()
+            });
+            seen.push(k);
+        }
+    }
+    out
+}
+
+/// How much of each package the plan shows: the richest form in which every
+/// package fits wins.
+#[derive(Clone, Copy, PartialEq)]
+enum Detail {
+    /// name, old → new, download size
+    Full,
+    /// name, old → new
+    Versions,
+    /// name, new version
+    New,
+    /// name only
+    Names,
+}
+
 /// The plan at `[Y/n]`: one summary line, then the packages grouped by the
 /// repo they come from, each group under its own heading and spread over as
 /// many columns as the width allows (20 packages in 2 columns: 10 and 10;
 /// in 3: 7, 7, 6), read down then across. Versions line up across groups.
-/// At most `max` rows; past that, "+N more".
+/// When it does not fit in `max` rows, detail goes before packages do:
+/// sizes, then old versions, then families fold (`linux-firmware-* (15)`),
+/// then versions; past that, "+N more".
 fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
+    let ladder = [
+        (Detail::Full, false),
+        (Detail::Versions, false),
+        (Detail::New, false),
+        (Detail::New, true),
+        (Detail::Names, true),
+    ];
+    let mut out = Vec::new();
+    for (detail, fold) in ladder {
+        let (rows, all) = plan_rows(run, w, max, detail, fold, s);
+        out = rows;
+        if all {
+            break;
+        }
+    }
+    out
+}
+
+/// The plan in one form; `true` when every package made it in.
+fn plan_rows(
+    run: &Run,
+    w: usize,
+    max: usize,
+    detail: Detail,
+    fold: bool,
+    s: &Styles,
+) -> (Vec<String>, bool) {
     let arrow = s.arrow();
-    let pk = &run.packages;
+    // Groups in the order pacman lists their first package.
+    let mut groups: Vec<(&str, Vec<&Pkg>)> = Vec::new();
+    for p in &run.packages {
+        let repo = p.repo.as_deref().unwrap_or("packages");
+        match groups.iter_mut().find(|g| g.0 == repo) {
+            Some(g) => g.1.push(p),
+            None => groups.push((repo, vec![p])),
+        }
+    }
+    groups.sort_by(|a, b| a.0.cmp(b.0));
+    let groups: Vec<(&str, usize, Vec<Pkg>)> = groups
+        .into_iter()
+        .map(|(repo, list)| {
+            let n = list.len();
+            let entries = if fold {
+                fold_families(&list)
+            } else {
+                list.into_iter().cloned().collect()
+            };
+            (repo, n, entries)
+        })
+        .collect();
+    let pk: Vec<&Pkg> = groups.iter().flat_map(|g| &g.2).collect();
     // Sized to nine in ten entries, not the longest: one long version
     // (luajit's) would cost every column; the few longer ones end in `…`.
-    let width = |f: &dyn Fn(&crate::update_view::model::Pkg) -> usize, cap: usize| {
-        let mut v: Vec<usize> = pk.iter().map(f).collect();
+    let width = |f: &dyn Fn(&Pkg) -> usize, cap: usize| {
+        let mut v: Vec<usize> = pk.iter().map(|p| f(p)).collect();
         v.sort_unstable();
         v.get(v.len().saturating_sub(1) * 9 / 10)
             .copied()
@@ -699,35 +1031,53 @@ fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
             .min(cap)
     };
     let name_w = width(&|p| p.name.width(), 28);
-    let old_w = width(&|p| p.old.as_deref().map_or(0, |v| v.width()), 20);
-    let new_w = width(&|p| p.new.as_deref().map_or(0, |v| v.width()), 20);
+    let old_w = if matches!(detail, Detail::Full | Detail::Versions) {
+        width(&|p| p.old.as_deref().map_or(0, |v| v.width()), 20)
+    } else {
+        0
+    };
+    let new_w = if detail == Detail::Names {
+        0
+    } else {
+        width(&|p| p.new.as_deref().map_or(0, |v| v.width()), 20)
+    };
     // Sizes are short; the widest one sets the column so they line up.
-    let size_w = pk
-        .iter()
-        .map(|p| p.download.as_deref().map_or(0, |v| v.width()))
-        .max()
-        .unwrap_or(0);
-    let cell = name_w + 1 + old_w + 3 + new_w + if size_w > 0 { 2 + size_w } else { 0 };
-    let gap = 4;
+    let size_w = if detail == Detail::Full {
+        pk.iter()
+            .map(|p| p.download.as_deref().map_or(0, |v| v.width()))
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let cell = name_w
+        + if old_w > 0 { 1 + old_w + 3 } else { 0 }
+        + if new_w > 0 && old_w == 0 { 1 } else { 0 }
+        + new_w
+        + if size_w > 0 { 2 + size_w } else { 0 };
+    let gap = if detail == Detail::Names { 2 } else { 4 };
     let cols = ((w + gap) / (cell + gap)).max(1);
 
-    let entry = |p: &crate::update_view::model::Pkg| -> Vec<Seg> {
+    let entry = |p: &Pkg| -> Vec<Seg> {
         let name = cut_plain(&p.name, name_w);
-        let mut segs = vec![seg(Paint::Plain, format!("{name:<name_w$} "))];
+        let mut segs = vec![seg(Paint::Plain, format!("{name:<name_w$}"))];
+        if detail == Detail::Names {
+            return segs;
+        }
+        segs.push(seg(Paint::Plain, " "));
         let (old, new) = match (&p.old, &p.new) {
-            (Some(o), Some(n)) => {
-                let (o, n) = version_diff(&cut_plain(o, old_w), &cut_plain(n, new_w));
-                (o, n)
-            }
+            (Some(o), Some(n)) => version_diff(&cut_plain(o, old_w), &cut_plain(n, new_w)),
             (None, Some(n)) => (vec![], vec![seg(Paint::Ok, cut_plain(n, new_w))]),
             _ => (vec![], vec![]),
         };
-        let ow: usize = old.iter().map(|(_, t)| t.width()).sum();
         let nw: usize = new.iter().map(|(_, t)| t.width()).sum();
-        segs.push(seg(Paint::Plain, " ".repeat(old_w.saturating_sub(ow))));
-        segs.extend(old);
-        let a = if p.old.is_some() { arrow } else { " " };
-        segs.push(seg(Paint::Dim, format!(" {a} ")));
+        if old_w > 0 {
+            let ow: usize = old.iter().map(|(_, t)| t.width()).sum();
+            segs.push(seg(Paint::Plain, " ".repeat(old_w.saturating_sub(ow))));
+            segs.extend(old);
+            let a = if p.old.is_some() { arrow } else { " " };
+            segs.push(seg(Paint::Dim, format!(" {a} ")));
+        }
         segs.extend(new);
         segs.push(seg(Paint::Plain, " ".repeat(new_w.saturating_sub(nw))));
         if size_w > 0 {
@@ -737,19 +1087,8 @@ fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
         segs
     };
 
-    // Groups in the order pacman lists their first package.
-    let mut groups: Vec<(&str, Vec<&crate::update_view::model::Pkg>)> = Vec::new();
-    for p in pk {
-        let repo = p.repo.as_deref().unwrap_or("packages");
-        match groups.iter_mut().find(|g| g.0 == repo) {
-            Some(g) => g.1.push(p),
-            None => groups.push((repo, vec![p])),
-        }
-    }
-    groups.sort_by(|a, b| a.0.cmp(b.0));
-
     let b = s.bullet();
-    let mut head = vec![seg(Paint::Bold, format!("{} packages", pk.len()))];
+    let mut head = vec![seg(Paint::Bold, format!("{} packages", run.packages.len()))];
     for (label, value) in &run.totals {
         let label = label
             .to_lowercase()
@@ -760,15 +1099,18 @@ fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
     }
     let mut out = vec![line(&head, w, s)];
     let mut shown = 0;
-    for (repo, list) in &groups {
+    let mut left: Vec<String> = Vec::new();
+    for (repo, n, list) in &groups {
         let rows = list.len().div_ceil(cols);
-        if out.len() + 1 + rows > max {
-            break;
+        // Room for this group, and a line to say what is left after it.
+        if !left.is_empty() || out.len() + 1 + rows + 1 > max {
+            left.push(format!("{repo} {n}"));
+            continue;
         }
         out.push(line(
             &[
                 seg(Paint::Bold, (*repo).to_string()),
-                seg(Paint::Dim, format!(" ({})", list.len())),
+                seg(Paint::Dim, format!(" ({n})")),
             ],
             w,
             s,
@@ -786,22 +1128,24 @@ fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
             }
             out.push(line(&segs, w, s));
         }
-        shown += list.len();
+        shown += n;
     }
-    if shown < pk.len() {
-        let more = pk.len() - shown;
+    let all = shown == run.packages.len();
+    if !all {
+        let more = run.packages.len() - shown;
         out.push(line(
             &[seg(
                 Paint::Dim,
                 format!(
-                    "+{more} more {b} the full list is in pacman's own output: paclens transcript"
+                    "+{more} more in {} {b} the full list: paclens transcript",
+                    left.join(", ")
                 ),
             )],
             w,
             s,
         ));
     }
-    out
+    (out, all)
 }
 
 /// Lines from here on are the transaction's own output: after the plan's
@@ -1059,9 +1403,13 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     }
     let arcade = view.motif == Motif::Arcade;
     let bullet = (Paint::Dim, s.bullet());
-    let mark = |ghost: Ghost| {
+    // Something for the user to do: an amber `!`, ahead of the records.
+    let act = (Paint::Warn, "!");
+    let mark = |ghost: Ghost, todo: bool| {
         if arcade {
             (Paint::Ghost(ghost), g(s, "ᗣ", "G"))
+        } else if todo {
+            act
         } else {
             bullet
         }
@@ -1074,20 +1422,25 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
             .collect()
     };
     let mut groups: Vec<((Paint, &str), String)> = Vec::new();
-    if !texts(&|k| *k == NoteKind::Reboot).is_empty() {
+    if let Some(t) = texts(&|k| *k == NoteKind::Reboot).first() {
         let pellet = if arcade {
             (Paint::Bold, g(s, "●", "o"))
         } else {
-            bullet
+            act
         };
-        groups.push((pellet, "reboot recommended".into()));
+        // The hook's own reason, when it gives one.
+        let why = t
+            .split_once("due to ")
+            .map(|(_, r)| format!(", due to {}", r.trim_end_matches('.')))
+            .unwrap_or_default();
+        groups.push((pellet, format!("reboot recommended{why}")));
     }
     let rebuild: Vec<String> = texts(&|k| *k == NoteKind::Rebuild)
         .iter()
         .filter_map(|t| t.split_whitespace().last().map(str::to_string))
         .collect();
     if !rebuild.is_empty() {
-        groups.push((bullet, format!("rebuild: {}", rebuild.join(", "))));
+        groups.push((act, format!("rebuild: {}", rebuild.join(", "))));
     }
     // One line each: a warning is usually something to do (daemon-reload).
     // "local is newer than repo" was shown before the plan and asks nothing.
@@ -1096,24 +1449,28 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         .into_iter()
         .filter(to_do)
     {
-        groups.push((mark(Ghost::Clyde), format!("warning: {w}")));
+        groups.push((mark(Ghost::Clyde, true), action(&w)));
     }
     let pacnew = texts(&|k| *k == NoteKind::Pacnew);
     if !pacnew.is_empty() {
         groups.push((
-            mark(Ghost::Pinky),
+            mark(Ghost::Pinky, true),
             format!(".pacnew: {}", pacnew.join(", ")),
         ));
     }
     let opt = texts(&|k| *k == NoteKind::Optdepends);
     if !opt.is_empty() {
-        groups.push((mark(Ghost::Inky), format!("optional: {}", opt.join("; "))));
+        groups.push((
+            mark(Ghost::Inky, false),
+            format!("optional: {}", opt.join("; ")),
+        ));
     }
     let retried = texts(&|k| *k == NoteKind::Error { recovered: true });
     if !retried.is_empty() {
+        let list: Vec<String> = retried.iter().map(|t| retry(run, t, s.bullet())).collect();
         groups.push((
-            mark(Ghost::Blinky),
-            format!("retried: {}", retried.join("; ")),
+            mark(Ghost::Blinky, false),
+            format!("retried {}", list.join("; ")),
         ));
     }
     // Snapshots by config, first → last: `snap-pac root 1001 → 1002`.
@@ -1145,7 +1502,7 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         let b = s.bullet();
         groups.push((
             bullet,
-            format!("{n} {lines} not recognised {b} paclens transcript"),
+            format!("{n} more {lines} of output {b} paclens transcript"),
         ));
     }
     // Not cut to the width: the receipt stays on screen, and a cut line loses
@@ -1158,6 +1515,48 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         ));
     }
     out
+}
+
+/// A warning as the thing to do: `systemctl daemon-reload (warp-svc.service)`
+/// when it names a command to run and a unit, else the warning whole.
+fn action(w: &str) -> String {
+    let cmd = w
+        .split_once("Run '")
+        .and_then(|(_, r)| r.split_once('\''))
+        .map(|(c, _)| c);
+    let unit = w.split_whitespace().find(|t| {
+        [".service", ".socket", ".timer", ".mount", ".path"]
+            .iter()
+            .any(|e| t.ends_with(e))
+    });
+    match (cmd, unit) {
+        (Some(c), Some(u)) => format!("{c} ({u} changed on disk)"),
+        _ => format!("warning: {w}"),
+    }
+}
+
+/// `luajit · archlinux.cachyos.org 404` from pacman's `failed retrieving
+/// file 'luajit-2.1…pkg.tar.zst' from archlinux.cachyos.org : The requested
+/// URL returned error: 404`; the line whole when it does not read so.
+fn retry(run: &Run, t: &str, b: &str) -> String {
+    let file = t
+        .split_once('\'')
+        .and_then(|(_, r)| r.split_once('\''))
+        .map(|(f, _)| f);
+    let pkg = file.and_then(|f| {
+        run.packages
+            .iter()
+            .filter(|p| f.starts_with(&format!("{}-", p.name)))
+            .max_by_key(|p| p.name.len())
+    });
+    let host = t
+        .split_once(" from ")
+        .and_then(|(_, r)| r.split_whitespace().next());
+    let code = t.rsplit_once("error: ").map(|(_, c)| c.trim());
+    match (pkg, host, code) {
+        (Some(p), Some(h), Some(c)) => format!("{} {b} {h} {c}", p.name),
+        _ => t.to_string(),
+    }
 }
 
 fn end_segs(run: &Run, motif: Motif, s: &Styles) -> Vec<Seg> {
@@ -1176,7 +1575,15 @@ fn end_segs(run: &Run, motif: Motif, s: &Styles) -> Vec<Seg> {
     let eaten = run.packages.iter().filter(|p| p.done).count();
     let b = s.bullet();
     let ((p, mark), text) = match run.outcome() {
-        Outcome::Succeeded => (ok, format!(" {eaten} eaten in {took}")),
+        Outcome::Succeeded => {
+            let got = run
+                .totals
+                .iter()
+                .find(|t| t.0 == "Total Download Size")
+                .map(|t| format!(" {b} {} downloaded", size_pair(&t.1, None)))
+                .unwrap_or_default();
+            (ok, format!(" {eaten} eaten in {took}{got}"))
+        }
         Outcome::NothingChanged => {
             let mark = if arcade {
                 (Paint::Warn, g(s, "ᗧ", "C"))
@@ -1213,24 +1620,27 @@ pub fn end_line(run: &Run, motif: Motif, s: &Styles) -> String {
 /// down from the right as pacman does, `o` where `i % 3 == 0`, else a space.
 /// pacman flips the mouth each time the head moves; that needs state across
 /// frames, so here the mouth follows the percent: `C` even, `c` odd. The
-/// head is bold yellow, as in pacman.
+/// head is bold yellow, as in pacman; the track is dim, and the cell right
+/// after the head is never a pellet.
 pub fn bar(pct: u8, cells: usize, candy: bool, s: &Styles) -> String {
     let pct = usize::from(pct.min(100));
     let eaten = pct * cells / 100;
     if !candy {
-        return "#".repeat(eaten) + &"-".repeat(cells - eaten);
+        return "#".repeat(eaten) + &s.dim(&"-".repeat(cells - eaten));
     }
-    let mut out = "-".repeat(eaten);
-    for j in eaten..cells {
-        if j == eaten {
-            out += &s.warn(if pct.is_multiple_of(2) { "C" } else { "c" });
-        } else if (cells - j).is_multiple_of(3) {
-            out.push('o');
-        } else {
-            out.push(' ');
-        }
+    // The track steps back so the mouths stand out down a column of bars.
+    let mut rest = String::new();
+    for j in eaten + 1..cells {
+        // No pellet right at the mouth: `C o`, never `Co`.
+        let pellet = j > eaten + 1 && (cells - j).is_multiple_of(3);
+        rest.push(if pellet { 'o' } else { ' ' });
     }
-    out
+    let head = if eaten < cells {
+        s.warn(if pct.is_multiple_of(2) { "C" } else { "c" })
+    } else {
+        String::new()
+    };
+    s.dim(&"-".repeat(eaten)) + &head + &s.dim(&rest)
 }
 
 /// An uncommented `ILoveCandy` line in pacman.conf.
@@ -1341,9 +1751,20 @@ mod tests {
         let w = "Warning: The unit file of warp-svc.service changed on disk. Run 'systemctl daemon-reload' to reload units.";
         r.apply_line(w, Z);
         let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 40, "/t", &plain());
+        // The thing to do, with what it is about.
         assert!(
             c.iter()
-                .any(|l| l.ends_with("'systemctl daemon-reload' to reload units.")),
+                .any(|l| l == "! systemctl daemon-reload (warp-svc.service changed on disk)"),
+            "{c:?}"
+        );
+        // A warning that names no command stays whole.
+        let mut r = fixture_run();
+        let odd = "Warning: something odd happened and nothing says what to run about it.";
+        r.apply_line(odd, Z);
+        let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 40, "/t", &plain());
+        assert!(
+            c.iter()
+                .any(|l| l.ends_with("nothing says what to run about it.")),
             "{c:?}"
         );
         assert!(!c.iter().any(|l| l.contains("is newer than")), "{c:?}");
@@ -1403,7 +1824,7 @@ mod tests {
         let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 120, "/t", &uni());
         assert!(
             c.iter()
-                .any(|l| l.ends_with(" 2 lines not recognised · paclens transcript")),
+                .any(|l| l.ends_with(" 2 more lines of output · paclens transcript")),
             "{c:?}"
         );
     }
@@ -1434,11 +1855,11 @@ mod tests {
     }
 
     #[test]
-    fn inline_takes_at_most_two_thirds_and_no_blank_rows() {
+    fn inline_leaves_two_rows_and_no_blank_rows() {
         let mid = partial(161);
         for h in [40u16, 15, 6] {
             let f = draw(&mid, &view(Layout::Inline, Motif::Subtle), h, &plain());
-            let cap = (usize::from(h) * 2 / 3).max(6).min(usize::from(h) - 1);
+            let cap = (usize::from(h) - 2).max(6).min(usize::from(h) - 1);
             assert!(f.region.len() <= cap, "h={h}: {:?}", f.region);
             assert!(
                 f.region.iter().all(|l| !l.is_empty()),
@@ -1464,7 +1885,7 @@ mod tests {
         assert!(t.contains("download"), "{t}");
         assert!(t.contains("13/38"), "{t}");
         assert!(t.contains("upgrading openssh"), "{t}");
-        assert!(t.contains("] 34%"), "{t}");
+        assert!(t.contains("] 34%") || t.contains("]  34%"), "{t}");
     }
 
     #[test]
@@ -1504,8 +1925,7 @@ mod tests {
         assert!(
             f.region
                 .iter()
-                .any(|l| l.contains("(1/2) Doing x...")
-                    && l.ends_with("⏱ 12s · median 23s (51 runs)")),
+                .any(|l| l.contains("Doing x...") && l.ends_with("12s · usually 23s")),
             "{:?}",
             f.region
         );
@@ -1681,6 +2101,51 @@ mod tests {
     }
 
     #[test]
+    fn plan_drops_detail_before_packages() {
+        let mut r = empty();
+        for i in 0..12 {
+            r.packages.push(crate::update_view::model::Pkg {
+                name: format!("pkg{i:02}"),
+                repo: Some("core".into()),
+                old: Some("1.0-1".into()),
+                new: Some("1.1-1".into()),
+                download: Some("1.00 MiB".into()),
+                ..Default::default()
+            });
+        }
+        // 42 columns: one full entry (29 wide) per row would need 14 rows;
+        // without sizes two (19 wide) fit side by side.
+        let out = compact_plan(&r, 42, 9, &plain());
+        let t = out.join("\n");
+        assert!(!t.contains("more"), "{t}");
+        assert!(!t.contains("MiB"), "{t}");
+        assert!(t.contains("1.0-1 -> 1.1-1"), "{t}");
+        // Roomy: everything, sizes too.
+        let t = compact_plan(&r, 40, 40, &plain()).join("\n");
+        assert!(t.contains("1.00 MiB"), "{t}");
+    }
+
+    #[test]
+    fn families_fold_into_one_entry() {
+        let pkgs: Vec<crate::update_view::model::Pkg> = ["fw-a", "fw-b", "fw-c", "zed", "x-1"]
+            .iter()
+            .map(|n| crate::update_view::model::Pkg {
+                name: (*n).into(),
+                new: Some("2-1".into()),
+                old: Some(if *n == "fw-c" { "0-1" } else { "1-1" }.into()),
+                ..Default::default()
+            })
+            .collect();
+        let refs: Vec<&crate::update_view::model::Pkg> = pkgs.iter().collect();
+        let out = fold_families(&refs);
+        let names: Vec<&str> = out.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["fw-* (3)", "zed", "x-1"]);
+        // Versions only when every member shares them.
+        assert_eq!(out[0].new.as_deref(), Some("2-1"));
+        assert_eq!(out[0].old, None);
+    }
+
+    #[test]
     fn plan_is_wiped_after_the_answer() {
         let lines = fixture_lines();
         let r = partial(60);
@@ -1829,6 +2294,7 @@ mod tests {
             pct: 40,
             detail: "1.0 MiB 1.0 MiB/s 00:10".into(),
             queued: false,
+            stalled: false,
         });
         for w in [1u16, 10, 23, 24] {
             let _ = frame(
@@ -1852,6 +2318,7 @@ mod tests {
             pct: 40,
             detail: "1055.4 MiB 1503 KiB/s 00:02:51".into(),
             queued: false,
+            stalled: false,
         });
         // Colour too: the bar's escape codes must not eat the line's width.
         for st in [plain(), colour()] {
@@ -1860,7 +2327,9 @@ mod tests {
                 let f = frame(&r, &v, Delivered::default(), w, 40, Z, None, &st).0;
                 let row = f.region.iter().find(|l| l.contains("zed")).unwrap();
                 let row = strip(row);
-                assert!(row.ends_with("00:02:51"), "w={w}: {row:?}");
+                // A narrow screen drops the numbers whole rather than cut them.
+                let last = if w >= 120 { "00:02:51" } else { "%" };
+                assert!(row.ends_with(last), "w={w}: {row:?}");
                 assert!(row.width() < usize::from(w), "w={w}");
             }
         }
@@ -1964,7 +2433,7 @@ mod tests {
         let p = plain();
         assert_eq!(bar(50, 10, true, &p), "-----C o  ");
         assert_eq!(bar(51, 10, true, &p), "-----c o  ");
-        assert_eq!(bar(0, 10, true, &p), "Co  o  o  ");
+        assert_eq!(bar(0, 10, true, &p), "C   o  o  ");
         assert_eq!(bar(100, 10, true, &p), "----------");
     }
 
@@ -2011,11 +2480,17 @@ mod tests {
     fn end_line_per_outcome_and_motif() {
         let mut r = fixture_run();
         r.finish(Some(0), secs(124));
-        assert_eq!(end_line(&r, Motif::Arcade, &uni()), "ᗧ·· 38 eaten in 2m04s");
-        assert_eq!(end_line(&r, Motif::Subtle, &uni()), "✓ 38 eaten in 2m04s");
+        assert_eq!(
+            end_line(&r, Motif::Arcade, &uni()),
+            "ᗧ·· 38 eaten in 2m04s · 702.9 MiB downloaded"
+        );
+        assert_eq!(
+            end_line(&r, Motif::Subtle, &uni()),
+            "✓ 38 eaten in 2m04s · 702.9 MiB downloaded"
+        );
         assert_eq!(
             end_line(&r, Motif::Arcade, &plain()),
-            "C.. 38 eaten in 2m04s"
+            "C.. 38 eaten in 2m04s - 702.9 MiB downloaded"
         );
         let mut f = empty();
         f.finish(Some(1), Z);
