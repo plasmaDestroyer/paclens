@@ -1353,7 +1353,11 @@ fn plan_rows(
         0
     };
     let cell = name_w
-        + if old_w > 0 { 1 + old_w + 3 } else { 0 }
+        + if old_w > 0 {
+            1 + old_w + 2 + arrow.width()
+        } else {
+            0
+        }
         + if new_w > 0 && old_w == 0 { 1 } else { 0 }
         + new_w
         + if size_w > 0 { 2 + size_w } else { 0 };
@@ -1479,10 +1483,19 @@ fn plan_rows(
             left.push(format!("{repo} {n}"));
             continue;
         }
+        // The repo's share of the download, when pacman listed sizes.
+        let members = run
+            .packages
+            .iter()
+            .filter(|p| p.repo.as_deref().unwrap_or("packages") == *repo);
+        let size: Option<f64> = members.map(|p| p.download.as_deref().and_then(bytes)).sum();
+        let size = size
+            .map(|by| format!(" {} {}", s.bullet(), size_pair(&format!("{by} B"), None)))
+            .unwrap_or_default();
         out.push(line(
             &[
                 seg(Paint::Bold, (*repo).to_string()),
-                seg(Paint::Dim, format!(" ({n})")),
+                seg(Paint::Dim, format!(" ({n}){size}")),
             ],
             w,
             s,
@@ -2699,10 +2712,11 @@ mod tests {
             let out = compact_plan(&r, w, 40, &plain());
             out.iter().skip(2).count()
         };
-        let cell = 5 + 1 + 5 + 3 + 5;
+        // name, old, ` -> ` (plain arrow), new; columns 3 apart.
+        let cell = 5 + 1 + 5 + 4 + 5;
         assert_eq!(rows_under_heading(cell), 20);
-        assert_eq!(rows_under_heading(2 * cell + 4), 10);
-        assert_eq!(rows_under_heading(3 * cell + 8), 7);
+        assert_eq!(rows_under_heading(2 * cell + 3), 10);
+        assert_eq!(rows_under_heading(3 * cell + 6), 7);
     }
 
     #[test]
@@ -2718,12 +2732,14 @@ mod tests {
                 ..Default::default()
             });
         }
-        // 42 columns: one full entry (29 wide) per row would need 14 rows;
-        // without sizes two (19 wide) fit side by side.
-        let out = compact_plan(&r, 42, 9, &plain());
+        // 43 columns: one full entry (30 wide) per row would need 14 rows;
+        // without sizes two (20 wide) fit side by side.
+        let out = compact_plan(&r, 43, 9, &plain());
         let t = out.join("\n");
         assert!(!t.contains("more"), "{t}");
-        assert!(!t.contains("MiB"), "{t}");
+        // Sizes left the rows; the repo heading keeps the total.
+        assert!(!out[2..].join("\n").contains("MiB"), "{t}");
+        assert!(out[1].ends_with("12.0 MiB"), "{t}");
         assert!(t.contains("1.0-1 -> 1.1-1"), "{t}");
         // Roomy: everything, sizes too.
         let t = compact_plan(&r, 40, 40, &plain()).join("\n");
