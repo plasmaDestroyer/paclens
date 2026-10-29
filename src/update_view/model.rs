@@ -336,13 +336,14 @@ impl Run {
                 ph.pct = Some(pct);
                 ph.detail = Some(detail);
             }
-            S::Check {
-                done, total, name, ..
-            } => {
+            S::Check { name, .. } => {
+                // Counted in steps (keys, integrity, files, conflicts, disk
+                // space): each one walks every package again.
                 self.enter(PhaseKind::Checks, at);
                 let ph = self.phase_mut(PhaseKind::Checks);
-                ph.done = done;
-                ph.total = Some(total);
+                if ph.detail.as_ref() != Some(&name) {
+                    ph.done += 1;
+                }
                 ph.detail = Some(name);
             }
             S::PreHooks | S::PostHooks | S::Processing => {
@@ -1157,6 +1158,20 @@ mod tests {
         r.observe_screen(&rows, Z);
         assert!(r.in_flight.is_empty());
         assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
+    }
+
+    #[test]
+    fn checks_count_their_steps_not_packages() {
+        let mut r = run();
+        for l in [
+            "(38/38) checking keys in keyring     [----] 100%",
+            "(38/38) checking package integrity   [----] 100%",
+            "(38/38) checking package integrity   [----] 100%",
+            "(38/38) loading package files        [----] 100%",
+        ] {
+            r.apply_line(l, Z);
+        }
+        assert_eq!(r.phases[idx(PhaseKind::Checks)].done, 3);
     }
 
     #[test]

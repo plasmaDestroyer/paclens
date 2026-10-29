@@ -155,8 +155,7 @@ fn name(k: PhaseKind) -> &'static str {
 fn count(p: &Phase) -> String {
     match (p.state, p.total) {
         (PhaseState::Pending, _) => String::new(),
-        _ if p.kind == PhaseKind::Checks => String::new(),
-        // Each check counts the packages again; the check's name says more.
+        // Steps are known only as each starts: the count waits for the end.
         (PhaseState::Running, _) if p.kind == PhaseKind::Checks => String::new(),
         (PhaseState::Running, None) if p.done == 0 => String::new(),
         (PhaseState::Running, Some(t)) => format!("{}/{t}", p.done),
@@ -233,8 +232,7 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
     let n = count(p);
     let noun = match (p.kind, n.is_empty()) {
         (_, true) => "",
-        // Each check counts the packages again: nothing to add.
-        (PhaseKind::Checks, _) => "",
+        (PhaseKind::Checks, _) => "steps",
         (PhaseKind::Sync, _) => "dbs",
         (PhaseKind::PreHooks | PhaseKind::PostHooks, _) => "hooks",
         _ => "pkgs",
