@@ -155,6 +155,7 @@ fn name(k: PhaseKind) -> &'static str {
 fn count(p: &Phase) -> String {
     match (p.state, p.total) {
         (PhaseState::Pending, _) => String::new(),
+        _ if p.kind == PhaseKind::Checks => String::new(),
         // Each check counts the packages again; the check's name says more.
         (PhaseState::Running, _) if p.kind == PhaseKind::Checks => String::new(),
         (PhaseState::Running, None) if p.done == 0 => String::new(),
@@ -184,6 +185,18 @@ fn download_size(run: &Run, s: &Styles) -> String {
         .unwrap_or_default()
 }
 
+/// Time since pacman's first phase began: the password prompt before it
+/// is not pacman's time.
+fn elapsed(run: &Run, now: Duration) -> Duration {
+    let t0 = run
+        .phases
+        .iter()
+        .filter_map(|p| p.started)
+        .min()
+        .unwrap_or_default();
+    run.ended.unwrap_or(now).saturating_sub(t0)
+}
+
 /// `pacman -Syu · packages · 2m00s`, plus one ghost per kind of note that
 /// wants the user (arcade).
 fn header(run: &Run, view: &View, now: Duration, s: &Styles) -> Vec<Seg> {
@@ -197,7 +210,7 @@ fn header(run: &Run, view: &View, now: Duration, s: &Styles) -> Vec<Seg> {
         seg(Paint::Bold, run.command.clone()),
         seg(
             Paint::Dim,
-            format!(" {b} {at} {b} {}", duration(run.ended.unwrap_or(now))),
+            format!(" {b} {at} {b} {}", duration(elapsed(run, now))),
         ),
     ];
     if view.motif == Motif::Arcade {
@@ -228,6 +241,8 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
     let n = count(p);
     let noun = match (p.kind, n.is_empty()) {
         (_, true) => "",
+        // Each check counts the packages again: nothing to add.
+        (PhaseKind::Checks, _) => "",
         (PhaseKind::Sync, _) => "dbs",
         (PhaseKind::PreHooks | PhaseKind::PostHooks, _) => "hooks",
         _ => "pkgs",
@@ -411,9 +426,16 @@ fn gauge(run: &Run, w: usize) -> Gauge {
         size: download,
         rate: download,
     };
+    // A running hook's `12s · usually 23s` after its bar.
+    let hooks = matches!(
+        run.current(),
+        Some(PhaseKind::PreHooks | PhaseKind::PostHooks)
+    );
+    let extra = if hooks { 2 + 20 } else { 0 };
     // Numbers give way before the bar gets short: the rate first, then sizes.
     loop {
         let right = 5
+            + extra
             + if g.size { 2 + SIZE_W } else { 0 }
             + if g.rate { 2 + RATE_W + 2 + ETA_W } else { 0 };
         g.cells = w.saturating_sub(g.left + 3 + right + 1);
@@ -524,10 +546,14 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
     let pct = match p.kind {
         // Each check fills its own bar in a blink; its name says more.
         PhaseKind::Checks => None,
+        // Hooks done out of hooks to run, measured; the running hook
+        // carries its own time estimate.
+        PhaseKind::PreHooks | PhaseKind::PostHooks => p.share(),
         _ => run.progress(now),
     };
     let Some(pct) = pct else {
-        if let Some(d) = &p.detail {
+        // Checks list their own steps as children.
+        if let Some(d) = p.detail.as_ref().filter(|_| p.kind != PhaseKind::Checks) {
             row.push(seg(Paint::Dim, format!("  {d}")));
         }
         return row;
@@ -543,7 +569,7 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
             .map(|t| t.1.as_str());
         (size_pair(&got, total), rate(&r), eta)
     });
-    row.extend(gauge_tail(g, pct, run.progress_estimated(), numbers, s));
+    row.extend(gauge_tail(g, pct, false, numbers, s));
     row
 }
 
@@ -571,8 +597,9 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                         .iter()
                         .find(|p| p.name == f.name)
                         .and_then(|p| p.download.as_deref());
+                    // Stalled: the last numbers pacman drew, said to be so.
                     let (r, eta) = if f.stalled {
-                        ("stalled".to_string(), String::new())
+                        ("last seen".to_string(), String::new())
                     } else {
                         (rate(&r), eta)
                     };
@@ -584,6 +611,9 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                         Some((size_pair(&got, total), r, eta)),
                         s,
                     ));
+                    if f.stalled && !ga.rate {
+                        row.push(seg(Paint::Dim, "  last seen"));
+                    }
                     row
                 })
                 .collect();
@@ -643,6 +673,15 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                 .max()
                 .unwrap_or(0)
                 .min(w / 3);
+            let old_of = |name: &str| {
+                run.packages
+                    .iter()
+                    .find(|p| p.name == name)
+                    .and_then(|p| p.old.as_deref())
+                    .map_or(0, UnicodeWidthStr::width)
+            };
+            // Old versions right-aligned, so the arrows line up.
+            let old_w = recent.iter().map(|(_, n)| old_of(n)).max().unwrap_or(0);
             recent
                 .into_iter()
                 .rev()
@@ -658,6 +697,10 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
                     ];
                     let pkg = run.packages.iter().find(|p| p.name == name);
                     if let Some((Some(old), Some(new))) = pkg.map(|p| (&p.old, &p.new)) {
+                        row.push(seg(
+                            Paint::Plain,
+                            " ".repeat(old_w.saturating_sub(old.width())),
+                        ));
                         if current {
                             let (o, n) = version_diff(old, new);
                             row.extend(o);
@@ -677,30 +720,68 @@ fn children(run: &Run, ga: &Gauge, w: usize, now: Duration, s: &Styles) -> Vec<V
             } else {
                 &run.post_hooks
             };
-            // The one before (done, dim) and the one running (bold); the
-            // phase row carries the count.
+            // The one before (done, dim) and the one running (bold), the
+            // bars in the phase's columns: the running hook's is its time
+            // so far against the median of past runs, an estimate (`~`).
             let started: Vec<&Hook> = list.iter().filter(|h| h.started.is_some()).collect();
             let from = started.len().saturating_sub(2);
+            let desc_w = ga.left.saturating_sub(5 + 2 + 1);
             started[from..]
                 .iter()
                 .enumerate()
                 .map(|(i, h)| {
                     let desc = h.desc.as_deref().or(h.file.as_deref()).unwrap_or_default();
+                    let desc = format!(" {:<desc_w$} ", cut_plain(desc, desc_w));
                     let running = h.ended.is_none() && from + i + 1 == started.len();
-                    let (mark, paint) = if running {
-                        (seg(Paint::Warn, g(s, "▸", ">")), Paint::Bold)
-                    } else {
-                        (seg(Paint::Ok, s.check()), Paint::Dim)
-                    };
-                    vec![
-                        mark,
-                        seg(paint, format!(" {desc}")),
-                        seg(Paint::Dim, format!("  {}", hook_time(h, now, s))),
-                    ]
+                    let took = took(h.started, h.ended, now).unwrap_or_default();
+                    if !running {
+                        return vec![
+                            seg(Paint::Ok, s.check()),
+                            seg(Paint::Dim, desc),
+                            seg(Paint::Dim, duration(took)),
+                        ];
+                    }
+                    let mut row = vec![seg(Paint::Warn, g(s, "▸", ">")), seg(Paint::Bold, desc)];
+                    match h.median {
+                        Some(Median { secs, .. }) => {
+                            let typical = Duration::from_secs(secs).max(Duration::from_secs(1));
+                            let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis())
+                                .unwrap_or(99)
+                                .min(99);
+                            row.extend(gauge_tail(ga, pct, true, None, s));
+                            row.push(seg(Paint::Dim, format!("  {}", hook_time(h, now, s))));
+                        }
+                        None => row.push(seg(Paint::Dim, duration(took))),
+                    }
+                    row
                 })
                 .collect()
         }
-        PhaseKind::Checks => Vec::new(),
+        PhaseKind::Checks => {
+            // Each check pacman finished (its line settled), then the one
+            // it is on.
+            let mut names: Vec<String> = Vec::new();
+            for l in &run.lines {
+                if let ScreenEvent::Check { name, .. } = classify_screen(l, false)
+                    && !names.contains(&name)
+                {
+                    names.push(name);
+                }
+            }
+            let now_on = phase(run, k).and_then(|p| p.detail.clone());
+            let mut rows: Vec<Vec<Seg>> = names
+                .iter()
+                .filter(|n| Some(*n) != now_on.as_ref())
+                .map(|n| vec![seg(Paint::Ok, s.check()), seg(Paint::Dim, format!(" {n}"))])
+                .collect();
+            if let Some(n) = now_on {
+                rows.push(vec![
+                    seg(Paint::Warn, g(s, "▸", ">")),
+                    seg(Paint::Bold, format!(" {n}")),
+                ]);
+            }
+            rows
+        }
         _ => item(run, now, s).into_iter().collect(),
     };
     // After the answer: the transaction's own output (hooks, scriptlets),
@@ -800,7 +881,17 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         kids
     };
 
-    let mut rows = vec![fit(&header(run, view, now, s))];
+    let mut head = header(run, view, now, s);
+    // No room for the rate on the rows: the header carries the total's.
+    if run.current() == Some(PhaseKind::Download) && !gauge.rate {
+        let d = phase(run, PhaseKind::Download).and_then(|p| p.detail.as_deref());
+        if let Some(d) = d {
+            let (_, r, eta) = split_detail(d);
+            let b = s.bullet();
+            head.push(seg(Paint::Dim, format!(" {b} {} {b} {eta} left", rate(&r))));
+        }
+    }
+    let mut rows = vec![fit(&head)];
     rows.extend(done_rows.iter().map(fit));
     if let Some(r) = &running {
         rows.push(fit(r));
@@ -909,42 +1000,95 @@ fn version_diff(old: &str, new: &str) -> (Vec<Seg>, Vec<Seg>) {
 type Pkg = crate::update_view::model::Pkg;
 
 /// Packages that share a name up to their last `-`, three or more in one
-/// repo, as one entry: `linux-firmware-* (15)`, with the versions when they
-/// all share them.
-fn fold_families(list: &[&Pkg]) -> Vec<Pkg> {
+/// repo, written once: `linux-firmware-{amd,intel,nvidia}`. Every member is
+/// still named; only the shared front is not repeated.
+struct Family {
+    prefix: String,
+    members: Vec<String>,
+    old: Option<String>,
+    new: Option<String>,
+    /// Their download sizes added up, when every member has one.
+    size: Option<String>,
+}
+
+/// `list` split into single packages and families. `any`: fold every family;
+/// otherwise only those whose members share both versions, which loses
+/// nothing.
+fn fold_families(list: &[&Pkg], any: bool) -> (Vec<Pkg>, Vec<Family>) {
     let key = |p: &Pkg| p.name.rfind('-').map(|i| p.name[..=i].to_string());
-    let mut out: Vec<Pkg> = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
+    let (mut singles, mut families) = (Vec::new(), Vec::<Family>::new());
     for p in list {
-        let Some(k) = key(p) else {
-            out.push((*p).clone());
+        let k = key(p);
+        if families.iter().any(|f| Some(&f.prefix) == k.as_ref()) {
             continue;
+        }
+        let members: Vec<&&Pkg> = match &k {
+            Some(k) => list.iter().filter(|q| key(q).as_ref() == Some(k)).collect(),
+            None => Vec::new(),
         };
-        let members: Vec<&&Pkg> = list
-            .iter()
-            .filter(|q| key(q).as_ref() == Some(&k))
-            .collect();
-        if members.len() < 3 {
-            out.push((*p).clone());
-        } else if !seen.contains(&k) {
-            let same = |f: &dyn Fn(&Pkg) -> &Option<String>| {
-                let first = f(members[0]);
-                members
+        let same = |f: &dyn Fn(&Pkg) -> &Option<String>| {
+            let first = f(members.first()?);
+            members
+                .iter()
+                .all(|m| f(m) == first)
+                .then(|| first.clone())
+                .flatten()
+        };
+        let shared = same(&|m| &m.old).is_some() && same(&|m| &m.new).is_some();
+        match k {
+            Some(prefix) if members.len() >= 3 && (any || shared) => {
+                let sizes: Option<f64> = members
                     .iter()
-                    .all(|m| f(m) == first)
-                    .then(|| first.clone())
-                    .flatten()
-            };
-            out.push(Pkg {
-                name: format!("{k}* ({})", members.len()),
-                old: same(&|m| &m.old),
-                new: same(&|m| &m.new),
-                ..Pkg::default()
-            });
-            seen.push(k);
+                    .map(|m| m.download.as_deref().and_then(bytes))
+                    .sum();
+                families.push(Family {
+                    members: members
+                        .iter()
+                        .map(|m| m.name[prefix.len()..].to_string())
+                        .collect(),
+                    old: same(&|m| &m.old),
+                    new: same(&|m| &m.new),
+                    size: sizes.map(|b| size_pair(&format!("{b} B"), None)),
+                    prefix,
+                });
+            }
+            _ => singles.push((*p).clone()),
         }
     }
-    out
+    (singles, families)
+}
+
+/// One family as rows of at most `w` columns: the members wrapped at commas
+/// under the `{`, the versions after them on the last row, or on a row of
+/// their own when they do not fit.
+fn family_rows(f: &Family, tail: Vec<Seg>, w: usize) -> Vec<Vec<Seg>> {
+    let indent = f.prefix.width() + 1;
+    let mut rows: Vec<Vec<Seg>> = Vec::new();
+    let mut cur = vec![seg(Paint::Plain, f.prefix.clone()), seg(Paint::Dim, "{")];
+    let mut used = indent;
+    for (i, m) in f.members.iter().enumerate() {
+        let end = if i + 1 == f.members.len() { "}" } else { "," };
+        if used + m.width() + 1 > w && used > indent {
+            rows.push(std::mem::take(&mut cur));
+            cur.push(seg(Paint::Plain, " ".repeat(indent)));
+            used = indent;
+        }
+        cur.push(seg(Paint::Plain, m.clone()));
+        cur.push(seg(Paint::Dim, end));
+        used += m.width() + 1;
+    }
+    let tw: usize = tail.iter().map(|(_, t)| t.width()).sum();
+    if tw > 0 {
+        if used + 2 + tw > w {
+            rows.push(std::mem::take(&mut cur));
+            cur.push(seg(Paint::Plain, " ".repeat(indent)));
+        } else {
+            cur.push(seg(Paint::Plain, "  "));
+        }
+        cur.extend(tail);
+    }
+    rows.push(cur);
+    rows
 }
 
 /// How much of each package the plan shows: the richest form in which every
@@ -967,9 +1111,11 @@ enum Detail {
 /// repo they come from, each group under its own heading and spread over as
 /// many columns as the width allows (20 packages in 2 columns: 10 and 10;
 /// in 3: 7, 7, 6), read down then across. Versions line up across groups.
-/// When it does not fit in `max` rows, detail goes before packages do:
-/// sizes, then old versions, then families fold (`linux-firmware-* (15)`),
-/// then versions; past that, "+N more".
+/// Families that share their versions are written once
+/// (`linux-firmware-{amd,intel}`). When it does not fit in `max` rows,
+/// detail goes before packages do: sizes, then old versions, then the other
+/// families fold too, then versions, then the longest names are cut; past
+/// that, "+N more".
 fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
     let ladder = [
         (Detail::Full, false),
@@ -990,17 +1136,28 @@ fn compact_plan(run: &Run, w: usize, max: usize, s: &Styles) -> Vec<String> {
     out
 }
 
+/// GiB past 1024 MiB, one unit per figure: `1.19 GiB`, `36.9 MiB`.
+fn tidy_size(v: &str) -> String {
+    match bytes(v) {
+        Some(b) if b.abs() >= 1024.0 * 1024.0 => {
+            let neg = if b < 0.0 { "-" } else { "" };
+            format!("{neg}{}", size_pair(&format!("{} B", b.abs()), None))
+        }
+        _ => v.to_string(),
+    }
+}
+
 /// The plan in one form; `true` when every package made it in.
 fn plan_rows(
     run: &Run,
     w: usize,
     max: usize,
     detail: Detail,
-    fold: bool,
+    fold_any: bool,
     s: &Styles,
 ) -> (Vec<String>, bool) {
     let arrow = s.arrow();
-    // Groups in the order pacman lists their first package.
+    // Groups by repo, in name order.
     let mut groups: Vec<(&str, Vec<&Pkg>)> = Vec::new();
     for p in &run.packages {
         let repo = p.repo.as_deref().unwrap_or("packages");
@@ -1010,16 +1167,11 @@ fn plan_rows(
         }
     }
     groups.sort_by(|a, b| a.0.cmp(b.0));
-    let groups: Vec<(&str, usize, Vec<Pkg>)> = groups
+    let groups: Vec<(&str, usize, Vec<Pkg>, Vec<Family>)> = groups
         .into_iter()
         .map(|(repo, list)| {
-            let n = list.len();
-            let entries = if fold {
-                fold_families(&list)
-            } else {
-                list.into_iter().cloned().collect()
-            };
-            (repo, n, entries)
+            let (singles, families) = fold_families(&list, fold_any);
+            (repo, list.len(), singles, families)
         })
         .collect();
     let pk: Vec<&Pkg> = groups.iter().flat_map(|g| &g.2).collect();
@@ -1033,18 +1185,18 @@ fn plan_rows(
             .unwrap_or(0)
             .min(cap)
     };
-    // Names alone: every name whole if it can be, they are all there is.
-    let name_w = if detail == Detail::Names {
-        pk.iter().map(|p| p.name.width()).max().unwrap_or(0).min(28)
-    } else {
+    let names = matches!(detail, Detail::Names | Detail::TightNames);
+    // Every name whole unless this is the last resort.
+    let name_w = if detail == Detail::TightNames {
         width(&|p| p.name.width(), 28)
+    } else {
+        pk.iter().map(|p| p.name.width()).max().unwrap_or(0).min(32)
     };
     let old_w = if matches!(detail, Detail::Full | Detail::Versions) {
         width(&|p| p.old.as_deref().map_or(0, |v| v.width()), 20)
     } else {
         0
     };
-    let names = matches!(detail, Detail::Names | Detail::TightNames);
     let new_w = if names {
         0
     } else {
@@ -1067,6 +1219,32 @@ fn plan_rows(
     let gap = if names { 2 } else { 4 };
     let cols = ((w + gap) / (cell + gap)).max(1);
 
+    let versions = |old: &Option<String>, new: &Option<String>, pad: bool| -> Vec<Seg> {
+        let mut segs = Vec::new();
+        let (o, n) = match (old, new) {
+            (Some(o), Some(n)) => version_diff(&cut_plain(o, old_w), &cut_plain(n, new_w)),
+            (None, Some(n)) => (vec![], vec![seg(Paint::Ok, cut_plain(n, new_w))]),
+            _ => (vec![], vec![]),
+        };
+        let nw: usize = n.iter().map(|(_, t)| t.width()).sum();
+        if old_w > 0 {
+            let ow: usize = o.iter().map(|(_, t)| t.width()).sum();
+            if pad {
+                segs.push(seg(Paint::Plain, " ".repeat(old_w.saturating_sub(ow))));
+            }
+            if !o.is_empty() {
+                segs.extend(o);
+                segs.push(seg(Paint::Dim, format!(" {arrow} ")));
+            } else if pad {
+                segs.push(seg(Paint::Plain, "   "));
+            }
+        }
+        segs.extend(n);
+        if pad {
+            segs.push(seg(Paint::Plain, " ".repeat(new_w.saturating_sub(nw))));
+        }
+        segs
+    };
     let entry = |p: &Pkg| -> Vec<Seg> {
         let name = cut_plain(&p.name, name_w);
         let mut segs = vec![seg(Paint::Plain, format!("{name:<name_w$}"))];
@@ -1074,26 +1252,24 @@ fn plan_rows(
             return segs;
         }
         segs.push(seg(Paint::Plain, " "));
-        let (old, new) = match (&p.old, &p.new) {
-            (Some(o), Some(n)) => version_diff(&cut_plain(o, old_w), &cut_plain(n, new_w)),
-            (None, Some(n)) => (vec![], vec![seg(Paint::Ok, cut_plain(n, new_w))]),
-            _ => (vec![], vec![]),
-        };
-        let nw: usize = new.iter().map(|(_, t)| t.width()).sum();
-        if old_w > 0 {
-            let ow: usize = old.iter().map(|(_, t)| t.width()).sum();
-            segs.push(seg(Paint::Plain, " ".repeat(old_w.saturating_sub(ow))));
-            segs.extend(old);
-            let a = if p.old.is_some() { arrow } else { " " };
-            segs.push(seg(Paint::Dim, format!(" {a} ")));
-        }
-        segs.extend(new);
-        segs.push(seg(Paint::Plain, " ".repeat(new_w.saturating_sub(nw))));
+        segs.extend(versions(&p.old, &p.new, true));
         if size_w > 0 {
             let d = p.download.as_deref().unwrap_or("");
             segs.push(seg(Paint::Dim, format!("  {d:>size_w$}")));
         }
         segs
+    };
+    let family = |f: &Family| -> Vec<Vec<Seg>> {
+        let mut tail = Vec::new();
+        if !names {
+            tail = versions(&f.old, &f.new, false);
+            if size_w > 0
+                && let Some(sz) = &f.size
+            {
+                tail.push(seg(Paint::Dim, format!("  {sz}")));
+            }
+        }
+        family_rows(f, tail, w)
     };
 
     let b = s.bullet();
@@ -1104,15 +1280,24 @@ fn plan_rows(
             .replace("total ", "")
             .replace(" size", "");
         head.push(seg(Paint::Dim, format!(" {b} ")));
-        head.push(seg(Paint::Plain, format!("{value} {label}")));
+        head.push(seg(Paint::Plain, format!("{} {label}", tidy_size(value))));
     }
     let mut out = vec![line(&head, w, s)];
     let mut shown = 0;
     let mut left: Vec<String> = Vec::new();
-    for (repo, n, list) in &groups {
-        let rows = list.len().div_ceil(cols);
-        // Room for this group, and a line to say what is left after it.
-        if !left.is_empty() || out.len() + 1 + rows + 1 > max {
+    for (gi, (repo, n, list, fams)) in groups.iter().enumerate() {
+        // Column c holds `n / cols` entries, one more for the first
+        // `n % cols`: 40 in 3 is 14, 13, 13.
+        let k = cols.min(list.len().max(1));
+        let (q, rem) = (list.len() / k, list.len() % k);
+        let len = |c: usize| q + usize::from(c < rem);
+        let start = |c: usize| c * q + c.min(rem);
+        let rows = len(0);
+        let fam_rows: Vec<Vec<Seg>> = fams.iter().flat_map(&family).collect();
+        // Room for this group, and — unless it is the last — a line to
+        // say what is left after it.
+        let more = usize::from(gi + 1 < groups.len());
+        if !left.is_empty() || out.len() + 1 + rows + fam_rows.len() + more > max {
             left.push(format!("{repo} {n}"));
             continue;
         }
@@ -1124,10 +1309,16 @@ fn plan_rows(
             w,
             s,
         ));
+        for f in &fam_rows {
+            out.push(line(f, w, s));
+        }
         for r in 0..rows {
             let mut segs = Vec::new();
-            for c in 0..cols {
-                let Some(p) = list.get(c * rows + r) else {
+            for c in 0..k {
+                if r >= len(c) {
+                    break;
+                }
+                let Some(p) = list.get(start(c) + r) else {
                     break;
                 };
                 if c > 0 {
@@ -1155,6 +1346,31 @@ fn plan_rows(
         ));
     }
     (out, all)
+}
+
+/// The package pacman was installing when it printed line `at`.
+fn package_at(run: &Run, at: usize) -> Option<String> {
+    run.lines
+        .get(..at)?
+        .iter()
+        .rev()
+        .find_map(|l| match classify_screen(l, false) {
+            ScreenEvent::Package { name, .. } => Some(name),
+            ScreenEvent::PreHooks | ScreenEvent::PostHooks | ScreenEvent::Processing => {
+                Some(String::new())
+            }
+            _ => None,
+        })
+        .filter(|n| !n.is_empty())
+}
+
+/// `Warning:` painted as pacman paints its own `warning:`, when nothing
+/// coloured it yet (systemd's, from a scriptlet).
+fn warning_mark(l: &str, s: &Styles) -> String {
+    match l.strip_prefix("Warning:") {
+        Some(rest) if s.colored() => format!("{}{rest}", s.warn("Warning:")),
+        _ => l.to_string(),
+    }
 }
 
 /// Lines from here on are the transaction's own output: after the plan's
@@ -1311,7 +1527,15 @@ pub fn frame(
                 .filter(|(at, _)| (d.unknown..stop).contains(at))
                 .collect();
             new.sort_by_key(|&(at, _)| at);
-            above.extend(new.into_iter().map(|(_, l)| l.clone()));
+            above.extend(new.into_iter().map(|(at, l)| {
+                // A package's own message says whose it is.
+                let whose = (at >= quiet_from)
+                    .then(|| package_at(run, at))
+                    .flatten()
+                    .map(|n| s.dim(&format!("{n}: ")))
+                    .unwrap_or_default();
+                format!("{whose}{}", warning_mark(l, s))
+            }));
         }
         d.unknown = d.unknown.max(stop);
     };
@@ -1365,8 +1589,16 @@ pub fn frame(
                 // The plan, grouped by repo; it lives in the region only, so
                 // answering wipes it.
                 Some((_, _, None)) if is_prompt(&prompt) => {
-                    let mut r = compact_plan(run, w, height.saturating_sub(2), s);
-                    r.push(prompt);
+                    let mut r = compact_plan(run, w, height.saturating_sub(3), s);
+                    // A blank row, then pacman's question as it asked it,
+                    // bold, its answers amber: the one thing to do now.
+                    r.push(String::new());
+                    r.push(match prompt.rsplit_once('[') {
+                        Some((q, a)) if !q.contains('\u{1b}') => {
+                            format!("{}{}", s.title(q), s.warn(&format!("[{a}")))
+                        }
+                        _ => prompt,
+                    });
                     r
                 }
                 // Verbatim: a cut prompt can lose its answer choices.
@@ -1394,7 +1626,12 @@ fn phase_done(run: &Run, p: &Phase, w: usize, s: &Styles) -> String {
 /// The receipt on exit 0; the failure block otherwise.
 pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles) -> Vec<String> {
     let w = usize::from(width);
-    let mut out = vec![line(&end_segs(run, view.motif, s), w, s)];
+    // Set apart from pacman's own last lines, under the command it is for.
+    let mut out = vec![
+        String::new(),
+        line(&[seg(Paint::Bold, run.command.clone())], w, s),
+        line(&end_segs(run, view.motif, s), w, s),
+    ];
     if let Outcome::Failed(_) = run.outcome() {
         // pacman's errors verbatim, a little context, where the rest is.
         let errors = all_notes(run).filter(|n| matches!(n.kind, NoteKind::Error { .. }));
@@ -1580,7 +1817,7 @@ fn end_segs(run: &Run, motif: Motif, s: &Styles) -> Vec<Seg> {
     } else {
         (Paint::Bad, s.cross())
     };
-    let took = duration(run.ended.unwrap_or_default());
+    let took = duration(elapsed(run, Duration::ZERO));
     let eaten = run.packages.iter().filter(|p| p.done).count();
     let b = s.bullet();
     let ((p, mark), text) = match run.outcome() {
@@ -1749,8 +1986,10 @@ mod tests {
             let f = draw(&r, &v, 40, &plain());
             assert!(!f.region.is_empty(), "{:?}/{:?}", v.layout, v.motif);
             let c = closing(&r, &v, 120, "/t", &plain());
-            assert!(c[0].contains("38 eaten"), "{c:?}");
-            assert!(c.len() <= 6, "{c:?}");
+            // A blank row and the command set the receipt apart.
+            assert_eq!(c[..2], ["", "pacman -Syu"], "{c:?}");
+            assert!(c[2].contains("38 eaten"), "{c:?}");
+            assert!(c.len() <= 8, "{c:?}");
         }
     }
 
@@ -1844,7 +2083,7 @@ mod tests {
         r.apply_line("error: failed to commit transaction (conflicting files)", Z);
         r.finish(Some(1), secs(64));
         let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 120, "/t", &uni());
-        assert_eq!(c[0], "✗ pacman exit 1");
+        assert_eq!(c[2], "✗ pacman exit 1");
         assert!(
             c.iter()
                 .any(|l| l == "error: failed to commit transaction (conflicting files)")
@@ -1856,11 +2095,31 @@ mod tests {
     }
 
     #[test]
+    fn install_message_names_its_package() {
+        let mut r = partial(60);
+        r.apply_line(":: Processing package changes...", Z);
+        r.apply_line("(1/2) upgrading ydotool     [----] 100%", Z);
+        r.apply_line("Make sure your user is in the input group", Z);
+        let at = r.lines.len() - 1;
+        assert_eq!(package_at(&r, at).as_deref(), Some("ydotool"));
+        r.apply_line(":: Running post-transaction hooks...", Z);
+        assert_eq!(package_at(&r, r.lines.len()), None);
+    }
+
+    #[test]
+    fn plain_warning_gets_pacmans_colour() {
+        let t = "Warning: unit changed";
+        assert_eq!(warning_mark(t, &plain()), t);
+        let c = warning_mark(t, &colour());
+        assert!(c.contains('\u{1b}') && strip(&c) == t, "{c:?}");
+    }
+
+    #[test]
     fn signal_failure_says_so() {
         let mut r = empty();
         r.finish(None, Z);
         let c = closing(&r, &view(Layout::Nom, Motif::Arcade), 80, "/t", &uni());
-        assert!(c[0].contains("pacman stopped by a signal"), "{c:?}");
+        assert!(c[2].contains("pacman stopped by a signal"), "{c:?}");
     }
 
     #[test]
@@ -2142,16 +2401,66 @@ mod tests {
                 name: (*n).into(),
                 new: Some("2-1".into()),
                 old: Some(if *n == "fw-c" { "0-1" } else { "1-1" }.into()),
+                download: Some("1.00 MiB".into()),
                 ..Default::default()
             })
             .collect();
         let refs: Vec<&crate::update_view::model::Pkg> = pkgs.iter().collect();
-        let out = fold_families(&refs);
-        let names: Vec<&str> = out.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["fw-* (3)", "zed", "x-1"]);
-        // Versions only when every member shares them.
-        assert_eq!(out[0].new.as_deref(), Some("2-1"));
-        assert_eq!(out[0].old, None);
+        // Versions differ: folded only when anything may fold.
+        let (singles, fams) = fold_families(&refs, false);
+        assert_eq!((singles.len(), fams.len()), (5, 0));
+        let (singles, fams) = fold_families(&refs, true);
+        let names: Vec<&str> = singles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["zed", "x-1"]);
+        assert_eq!(fams[0].prefix, "fw-");
+        assert_eq!(fams[0].members, ["a", "b", "c"]);
+        assert_eq!(fams[0].new.as_deref(), Some("2-1"));
+        assert_eq!(fams[0].old, None);
+        assert_eq!(fams[0].size.as_deref(), Some("3.0 MiB"));
+    }
+
+    #[test]
+    fn family_wraps_its_members_under_the_brace() {
+        let f = Family {
+            prefix: "linux-firmware-".into(),
+            members: ["amd", "amdgpu", "atheros", "intel", "nvidia"]
+                .map(String::from)
+                .to_vec(),
+            old: None,
+            new: None,
+            size: None,
+        };
+        let rows: Vec<String> = family_rows(&f, vec![seg(Paint::Plain, "1-1")], 32)
+            .iter()
+            .map(|r| line(r, 32, &plain()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "linux-firmware-{amd,amdgpu,",
+                "                atheros,intel,",
+                "                nvidia}  1-1",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_columns_differ_by_one_at_most() {
+        let mut r = empty();
+        for i in 0..40 {
+            r.packages.push(crate::update_view::model::Pkg {
+                name: format!("p{i:02}"),
+                repo: Some("extra".into()),
+                ..Default::default()
+            });
+        }
+        // 16 rows: too few for 2 columns of 20, so names pack closer
+        // (3 wide + 2 gap) into 3 columns.
+        let out = compact_plan(&r, 13, 16, &plain());
+        assert_eq!(out[2].trim_end(), "p00  p14  p27");
+        assert_eq!(out[14].trim_end(), "p12  p26  p39");
+        assert_eq!(out[15].trim_end(), "p13");
+        assert_eq!(out.len(), 2 + 14);
     }
 
     #[test]

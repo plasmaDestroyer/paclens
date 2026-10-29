@@ -569,15 +569,6 @@ impl Run {
         )
     }
 
-    /// Is [`Run::progress`] a time estimate from past runs (hooks), not a
-    /// measure?
-    pub fn progress_estimated(&self) -> bool {
-        matches!(
-            self.current(),
-            Some(PhaseKind::PreHooks | PhaseKind::PostHooks)
-        ) && !self.medians.is_empty()
-    }
-
     pub fn outcome(&self) -> Outcome {
         match (self.finished, self.exit) {
             (false, _) => Outcome::Running,
@@ -659,9 +650,12 @@ impl Run {
             for h in hooks.iter_mut().filter(|h| h.started.is_some()) {
                 h.ended.get_or_insert(at);
             }
+            // pacman moved on, so every hook it counted ran — even one
+            // whose line never settled on screen.
             ph.done = ph
                 .done
-                .max(hooks.iter().filter(|h| h.started.is_some()).count());
+                .max(hooks.iter().filter(|h| h.started.is_some()).count())
+                .max(ph.total.unwrap_or(0));
         }
     }
 
@@ -1141,6 +1135,18 @@ mod tests {
         r.observe_screen(&rows, Z);
         assert!(r.in_flight.is_empty());
         assert_eq!(r.phases[idx(PhaseKind::Download)].pct, Some(29));
+    }
+
+    #[test]
+    fn hooks_phase_counts_every_hook_once_pacman_moves_on() {
+        let mut r = run();
+        r.apply_line(":: Running pre-transaction hooks...", Z);
+        r.apply_line("(1/4) One...", Z);
+        r.apply_line("(2/4) Two...", Z);
+        r.apply_line("(4/4) Four...", Z);
+        r.apply_line(":: Processing package changes...", Z);
+        let ph = &r.phases[idx(PhaseKind::PreHooks)];
+        assert_eq!((ph.done, ph.total), (4, Some(4)));
     }
 
     #[test]

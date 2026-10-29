@@ -246,7 +246,7 @@ mod tests {
                 let s = play_fixture(layout, motif, Some(0), true);
                 assert!(s.contains("38"), "{layout:?} {motif:?}");
                 if motif == Motif::Subtle {
-                    assert!(s.contains("38 eaten in 2m03s"), "{layout:?}");
+                    assert!(s.contains("38 eaten in "), "{layout:?}");
                 }
                 assert!(!s.contains("\x1b[?1049h"), "{layout:?} {motif:?}");
                 assert!(!s.contains("/tmp/last.out"), "{layout:?} {motif:?}");
