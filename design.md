@@ -2007,6 +2007,27 @@ YYYY-MM-DD | no --noconfirm for pacman
            | folded is not hidden only if it can be read back). Visual
            | changes are now checked by recording a run, not by tests alone.
 
+2026-10-29 | one set of columns, and a plan that sheds detail before packages (#81)
+           | Judged round by round by three reviewers (Sol, a fresh Sol, an
+           | Opus agent) against replays at 100, 154 and 220 columns. The
+           | bar no longer sits under the tree: it is on the running phase's
+           | row, and every bar of the run starts and ends in the same
+           | columns, after pacman's own order of figures (size, rate, time
+           | left, bar, percent). A detached bar read as progress going
+           | backwards each time a phase began. Hook phases now count hooks,
+           | measured; the running hook alone carries a time bar, marked as
+           | the estimate it is (`~`), because a per-phase time estimate
+           | ran backwards whenever a slow hook started. A download that
+           | stops sending says `stalled 6s` and keeps its last bytes; it
+           | never goes back to "queued", which it is not. The plan at
+           | `[Y/n]` groups by repo with columns even to one entry, writes
+           | families once (`linux-firmware-{amd,intel}`, every member
+           | named) when they share versions, and when it does not fit
+           | drops sizes, then old versions, then versions, then cuts the
+           | longest names, before it drops a single package; versions are
+           | cut from the front, where they agree, so the change stays in
+           | view. The receipt leads with what to do (`!`), then records.
+
 ```
 
 ---
