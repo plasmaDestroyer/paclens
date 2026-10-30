@@ -615,6 +615,17 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
         };
         (size_pair(&got, total), rate(&r), eta)
     });
+    // Packages: how fast they go, counted here — done over time so far.
+    let numbers = numbers.or_else(|| {
+        let t = took(p.started, p.ended, now)?.as_secs_f64();
+        (p.kind == PhaseKind::Packages && t >= 1.0 && p.done > 0).then(|| {
+            (
+                String::new(),
+                format!("{:.1} pkgs/s", p.done as f64 / t),
+                String::new(),
+            )
+        })
+    });
     row.extend(gauge_tail(g, pct, false, true, None, numbers, s));
     row
 }
@@ -1022,7 +1033,14 @@ fn cut_version(v: &str, other: Option<&str>, w: usize) -> String {
             .last()
             .unwrap_or(0)
     });
-    // Drop as much of the shared front as it takes, never more.
+    // The first change already in view when only the end is cut: cut
+    // there, once. Else drop as much of the shared front as it takes.
+    let differs = other.map_or(0, |o| {
+        v.chars().zip(o.chars()).take_while(|(a, b)| a == b).count()
+    });
+    if differs + 2 < w {
+        return cut_plain(v, w);
+    }
     let over = v.width() + 1 - w;
     let drop = v
         .char_indices()
@@ -2570,29 +2588,33 @@ fn ribbon(spans: &[(String, Duration, PhaseKind)], w: usize, s: &Styles) -> Vec<
     if let Some(m) = widths.iter_mut().max() {
         *m = (*m + cells).saturating_sub(sum).max(1);
     }
-    // A label rides inside its own segment when it fits there with a cell
-    // of ribbon on each side; the rest follow on one row under it.
+    // A solid ribbon, then one legend row in run order: each phase's
+    // swatch in its ribbon colour, its name and time.
+    let paint_kind = |k: PhaseKind, t: &str| match kind_paint(k) {
+        Paint::Warn => s.dim(t),
+        p => paint(p, t, s),
+    };
     let mut bar = String::from("  ");
-    let mut rest = Vec::new();
     for (cw, x) in widths.iter().zip(spans) {
-        let fill = g(s, "━", "=");
-        let cell = if x.0.width() + 4 <= *cw {
-            format!("{fill} {} {}", x.0, fill.repeat(cw - x.0.width() - 3))
-        } else if x.0.width() + 2 <= *cw {
-            format!(" {} {}", x.0, fill.repeat(cw - x.0.width() - 2))
-        } else {
-            rest.push(x.0.as_str());
-            fill.repeat(*cw)
-        };
-        bar += &match kind_paint(x.2) {
-            Paint::Warn => s.dim(&cell),
-            p => paint(p, &cell, s),
-        };
+        bar += &paint_kind(x.2, &g(s, "━", "=").repeat(*cw));
     }
+    let swatch = g(s, "■", "#");
+    let mut legend = String::from(" ");
+    let mut lw = 1;
     let mut out = vec![bar];
-    if !rest.is_empty() {
-        out.push(s.dim(&format!("  {}", rest.join(&b))));
+    for x in spans {
+        let item = format!(" {} {}", paint_kind(x.2, swatch), s.dim(&x.0));
+        let iw = 3 + x.0.width();
+        // A legend too long for the row goes on under, aligned.
+        if lw + iw + 1 > w && lw > 1 {
+            out.push(std::mem::replace(&mut legend, String::from(" ")));
+            lw = 1;
+        }
+        legend += &item;
+        legend.push(' ');
+        lw += iw + 1;
     }
+    out.push(legend.trim_end().to_string());
     out
 }
 
@@ -4111,8 +4133,9 @@ mod tests {
             .collect();
         // As wide as the bars: they end five columns from the edge.
         assert_eq!(r[0].trim().width(), 113, "{r:?}");
-        // The longest phase is labelled inside its own segment.
-        assert!(r[0].contains("━ download 2m10s ━"), "{r:?}");
+        // Solid; the legend under it in run order.
+        assert!(r[0].trim().chars().all(|c| c == '━'), "{r:?}");
+        assert_eq!(r[1], "  ■ sync 2s  ■ download 2m10s  ■ packages 20s");
         assert!(r.iter().all(|l| l.width() <= 120), "{r:?}");
         assert!(r.iter().any(|l| l.contains("packages 20s")), "{r:?}");
         assert!(r.iter().any(|l| l.contains("sync 2s")), "{r:?}");
