@@ -1068,10 +1068,12 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         .map(|p| name(p.kind))
         .collect();
     let pending = (!pending.is_empty()).then(|| {
+        // The route still ahead, in order.
         let dot = g(s, "·", ".");
+        let to = g(s, "›", ">");
         vec![seg(
             Paint::Dim,
-            format!("{dot} {}", pending.join(&format!(" {dot} "))),
+            format!("{dot} next  {}", pending.join(&format!(" {to} "))),
         )]
     });
     let fixed = 1 + usize::from(running.is_some()) + usize::from(pending.is_some());
