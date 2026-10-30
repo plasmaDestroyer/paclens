@@ -512,9 +512,14 @@ fn gauge_tail(
         segs.push(seg(Paint::Plain, format!("  {eta:>ETA_W$}  ")));
     }
     if g.cells >= 6 {
+        let mouth = if size.starts_with("stalled") || rate.starts_with("stalled") {
+            Mouth::Wait
+        } else {
+            Mouth::Chew
+        };
         segs.push(seg(
             Paint::Plain,
-            format!("[{}] ", bar(pct, g.cells, true, s)),
+            format!("{} ", track(pct, g.cells, mouth, s)),
         ));
     }
     let p = if approx {
@@ -855,20 +860,20 @@ fn children(
                 // Pac-Man waits dim at its end, and the overrun counts up.
                 let typical = Duration::from_secs(secs);
                 let over = took.saturating_sub(typical);
-                let (track, label) = if over.as_secs() == 0 {
+                let (rail, label) = if over.as_secs() == 0 {
                     let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
                         .unwrap_or(99)
                         .min(99);
-                    (bar(pct, ga.cells, true, s), format!("~{pct}%"))
+                    (track(pct, ga.cells, Mouth::Chew, s), format!("~{pct}%"))
                 } else {
                     (
-                        s.dim(&format!("{}c", "-".repeat(ga.cells.saturating_sub(1)))),
+                        track(100, ga.cells, Mouth::Over, s),
                         format!("+{}", duration(over)),
                     )
                 };
                 let mut tail = Vec::new();
                 if ga.cells >= 6 {
-                    tail.push(seg(Paint::Plain, format!("  [{track}]")));
+                    tail.push(seg(Paint::Plain, format!("  {rail}")));
                 }
                 tail.push(seg(Paint::Plain, format!(" {label:>4}")));
                 if one_row {
@@ -1751,6 +1756,65 @@ fn warning_mark(l: &str, s: &Styles) -> String {
     }
 }
 
+/// `t` wrapped to `w`, breaking first at sentence ends (`. `) so a
+/// message reads one sentence a line; a sentence too long still wraps.
+fn sentences(t: &str, w: usize) -> Vec<String> {
+    if t.width() <= w {
+        return vec![t.to_string()];
+    }
+    let lead = &t[..t.len() - t.trim_start().len()];
+    t.trim_start()
+        .split_inclusive(". ")
+        .flat_map(|x| wrap_words(&format!("{lead}{}", x.trim_end()), w))
+        .collect()
+}
+
+/// pacman's `warning: NAME: local (A) is newer than REPO (B)` in a quiet
+/// form that asks nothing: `≥ newer than repo  NAME  A › REPO B`.
+fn newer_than_repo(l: &str, pad: usize, s: &Styles) -> Option<String> {
+    let rest = l.strip_prefix("warning: ")?;
+    let (name, rest) = rest.split_once(": local (")?;
+    let (local, rest) = rest.split_once(") is newer than ")?;
+    let (repo, rest) = rest.split_once(" (")?;
+    let theirs = rest.strip_suffix(')')?;
+    Some(format!(
+        "{} {}",
+        s.dim(g(s, "≥", ">=")),
+        s.dim(&format!(
+            "newer than repo  {name:<pad$}  {local} {} {repo} {theirs}",
+            g(s, "›", ">")
+        ))
+    ))
+}
+
+/// Does the package message at line `at` start its block (no earlier line
+/// of the same package's message), and does any line of the block ask the
+/// user for something: a warning, a command to run, "make sure"?
+fn message_block(run: &Run, at: usize, whose: &str, from: usize) -> (bool, bool) {
+    let mine: Vec<usize> = run
+        .unknown_at
+        .iter()
+        .chain(&run.warning_at)
+        .copied()
+        .filter(|&i| i >= from && package_at(run, i).as_deref() == Some(whose))
+        .collect();
+    let first = !mine.iter().any(|&i| i < at);
+    let asks = mine
+        .iter()
+        .filter_map(|&i| run.lines.get(i))
+        .any(|l| asks_user(l));
+    (first, asks)
+}
+
+/// A message line that asks the user for something, by its own words.
+fn asks_user(l: &str) -> bool {
+    let low = l.to_lowercase();
+    low.contains("warning") || low.contains("run '") || low.contains("make sure") || {
+        let t = l.trim_start();
+        t.starts_with("$ ") || t.starts_with("# ")
+    }
+}
+
 /// Lines from here on are the transaction's own output: after the plan's
 /// prompt line settled, i.e. after the user answered.
 fn transaction_from(run: &Run) -> Option<usize> {
@@ -1916,34 +1980,82 @@ pub fn frame(
                 .filter(|(at, _)| (d.unknown..stop).contains(at))
                 .collect();
             new.sort_by_key(|&(at, _)| at);
+            // Package messages hang off one name column: the name once per
+            // message, right-aligned, then a gutter in the message's tier.
+            let col = run
+                .packages
+                .iter()
+                .map(|p| p.name.width())
+                .max()
+                .unwrap_or(0)
+                .min(24)
+                .min(w / 4);
+            // Names in `newer than repo` lines share one width.
+            let newer_w = run
+                .lines
+                .iter()
+                .filter_map(|l| {
+                    let r = l.strip_prefix("warning: ")?;
+                    let (n, r) = r.split_once(": local (")?;
+                    r.contains(") is newer than ").then(|| n.width())
+                })
+                .max()
+                .unwrap_or(0);
             for (at, l) in new {
+                if let Some(t) = run
+                    .lines
+                    .get(at)
+                    .and_then(|p| newer_than_repo(p, newer_w, s))
+                {
+                    above.push(t);
+                    continue;
+                }
                 // A package's own message says whose it is.
-                let whose = (at >= quiet_from)
-                    .then(|| package_at(run, at))
-                    .flatten()
-                    .map(|n| format!("{n}: "))
-                    .unwrap_or_default();
-                // Plain text wraps at spaces under its own start; a line
-                // pacman coloured goes up as it is.
+                let whose = (at >= quiet_from).then(|| package_at(run, at)).flatten();
+                let Some(whose) = whose else {
+                    // Plain text wraps at spaces under its own start; a line
+                    // pacman coloured goes up as it is.
+                    let body = if l.contains('\u{1b}') {
+                        vec![l.clone()]
+                    } else {
+                        wrap_words(l, w)
+                    };
+                    for (i, b) in body.iter().enumerate() {
+                        above.push(if i == 0 {
+                            warning_mark(b, s)
+                        } else {
+                            b.clone()
+                        });
+                    }
+                    continue;
+                };
+                let (first, asks) = message_block(run, at, &whose, quiet_from);
+                let gutter = if asks {
+                    s.warn(g(s, "▎", "|"))
+                } else {
+                    s.dim(g(s, "▎", "|"))
+                };
+                let pad = " ".repeat(col);
+                if first && whose.width() > col {
+                    above.push(whose.clone());
+                }
                 let body = if l.contains('\u{1b}') {
                     vec![l.clone()]
                 } else {
-                    wrap_words(l, w.saturating_sub(whose.width()))
+                    sentences(l.trim_end(), w.saturating_sub(col + 3))
                 };
                 for (i, b) in body.iter().enumerate() {
-                    let lead = if whose.is_empty() {
-                        String::new()
-                    } else if i == 0 {
-                        s.dim(&whose)
+                    let lead = if first && i == 0 && whose.width() <= col {
+                        format!("{whose:>col$}")
                     } else {
-                        " ".repeat(whose.width())
+                        pad.clone()
                     };
                     let b = if i == 0 {
                         warning_mark(b, s)
                     } else {
                         b.clone()
                     };
-                    above.push(format!("{lead}{b}"));
+                    above.push(format!("{lead} {gutter} {b}"));
                 }
             }
         }
@@ -2075,18 +2187,6 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         return out;
     }
     let arcade = view.motif == Motif::Arcade;
-    let bullet = (Paint::Dim, s.bullet());
-    // Something for the user to do: an amber `!`, ahead of the records.
-    let act = (Paint::Warn, "!");
-    let mark = |ghost: Ghost, todo: bool| {
-        if arcade {
-            (Paint::Ghost(ghost), g(s, "ᗣ", "G"))
-        } else if todo {
-            act
-        } else {
-            bullet
-        }
-    };
     let texts = |want: &dyn Fn(&NoteKind) -> bool| -> Vec<String> {
         run.needs_you()
             .into_iter()
@@ -2094,57 +2194,91 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
             .map(|n| n.text.clone())
             .collect()
     };
-    let mut groups: Vec<((Paint, &str), String)> = Vec::new();
+    // Three tiers. To do: a command or step the run's own output asked for,
+    // with whose words they were. Good to know: records and notes that ask
+    // nothing. Quiet: counts of what stays in scrollback and the transcript.
+    let mut todo: Vec<(String, String, String)> = Vec::new();
+    let mut know: Vec<(String, String)> = Vec::new();
+    let mut quiet: Vec<String> = Vec::new();
     if let Some(t) = texts(&|k| *k == NoteKind::Reboot).first() {
-        let pellet = if arcade {
-            (Paint::Bold, g(s, "●", "o"))
-        } else {
-            act
-        };
         // The hook's own reason, when it gives one.
         let why = t
             .split_once("due to ")
-            .map(|(_, r)| format!(", due to {}", r.trim_end_matches('.')))
-            .unwrap_or_default();
-        groups.push((pellet, format!("reboot recommended{why}")));
+            .map(|(_, r)| format!("recommended, due to {}", r.trim_end_matches('.')))
+            .unwrap_or_else(|| "recommended".to_string());
+        todo.push(("reboot".into(), why, hook_of(run, t).unwrap_or_default()));
     }
     let rebuild: Vec<String> = texts(&|k| *k == NoteKind::Rebuild)
         .iter()
         .filter_map(|t| t.split_whitespace().last().map(str::to_string))
         .collect();
     if !rebuild.is_empty() {
-        groups.push((act, format!("rebuild: {}", rebuild.join(", "))));
+        todo.push(("rebuild".into(), rebuild.join(", "), String::new()));
     }
-    // One line each: a warning is usually something to do (daemon-reload).
     // "local is newer than repo" was shown before the plan and asks nothing.
-    let to_do = |w: &String| !w.contains(" is newer than ");
+    let newer = texts(&|k| *k == NoteKind::Warning)
+        .iter()
+        .filter(|w| w.contains(" is newer than "))
+        .count();
     for w in texts(&|k| *k == NoteKind::Warning)
         .into_iter()
-        .filter(to_do)
+        .filter(|w| !w.contains(" is newer than "))
     {
-        groups.push((mark(Ghost::Clyde, true), action(&w)));
+        let whose = run
+            .lines
+            .iter()
+            .position(|l| l.contains(w.as_str()))
+            .and_then(|at| package_at(run, at))
+            .unwrap_or_default();
+        let (cmd, why) = action(&w);
+        todo.push((cmd, why, whose));
     }
     let pacnew = texts(&|k| *k == NoteKind::Pacnew);
     if !pacnew.is_empty() {
-        groups.push((
-            mark(Ghost::Pinky, true),
-            format!(".pacnew: {}", pacnew.join(", ")),
-        ));
+        todo.push((".pacnew".into(), pacnew.join(", "), String::new()));
+    }
+    // Package messages: a `$ command` line is a step to do, in the
+    // package's words; a message that asks nothing is good to know.
+    let from = transaction_from(run).unwrap_or(usize::MAX);
+    let mut said: Vec<(String, Vec<&String>)> = Vec::new();
+    for (at, l) in run.unknown_at.iter().zip(&run.unknown) {
+        if *at < from || in_hooks(run, *at) || l.trim().is_empty() {
+            continue;
+        }
+        let Some(p) = package_at(run, *at) else {
+            continue;
+        };
+        match said.iter_mut().find(|x| x.0 == p) {
+            Some(x) => x.1.push(l),
+            None => said.push((p, vec![l])),
+        }
+    }
+    for (p, lines) in &said {
+        let mut asked = false;
+        for (i, l) in lines.iter().enumerate() {
+            let t = l.trim_start();
+            if let Some(cmd) = t.strip_prefix("$ ").or_else(|| t.strip_prefix("# ")) {
+                let why = i
+                    .checked_sub(1)
+                    .and_then(|j| lines.get(j))
+                    .map(|w| w.trim().trim_end_matches(':').to_string())
+                    .unwrap_or_default();
+                todo.push((cmd.trim().to_string(), why, p.clone()));
+                asked = true;
+            }
+        }
+        if !asked && !lines.iter().any(|l| asks_user(l)) {
+            let text: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+            know.push((p.clone(), text.join(" ")));
+        }
     }
     let opt = texts(&|k| *k == NoteKind::Optdepends);
     if !opt.is_empty() {
-        groups.push((
-            mark(Ghost::Inky, false),
-            format!("optional: {}", opt.join("; ")),
-        ));
+        know.push(("optional".into(), opt.join("; ")));
     }
     let retried = texts(&|k| *k == NoteKind::Error { recovered: true });
-    if !retried.is_empty() {
-        let list: Vec<String> = retried.iter().map(|t| retry(run, t, s.bullet())).collect();
-        groups.push((
-            mark(Ghost::Blinky, false),
-            format!("retried {}", list.join("; ")),
-        ));
+    for t in &retried {
+        know.push(("retried".into(), retry(run, t, s.bullet())));
     }
     // Snapshots by config, first → last: `snap-pac root 1001 → 1002`.
     let mut snaps: Vec<(&str, u64, u64)> = Vec::new();
@@ -2167,38 +2301,74 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
                 }
             })
             .collect();
-        groups.push((bullet, format!("snap-pac {}", list.join(", "))));
+        know.push(("snap-pac".into(), list.join(", ")));
+    }
+    if newer > 0 {
+        quiet.push(format!("{newer} newer than repo"));
     }
     let n = run.unknown.len();
     if n > 0 {
         let lines = if n == 1 { "line" } else { "lines" };
-        let b = s.bullet();
-        groups.push((
-            bullet,
-            format!("{n} more {lines} of output {b} paclens transcript"),
+        quiet.push(format!(
+            "{n} more {lines} of output {} paclens transcript",
+            s.bullet()
         ));
     }
     // Not cut to the width: the receipt stays on screen, and a cut line loses
     // the part that says what to do. The terminal wraps it.
-    // Things to do read plain; records (`·`) step back.
-    for ((p, m), text) in groups {
-        let tp = if m == s.bullet() {
-            Paint::Dim
-        } else {
-            Paint::Plain
-        };
-        out.push(format!(
-            "{}{}",
-            paint(p, m, s),
-            paint(tp, &format!(" {text}"), s)
-        ));
+    let todo_mark = if arcade {
+        paint(Paint::Ghost(Ghost::Clyde), g(s, "ᗣ", "G"), s)
+    } else {
+        s.warn(g(s, "▲", "!"))
+    };
+    if !todo.is_empty() {
+        out.push(String::new());
+        out.push(format!("  {todo_mark} {}", s.title("to do")));
+        let cw = todo.iter().map(|t| t.0.width()).max().unwrap_or(0).min(28);
+        let sw = todo.iter().map(|t| t.2.width() + 4).max().unwrap_or(0);
+        let ww = todo
+            .iter()
+            .map(|t| t.1.width())
+            .max()
+            .unwrap_or(0)
+            .min(w.saturating_sub(8 + cw + sw));
+        for (i, (cmd, why, whose)) in todo.iter().enumerate() {
+            let src = if whose.is_empty() {
+                String::new()
+            } else {
+                s.dim(&format!("  {} {whose}", g(s, "←", "<-")))
+            };
+            let pad = " ".repeat(cw.saturating_sub(cmd.width()) + 2);
+            let wpad = if src.is_empty() {
+                String::new()
+            } else {
+                " ".repeat(ww.saturating_sub(why.width()))
+            };
+            out.push(format!(
+                "    {} {}{pad}{why}{wpad}{src}",
+                s.dim(&format!("{}", i + 1)),
+                s.title(cmd),
+            ));
+        }
+    }
+    if !know.is_empty() {
+        out.push(format!("  {} {}", s.dim(s.bullet()), s.dim("good to know")));
+        let kw = know.iter().map(|k| k.0.width()).max().unwrap_or(0).min(24);
+        for (k, t) in &know {
+            out.push(format!("      {k:<kw$}  {}", s.dim(t)));
+        }
+    }
+    if !quiet.is_empty() {
+        let b = format!(" {} ", s.bullet());
+        out.push(s.dim(&format!("  {} quiet  {}", s.bullet(), quiet.join(&b))));
     }
     out
 }
 
-/// A warning as the thing to do: `systemctl daemon-reload (warp-svc.service)`
-/// when it names a command to run and a unit, else the warning whole.
-fn action(w: &str) -> String {
+/// A warning as the thing to do: `systemctl daemon-reload` and why,
+/// `warp-svc.service changed on disk`, when it names a command to run and a
+/// unit; else `warning` and the warning whole.
+fn action(w: &str) -> (String, String) {
     let cmd = w
         .split_once("Run '")
         .and_then(|(_, r)| r.split_once('\''))
@@ -2209,9 +2379,20 @@ fn action(w: &str) -> String {
             .any(|e| t.ends_with(e))
     });
     match (cmd, unit) {
-        (Some(c), Some(u)) => format!("{c} ({u} changed on disk)"),
-        _ => format!("warning: {w}"),
+        (Some(c), Some(u)) => (c.to_string(), format!("{u} changed on disk")),
+        _ => ("warning".to_string(), w.to_string()),
     }
+}
+
+/// The hook whose output carried note text `t`: its description, else its
+/// file name.
+fn hook_of(run: &Run, t: &str) -> Option<String> {
+    run.pre_hooks
+        .iter()
+        .chain(&run.post_hooks)
+        .find(|h| h.notes.iter().any(|n| n.text == t))
+        .and_then(|h| h.file.clone().or_else(|| h.desc.clone()))
+        .map(|d| d.trim_end_matches(".hook").to_string())
 }
 
 /// `luajit · archlinux.cachyos.org 404` from pacman's `failed retrieving
@@ -2338,6 +2519,68 @@ pub fn bar(pct: u8, cells: usize, candy: bool, s: &Styles) -> String {
     s.dim(&"-".repeat(eaten)) + &head + &s.dim(&rest)
 }
 
+/// How the head of a bar looks: chewing while the figure moves, waiting
+/// (shut, dim, a ghost behind it) while a file is stalled, and waiting at
+/// the end of a full track when a hook runs past its usual time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mouth {
+    Chew,
+    Wait,
+    Over,
+}
+
+/// The run's bar, `cells + 2` columns wide. Without colour: pacman's own,
+/// in brackets. With colour, the maze: the eaten track a thin dim line,
+/// Pac-Man `ᗧ` at the real position in half cells — open and shut on
+/// alternate half steps, so it chews only as bytes arrive — pellets `·`
+/// ahead every third cell as pacman spaces them, and a power pellet `•` on
+/// the file's last byte.
+fn track(pct: u8, cells: usize, mouth: Mouth, s: &Styles) -> String {
+    if !s.colored() {
+        return match mouth {
+            Mouth::Over => format!("[{}c]", "-".repeat(cells.saturating_sub(1))),
+            _ => format!("[{}]", bar(pct, cells, true, s)),
+        };
+    }
+    let n = cells + 2;
+    let pct = usize::from(pct.min(100));
+    let halves = pct * n * 2 / 100;
+    let at = (halves / 2).min(n);
+    let line = g(s, "─", "-");
+    if at >= n || mouth == Mouth::Over {
+        let eaten = s.dim(&line.repeat(n.saturating_sub(1)));
+        return match mouth {
+            Mouth::Over => eaten + &s.dim(g(s, "●", "o")),
+            _ => eaten + &s.dim(line),
+        };
+    }
+    let head = match mouth {
+        Mouth::Wait => s.dim(g(s, "●", "o")),
+        _ if halves % 2 == 1 => s.warn(g(s, "●", "o")),
+        _ => s.warn(g(s, "ᗧ", "C")),
+    };
+    // A stalled file has a ghost two cells behind Pac-Man, on the track.
+    let mut eaten = s.dim(&line.repeat(at));
+    if mouth == Mouth::Wait && at >= 3 {
+        eaten = s.dim(&line.repeat(at - 2)) + &s.ghost(Ghost::Pinky, g(s, "ᗣ", "G")) + &s.dim(line);
+    }
+    let mut rest = String::new();
+    for j in at + 1..n {
+        rest.push_str(if j + 1 == n {
+            g(s, "•", "o")
+        } else if j > at + 1 && (n - 1 - j).is_multiple_of(3) {
+            g(s, "·", ".")
+        } else {
+            " "
+        });
+    }
+    let (dots, power) = match rest.strip_suffix(g(s, "•", "o")) {
+        Some(d) if at + 1 < n => (d.to_string(), g(s, "•", "o")),
+        _ => (rest.clone(), ""),
+    };
+    eaten + &head + &s.dim(&dots) + power
+}
+
 /// An uncommented `ILoveCandy` line in pacman.conf.
 pub fn candy_enabled(pacman_conf: &str) -> bool {
     pacman_conf
@@ -2438,7 +2681,7 @@ mod tests {
             // A blank row and the command set the receipt apart.
             assert_eq!(c[..2], ["", "pacman -Syu"], "{c:?}");
             assert!(c[2].contains("38 eaten"), "{c:?}");
-            assert!(c.len() <= 8, "{c:?}");
+            assert!(c.len() <= 14, "{c:?}");
         }
     }
 
@@ -2450,8 +2693,8 @@ mod tests {
         let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 40, "/t", &plain());
         // The thing to do, with what it is about.
         assert!(
-            c.iter()
-                .any(|l| l == "! systemctl daemon-reload (warp-svc.service changed on disk)"),
+            c.iter().any(|l| l.contains("systemctl daemon-reload")
+                && l.contains("warp-svc.service changed on disk")),
             "{c:?}"
         );
         // A warning that names no command stays whole.
@@ -2492,10 +2735,7 @@ mod tests {
             None,
             &plain(),
         );
-        assert_eq!(
-            f.above,
-            ["warning: foo: local (2-1) is newer than extra (1-1)"]
-        );
+        assert_eq!(f.above, [">= newer than repo  foo  2-1 > extra 1-1"]);
     }
 
     #[test]
@@ -3392,7 +3632,7 @@ mod tests {
     }
 
     #[test]
-    fn arcade_receipt_marks_reboot_with_a_pellet() {
+    fn arcade_receipt_heads_the_to_do_tier_with_a_ghost() {
         let c = closing(
             &fixture_run(),
             &view(Layout::Inline, Motif::Arcade),
@@ -3400,9 +3640,142 @@ mod tests {
             "/t",
             &uni(),
         );
+        assert!(c.iter().any(|l| l == "  ᗣ to do"), "{c:?}");
+        assert!(c.iter().any(|l| l.contains("1 reboot")), "{c:?}");
+    }
+
+    #[test]
+    fn newer_than_repo_reads_quiet_and_keeps_every_figure() {
+        assert_eq!(
+            newer_than_repo(
+                "warning: foo: local (2-1) is newer than extra (1-1)",
+                5,
+                &uni()
+            )
+            .as_deref(),
+            Some("≥ newer than repo  foo    2-1 › extra 1-1")
+        );
+        assert_eq!(newer_than_repo("warning: something else", 0, &uni()), None);
+    }
+
+    #[test]
+    fn sentences_break_at_sentence_ends_first() {
+        let t = "One sentence here. Run 'this' to fix it.";
+        assert_eq!(
+            sentences(t, 30),
+            ["One sentence here.", "Run 'this' to fix it."]
+        );
+        assert_eq!(sentences(t, 80), [t]);
+    }
+
+    #[test]
+    fn asks_user_reads_the_message_own_words() {
+        assert!(asks_user("Warning: unit changed"));
+        assert!(asks_user("  $ usermod -aG input $USER"));
+        assert!(asks_user("Make sure your user is in the group"));
+        assert!(!asks_user("You can add custom flags in user-flags.conf"));
+    }
+
+    /// A package's message at line `at` after the plan is answered.
+    fn with_message(lines: &[&str]) -> Run {
+        let all = fixture_lines();
+        let mut r = partial(58);
+        r.apply_line(&format!("{} y", all[58]), Z);
+        r.apply_line(":: Processing package changes...", Z);
+        r.apply_line("( 1/38) upgrading ydotool  [##] 100%", Z);
+        for l in lines {
+            r.apply_line(l, Z);
+        }
+        r.apply_line("(2/38) upgrading zed", Z);
+        r
+    }
+
+    #[test]
+    fn package_messages_hang_off_the_name_column() {
+        let r = with_message(&[
+            "Make sure your user is in the `input` group:",
+            "  $ usermod -aG input $USER",
+        ]);
+        let (f, _) = frame(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            Delivered::default(),
+            120,
+            40,
+            Z,
+            None,
+            &plain(),
+        );
+        let msg: Vec<&String> = f.above.iter().filter(|l| l.contains(" | ")).collect();
+        assert_eq!(msg.len(), 2, "{:?}", f.above);
+        // The name once, right-aligned, then the gutter on every line.
         assert!(
-            c.iter().any(|l| l.starts_with('●') && l.contains("reboot")),
+            msg[0].trim_start().starts_with("ydotool | Make sure"),
+            "{msg:?}"
+        );
+        assert!(msg[1].trim_start().starts_with("|   $ usermod"), "{msg:?}");
+        assert_eq!(msg[0].find('|'), msg[1].find('|'));
+    }
+
+    #[test]
+    fn a_dollar_line_in_a_package_message_is_a_step_to_do() {
+        let r = with_message(&[
+            "Make sure your user is in the `input` group:",
+            "  $ usermod -aG input $USER",
+        ]);
+        let c = closing(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            160,
+            "/t",
+            &plain(),
+        );
+        let step = c.iter().find(|l| l.contains("usermod -aG input $USER"));
+        assert!(
+            step.is_some_and(|l| l.contains("<- ydotool") && l.contains("input` group")),
             "{c:?}"
+        );
+    }
+
+    #[test]
+    fn a_quiet_package_message_is_good_to_know() {
+        let r = with_message(&["You can add custom flags in user-flags.conf"]);
+        let c = closing(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            160,
+            "/t",
+            &plain(),
+        );
+        let at = c.iter().position(|l| l.contains("good to know"));
+        let row = c
+            .iter()
+            .position(|l| l.contains("ydotool") && l.contains("custom flags"));
+        assert!(at.zip(row).is_some_and(|(a, b)| b > a), "{c:?}");
+    }
+
+    #[test]
+    fn track_without_colour_is_pacman_bar_in_brackets() {
+        assert_eq!(track(50, 10, Mouth::Chew, &plain()), "[-----C o  ]");
+        assert_eq!(track(100, 4, Mouth::Over, &plain()), "[---c]");
+    }
+
+    #[test]
+    fn track_in_colour_is_the_maze() {
+        let strip = |t: String| strip(&t);
+        let t = strip(track(50, 10, Mouth::Chew, &colour()));
+        assert_eq!(t.width(), 12);
+        assert!(t.starts_with("──────ᗧ"), "{t}");
+        assert!(t.ends_with('•'), "{t}");
+        // Half a cell further, the mouth is shut: it chews as bytes arrive.
+        let t = strip(track(55, 10, Mouth::Chew, &colour()));
+        assert!(t.contains('●') && !t.contains('ᗧ'), "{t}");
+        // Stalled: shut, with a ghost behind.
+        let t = strip(track(50, 10, Mouth::Wait, &colour()));
+        assert!(t.contains("ᗣ─●"), "{t}");
+        assert_eq!(
+            strip(track(100, 10, Mouth::Chew, &colour())),
+            "─".repeat(12)
         );
     }
 }
