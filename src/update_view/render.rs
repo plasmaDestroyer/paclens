@@ -634,7 +634,8 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
     let numbers = numbers.or_else(|| {
         let t = took(p.started, p.ended, now)?.as_secs_f64();
         let r = p.done as f64 / t;
-        (p.kind == PhaseKind::Packages && t >= 1.0 && r >= 0.1)
+        // Shown once there is enough to divide: early on it swings.
+        (p.kind == PhaseKind::Packages && t >= 3.0 && p.done >= 10 && r >= 0.1)
             .then(|| (String::new(), format!("{r:.1} pkgs/s"), String::new()))
     });
     row.extend(gauge_tail(g, pct, false, true, None, numbers, s));
@@ -857,6 +858,7 @@ fn children(
                             && let Some(new) = pkg.and_then(|p| p.new.as_deref())
                         {
                             row.truncate(3);
+                            row.push(seg(Paint::Dim, format!("{} ", s.arrow())));
                             row.push(seg(Paint::Ok, new.to_string()));
                             used = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
                         }
@@ -2673,7 +2675,7 @@ fn ribbon(spans: &[(String, Duration, PhaseKind)], w: usize, s: &Styles) -> Vec<
     let total: f64 = spans.iter().map(|x| x.1.as_secs_f64()).sum();
     let mut widths: Vec<usize> = spans
         .iter()
-        .map(|x| ((x.1.as_secs_f64() / total * cells as f64).round() as usize).max(1))
+        .map(|x| ((x.1.as_secs_f64() / total * cells as f64).round() as usize).max(2))
         .collect();
     // Rounding may overshoot or fall short; the longest segment evens it.
     let sum: usize = widths.iter().sum();
