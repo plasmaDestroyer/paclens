@@ -1663,6 +1663,29 @@ fn plan_rows(
     if !names && per_col.is_none() {
         return (Vec::new(), false);
     }
+    // A repo's download in bytes, when pacman listed sizes.
+    let repo_bytes = |repo: &str| -> Option<f64> {
+        run.packages
+            .iter()
+            .filter(|p| p.repo.as_deref().unwrap_or("packages") == repo)
+            .map(|p| p.download.as_deref().and_then(bytes))
+            .sum()
+    };
+    let heading = |repo: &str, n: usize| -> (String, String) {
+        let size = repo_bytes(repo)
+            .map(|by| format!(" {} {}", s.bullet(), size_pair(&format!("{by} B"), None)))
+            .unwrap_or_default();
+        (repo.to_string(), format!(" ({n}){size}"))
+    };
+    // Every heading's rule starts in one column, so their lengths compare.
+    let rule_at = groups
+        .iter()
+        .map(|(r, n, _, _)| {
+            let (a, b) = heading(r, *n);
+            a.width() + b.width() + 1
+        })
+        .max()
+        .unwrap_or(0);
     let mut shown = 0;
     let mut left: Vec<String> = Vec::new();
     for (gi, (repo, n, list, fams)) in groups.iter().enumerate() {
@@ -1715,22 +1738,27 @@ fn plan_rows(
             continue;
         }
         // The repo's share of the download, when pacman listed sizes.
-        let members = run
+        let by = repo_bytes(repo);
+        let (name, rest) = heading(repo, *n);
+        let mut head = vec![seg(Paint::Bold, name), seg(Paint::Dim, rest)];
+        // A rule to the edge, its heavy part this repo's share of the
+        // whole download: where the bytes come from, at a glance.
+        let all: Option<f64> = run
             .packages
             .iter()
-            .filter(|p| p.repo.as_deref().unwrap_or("packages") == *repo);
-        let size: Option<f64> = members.map(|p| p.download.as_deref().and_then(bytes)).sum();
-        let size = size
-            .map(|by| format!(" {} {}", s.bullet(), size_pair(&format!("{by} B"), None)))
-            .unwrap_or_default();
-        out.push(line(
-            &[
-                seg(Paint::Bold, (*repo).to_string()),
-                seg(Paint::Dim, format!(" ({n}){size}")),
-            ],
-            w,
-            s,
-        ));
+            .map(|p| p.download.as_deref().and_then(bytes))
+            .sum();
+        if let (Some(by), Some(all)) = (by, all.filter(|a| *a > 0.0))
+            && s.colored()
+        {
+            let used: usize = head.iter().map(|x| x.1.width()).sum();
+            head.push(seg(Paint::Plain, " ".repeat(rule_at.saturating_sub(used))));
+            let len = w.saturating_sub(rule_at.max(used) + 1);
+            let heavy = ((by / all * len as f64).round() as usize).min(len);
+            head.push(seg(Paint::Ghost(Ghost::Inky), g(s, "━", "=").repeat(heavy)));
+            head.push(seg(Paint::Dim, g(s, "─", "-").repeat(len - heavy)));
+        }
+        out.push(line(&head, w, s));
         for f in &fam_rows {
             out.push(line(f, w, s));
         }
