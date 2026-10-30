@@ -2028,6 +2028,28 @@ YYYY-MM-DD | no --noconfirm for pacman
            | cut from the front, where they agree, so the change stays in
            | view. The receipt leads with what to do (`!`), then records.
 
+2026-10-30 | the view gets its own look, and notices get a hierarchy (#81)
+           | Same judge loop, scoring novelty and beauty. With colour the
+           | bar is a maze, not pacman's copy: a thin eaten track, Pac-Man
+           | at the real position in half cells, open and shut as the bytes
+           | arrive (never on a clock), pellets, a power pellet on the last
+           | byte. A comet tail marks what was eaten in the last two
+           | seconds as paclens saw it. A short wait is dim; three seconds
+           | is a stall, amber, with a ghost. A bar that is an estimate (a
+           | hook against its usual time) has a dashed track and hollow
+           | pellets and never chews. `--no-color` keeps pacman's bar.
+           | Messages: a package's message hangs off one name column with
+           | a gutter, amber when its own words ask something, and `local
+           | is newer than repo` reads quiet. Nothing is dropped or
+           | reworded in scrollback; the receipt is an index of it, in
+           | tiers: to do (the command, the source's first sentence, whose
+           | words), good to know, quiet counts. The tier comes from the
+           | text (a warning, a quoted command, a `$` line), never from a
+           | guess about the system. A reboot is listed last, since it ends
+           | the session. Time goes into a ribbon whose segments are each
+           | phase's share of the run; repo headings in the plan carry a
+           | rule weighted by their share of the download.
+
 ```
 
 ---
