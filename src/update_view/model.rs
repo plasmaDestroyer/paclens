@@ -438,8 +438,14 @@ impl Run {
             }
             let known = self.started_files.iter_mut().find(|k| k.name == f.name);
             match (f.queued, known) {
-                // Real numbers: remember them.
-                (false, Some(k)) => *k = f.clone(),
+                // Real numbers: remember them. The same bytes again are no
+                // progress: a stall that began keeps its start.
+                (false, Some(k)) => {
+                    let got = |d: &str| d.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+                    let since = k.stalled_since.filter(|_| got(&k.detail) == got(&f.detail));
+                    *k = f.clone();
+                    k.stalled_since = since;
+                }
                 (false, None) => self.started_files.push(f.clone()),
                 // A started file that looks queued has stalled: keep what
                 // it last showed, and say so.

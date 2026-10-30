@@ -223,7 +223,9 @@ fn header(run: &Run, view: &View, now: Duration, s: &Styles) -> Vec<Seg> {
 fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
     let (mark_paint, mark) = match p.state {
         PhaseState::Done => (Paint::Ok, s.check()),
-        PhaseState::Running => (Paint::Warn, g(s, "▸", ">")),
+        // The running mark in its phase's colour, as the receipt's
+        // ribbon paints it.
+        PhaseState::Running => (kind_paint(p.kind), g(s, "▸", ">")),
         PhaseState::Pending => (Paint::Dim, g(s, "·", ".")),
     };
     let time = took(p.started, p.ended, now)
@@ -247,6 +249,17 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
         seg(mark_paint, mark),
         seg(text_paint, text.trim_end().to_string()),
     ]
+}
+
+/// A phase's colour: network cyan, packages green, hooks magenta, the
+/// rest amber while running (dim on the ribbon).
+fn kind_paint(k: PhaseKind) -> Paint {
+    match k {
+        PhaseKind::Download | PhaseKind::Sync => Paint::Ghost(Ghost::Inky),
+        PhaseKind::Packages => Paint::Ok,
+        PhaseKind::PreHooks | PhaseKind::PostHooks => Paint::Ghost(Ghost::Pinky),
+        _ => Paint::Warn,
+    }
 }
 
 /// Done phases folded into one row: `✓ sync 5 · plan 38 · download 38  1m17s`.
@@ -492,11 +505,29 @@ fn gauge_tail(
     s: &Styles,
 ) -> Vec<Seg> {
     let (size, rate, eta) = numbers.unwrap_or_default();
-    // Live figures read plain; a stall is amber.
+    // A second or two without bytes is ordinary jitter: shown dim, the
+    // mouth shut. Three is a stall: amber, and the ghost comes.
+    let stall = [&size, &rate]
+        .iter()
+        .find(|t| t.starts_with("stalled"))
+        .map(|t| {
+            let n = t.trim_start_matches("stalled").trim().trim_end_matches('s');
+            if n.is_empty() {
+                0
+            } else {
+                n.parse::<u64>().unwrap_or(u64::MAX)
+            }
+        });
+    let stall_paint = if stall.is_some_and(|n| n >= 3) {
+        Paint::Warn
+    } else {
+        Paint::Dim
+    };
+    // Live figures read plain.
     let mut segs = Vec::new();
     if g.size {
         let p = if size.starts_with("stalled") {
-            Paint::Warn
+            stall_paint
         } else {
             Paint::Plain
         };
@@ -505,7 +536,7 @@ fn gauge_tail(
     }
     if g.rate {
         let p = if rate.starts_with("stalled") {
-            Paint::Warn
+            stall_paint
         } else {
             Paint::Plain
         };
@@ -513,12 +544,6 @@ fn gauge_tail(
         segs.push(seg(Paint::Plain, format!("  {eta:>ETA_W$}  ")));
     }
     if g.cells >= 6 {
-        // A second without bytes is ordinary jitter; three is a stall,
-        // and the ghost comes.
-        let stall = [&size, &rate]
-            .iter()
-            .find_map(|t| t.strip_prefix("stalled "))
-            .map(|t| t.trim_end_matches('s').parse::<u64>().unwrap_or(u64::MAX));
         let mouth = match stall {
             Some(n) if n >= 3 => Mouth::Haunt,
             Some(_) => Mouth::Wait,
@@ -631,7 +656,12 @@ fn children(
                             .stalled_since
                             .map(|t| now.saturating_sub(t))
                             .unwrap_or_default();
-                        format!("stalled {}", duration(t))
+                        // Under a second it is not yet a figure to show.
+                        if t.as_secs() == 0 {
+                            "stalled".to_string()
+                        } else {
+                            format!("stalled {}", duration(t))
+                        }
                     });
                     let (r, eta) = match &stall {
                         Some(st) => (st.clone(), String::new()),
@@ -736,15 +766,24 @@ fn children(
                     .max()
                     .unwrap_or(0)
             };
+            // With bars on, the row ends before the bar column, so the
+            // running package's bar starts where every other bar does.
+            let lim = if ga.cells >= 6 {
+                ga.left + numbers_w(ga)
+            } else {
+                w
+            };
             let room =
-                w.saturating_sub(5 + verb_w + name_w + 2 + 3 + longest(|p| p.new.as_deref()) + 6);
+                lim.saturating_sub(5 + verb_w + name_w + 2 + 3 + longest(|p| p.new.as_deref()) + 4);
             let old_w = longest(|p| p.old.as_deref()).min(room.max(16));
             recent
                 .into_iter()
                 .rev()
                 .enumerate()
                 .map(|(i, (verb, name, pct))| {
-                    let current = i + 1 == n;
+                    // Bold is the package pacman is on now, by its own
+                    // percent; a settled last row stays dim.
+                    let current = i + 1 == n && pct.is_some();
                     let mut row = vec![
                         seg(Paint::Dim, format!("{:<verb_w$}", verb_of(&verb))),
                         seg(
@@ -774,13 +813,10 @@ fn children(
                         let used: usize = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
                         // Its own bar in the run's bar column, when the row
                         // leaves it free: pacman's percent for this package.
-                        // A long version pair pushes its start right; its
-                        // end stays on the column's.
-                        let at = (ga.left + numbers_w(ga)).max(used + 2);
-                        let end = ga.left + numbers_w(ga) + ga.cells;
-                        if ga.cells >= 6 && at + 12 <= end {
+                        let at = ga.left + numbers_w(ga);
+                        if ga.cells >= 6 && used + 2 <= at {
                             row.push(seg(Paint::Plain, " ".repeat(at - used)));
-                            row.push(seg(Paint::Plain, track(p, end - at, Mouth::Chew, s)));
+                            row.push(seg(Paint::Plain, track(p, ga.cells, Mouth::Chew, s)));
                             row.push(seg(Paint::Plain, format!(" {:>4}", format!("{p}%"))));
                             return row;
                         }
@@ -2250,11 +2286,12 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     let mut quiet: Vec<String> = Vec::new();
     if let Some(t) = texts(&|k| *k == NoteKind::Reboot).first() {
         // The hook's own reason, when it gives one.
-        let why = t
-            .split_once("due to ")
-            .map(|(_, r)| format!("recommended, due to {}", r.trim_end_matches('.')))
-            .unwrap_or_else(|| "recommended".to_string());
-        todo.push(("reboot".into(), why, hook_of(run, t).unwrap_or_default()));
+        // The hook's own words.
+        todo.push((
+            "reboot".into(),
+            sentence_head(t),
+            hook_of(run, t).unwrap_or_default(),
+        ));
     }
     let rebuild: Vec<String> = texts(&|k| *k == NoteKind::Rebuild)
         .iter()
@@ -2331,7 +2368,7 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         if !asked && !lines.iter().any(|l| asks_user(l)) {
             // Whole above, in scrollback; here its start, to recognise it.
             let text: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
-            know.push((p.clone(), cut_plain(&text.join(" "), 60)));
+            know.push((p.clone(), text.join(" ")));
         }
     }
     let opt = texts(&|k| *k == NoteKind::Optdepends);
@@ -2390,6 +2427,14 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         s.warn(g(s, "▲", "!"))
     };
     if !todo.is_empty() {
+        // The end line says there is something to do, and how much.
+        if let Some(end) = out.get_mut(2) {
+            *end += &format!(
+                "{}{}",
+                s.dim(&format!(" {} ", s.bullet())),
+                s.warn(&format!("{} {} to do", g(s, "▲", "!"), todo.len()))
+            );
+        }
         out.push(String::new());
         out.push(format!("  {todo_mark} {}", s.title("to do")));
         // A reboot ends the session: it goes last, after the steps that
@@ -2408,30 +2453,30 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
             .max()
             .unwrap_or(0)
             .min(avail.saturating_sub(sw));
+        // Wide enough: one row each, the reason cut with `…` (its source
+        // is whole above), sources in one column. Too narrow for that: the
+        // reason wraps in its column and every source goes under it.
+        let one_row = ww >= 30;
         for (i, (cmd, why, whose)) in todo.iter().enumerate() {
             let src = (!whose.is_empty()).then(|| format!("{} {whose}", g(s, "←", "<-")));
-            let mut rows = if why.width() <= ww || src.is_none() && why.width() <= avail {
-                vec![why.clone()]
-            } else {
-                wrap_flat(why, avail)
-            };
             let lead = format!(
                 "    {} {}{}",
                 s.dim(&format!("{:>nw$}", i + 1)),
                 s.title(cmd),
                 " ".repeat(cw.saturating_sub(cmd.width()) + 2)
             );
-            if let Some(src) = &src {
-                let last = rows.len() - 1;
-                if rows.len() == 1 && rows[0].width() <= ww {
-                    let pad = ww - rows[0].width();
-                    rows[0] = format!("{}{}  {}", rows[0], " ".repeat(pad), s.dim(src));
-                } else if rows[last].width() + 2 + src.width() <= avail {
-                    rows[last] = format!("{}  {}", rows[last], s.dim(src));
-                } else {
-                    rows.push(s.dim(src));
-                }
-            }
+            let mut rows = if one_row {
+                let why = cut_plain(why, ww).replace(" …", "…");
+                vec![match &src {
+                    Some(src) => format!("{why}{}  {}", " ".repeat(ww - why.width()), s.dim(src)),
+                    None => why,
+                }]
+            } else {
+                let mut r = wrap_flat(why, avail);
+                r.extend(src.iter().map(|x| s.dim(x)));
+                r
+            };
+            rows.retain(|r| !r.is_empty());
             for (k, r) in rows.iter().enumerate() {
                 let head = if k == 0 {
                     lead.clone()
@@ -2446,7 +2491,8 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         out.push(format!("  {} {}", s.dim(s.bullet()), s.dim("good to know")));
         let kw = know.iter().map(|k| k.0.width()).max().unwrap_or(0).min(24);
         for (k, t) in &know {
-            out.push(format!("      {k:<kw$}  {}", s.dim(t)));
+            let t = preview(t, w.saturating_sub(8 + kw));
+            out.push(format!("      {k:<kw$}  {}", s.dim(&t)));
         }
     }
     if !quiet.is_empty() {
@@ -2501,13 +2547,9 @@ fn ribbon(spans: &[(String, Duration, PhaseKind)], w: usize, s: &Styles) -> Vec<
             rest.push(x.0.as_str());
             fill.repeat(*cw)
         };
-        bar += &match x.2 {
-            PhaseKind::Download | PhaseKind::Sync => paint(Paint::Ghost(Ghost::Inky), &cell, s),
-            PhaseKind::Packages => paint(Paint::Ok, &cell, s),
-            PhaseKind::PreHooks | PhaseKind::PostHooks => {
-                paint(Paint::Ghost(Ghost::Pinky), &cell, s)
-            }
-            _ => s.dim(&cell),
+        bar += &match kind_paint(x.2) {
+            Paint::Warn => s.dim(&cell),
+            p => paint(p, &cell, s),
         };
     }
     let mut out = vec![bar];
@@ -2531,9 +2573,39 @@ fn action(w: &str) -> (String, String) {
             .any(|e| t.ends_with(e))
     });
     match (cmd, unit) {
-        (Some(c), Some(u)) => (c.to_string(), format!("{u} changed on disk")),
+        (Some(c), Some(_)) => (c.to_string(), sentence_head(w)),
         _ => ("warning".to_string(), w.to_string()),
     }
+}
+
+/// `t` in `w` columns: whole when it fits; else its start and, when it
+/// names a path, that path whole (`You can add … · .config/x/flags.conf`).
+fn preview(t: &str, w: usize) -> String {
+    if t.width() <= w {
+        return t.to_string();
+    }
+    let path = t
+        .split_whitespace()
+        .find(|x| x.contains('/') && !x.contains("://"))
+        .map(|x| x.trim_end_matches(['.', ',', ':', ';']));
+    match path {
+        Some(p) if p.width() + 12 < w => {
+            let head = t.split_once(p).map_or(t, |(a, _)| a).trim_end();
+            format!("{} {p}", cut_plain(head, w - p.width() - 1))
+        }
+        _ => cut_plain(t, w),
+    }
+}
+
+/// A message's first sentence, less its leading marks (`==> INFO:`,
+/// `Warning:`) and closing stop: `Reboot is recommended due to …`.
+fn sentence_head(t: &str) -> String {
+    let mut t = t.trim();
+    for m in ["==> ", "-> ", ":: ", "INFO: ", "Warning: ", "warning: "] {
+        t = t.strip_prefix(m).unwrap_or(t);
+    }
+    let first = t.split_once(". ").map_or(t, |(a, _)| a);
+    first.trim_end_matches('.').to_string()
 }
 
 /// The hook whose output carried note text `t`: its description, else its
@@ -2723,7 +2795,8 @@ fn track(pct: u8, cells: usize, mouth: Mouth, s: &Styles) -> String {
     }
     let head = match mouth {
         Mouth::Wait | Mouth::Haunt => shut(),
-        Mouth::Chew if halves % 2 == 1 => s.warn(g(s, "●", "o")),
+        // Shut one half step in four: a chew, still read as Pac-Man.
+        Mouth::Chew if halves % 4 == 3 => s.warn(g(s, "●", "o")),
         _ => s.warn(g(s, "ᗧ", "C")),
     };
     let eaten = if mouth == Mouth::Haunt && at >= 3 {
@@ -3943,7 +4016,8 @@ mod tests {
         assert!(t.starts_with("──────ᗧ"), "{t}");
         assert!(t.ends_with('•'), "{t}");
         // Half a cell further, the mouth is shut: it chews as bytes arrive.
-        let t = strip(track(55, 10, Mouth::Chew, &colour()));
+        // One half step in four the mouth is shut: it chews as bytes arrive.
+        let t = strip(track(63, 10, Mouth::Chew, &colour()));
         assert!(t.contains('●') && !t.contains('ᗧ'), "{t}");
         // Stalled: shut; a ghost behind once it is a stall.
         let t = strip(track(50, 10, Mouth::Wait, &colour()));
@@ -4026,5 +4100,60 @@ mod tests {
             )),
             "{c:?}"
         );
+    }
+
+    #[test]
+    fn sentence_head_is_the_first_sentence_less_its_marks() {
+        assert_eq!(
+            sentence_head("==> INFO: Reboot is recommended due to x. More."),
+            "Reboot is recommended due to x"
+        );
+        assert_eq!(
+            sentence_head("Warning: The unit changed on disk."),
+            "The unit changed on disk"
+        );
+    }
+
+    #[test]
+    fn preview_keeps_a_path_whole() {
+        let t =
+            "You can add custom permanent flags for Obsidian in .config/obsidian/user-flags.conf";
+        assert_eq!(preview(t, 200), t);
+        let p = preview(t, 60);
+        assert!(
+            p.ends_with(" .config/obsidian/user-flags.conf") && p.contains('…'),
+            "{p}"
+        );
+        assert!(p.width() <= 60, "{p}");
+        assert_eq!(preview("no path at all here", 10), "no path a…");
+    }
+
+    #[test]
+    fn a_short_wait_is_dim_and_a_stall_is_amber() {
+        let ga = Gauge {
+            left: 10,
+            size: true,
+            rate: true,
+            cells: 10,
+        };
+        let c = colour();
+        let t = |r: &str| {
+            gauge_tail(
+                &ga,
+                50,
+                false,
+                false,
+                Some(("1/2 MiB".into(), r.into(), String::new())),
+                &c,
+            )
+        };
+        let paint_of = |segs: Vec<Seg>| {
+            segs.into_iter()
+                .find(|x| x.1.contains("stalled"))
+                .map(|x| x.0)
+        };
+        assert!(matches!(paint_of(t("stalled 2s")), Some(Paint::Dim)));
+        assert!(matches!(paint_of(t("stalled")), Some(Paint::Dim)));
+        assert!(matches!(paint_of(t("stalled 3s")), Some(Paint::Warn)));
     }
 }
