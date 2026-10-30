@@ -2155,21 +2155,16 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         line(&end_segs(run, view.motif, s), w, s),
     ];
     // Where the time went: each phase that took a second or more.
-    let times: Vec<String> = run
+    let spans: Vec<(String, Duration)> = run
         .phases
         .iter()
         .filter_map(|p| {
             let t = took(p.started, p.ended, Duration::ZERO)?;
-            (t.as_secs() >= 1).then(|| format!("{} {}", name(p.kind), duration(t)))
+            (t.as_secs() >= 1).then(|| (format!("{} {}", name(p.kind), duration(t)), t))
         })
         .collect();
-    if run.outcome() == Outcome::Succeeded && !times.is_empty() {
-        let b = format!(" {} ", s.bullet());
-        out.push(line(
-            &[seg(Paint::Dim, format!("  {}", times.join(&b)))],
-            w,
-            s,
-        ));
+    if run.outcome() == Outcome::Succeeded && !spans.is_empty() {
+        out.extend(ribbon(&spans, w, s));
     }
     if let Outcome::Failed(_) = run.outcome() {
         // pacman's errors verbatim, a little context, where the rest is.
@@ -2361,6 +2356,88 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     if !quiet.is_empty() {
         let b = format!(" {} ", s.bullet());
         out.push(s.dim(&format!("  {} quiet  {}", s.bullet(), quiet.join(&b))));
+    }
+    out
+}
+
+/// Where the time went. With colour, a ribbon: one segment per phase, its
+/// length the phase's share of the run, alternate segments amber and dim,
+/// and under it each label that fits under its own segment; the rest follow
+/// on that row. Without colour, or too narrow, the labels on one row.
+fn ribbon(spans: &[(String, Duration)], w: usize, s: &Styles) -> Vec<String> {
+    let b = format!(" {} ", s.bullet());
+    let flat = || {
+        let all: Vec<&str> = spans.iter().map(|x| x.0.as_str()).collect();
+        vec![line(
+            &[seg(Paint::Dim, format!("  {}", all.join(&b)))],
+            w,
+            s,
+        )]
+    };
+    let cells = w.saturating_sub(4).min(100);
+    if !s.colored() || cells < 30 {
+        return flat();
+    }
+    let total: f64 = spans.iter().map(|x| x.1.as_secs_f64()).sum();
+    let mut widths: Vec<usize> = spans
+        .iter()
+        .map(|x| ((x.1.as_secs_f64() / total * cells as f64).round() as usize).max(1))
+        .collect();
+    // Rounding may overshoot; the longest segment gives the cells back.
+    while widths.iter().sum::<usize>() > cells {
+        let Some(m) = widths.iter_mut().max() else {
+            break;
+        };
+        *m -= 1;
+    }
+    let mut bar = String::from("  ");
+    let mut starts = Vec::new();
+    let mut at = 0;
+    for (i, cw) in widths.iter().enumerate() {
+        let cell = g(s, "━", "=").repeat(*cw);
+        bar += &if i % 2 == 0 {
+            s.warn(&cell)
+        } else {
+            s.dim(&cell)
+        };
+        starts.push(at);
+        at += cw;
+    }
+    // Labels go under their segment's start, longest phase first, two
+    // columns apart; one that would collide joins the rest.
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(spans[i].1));
+    let mut placed: Vec<(usize, usize)> = Vec::new();
+    for i in order {
+        let (a, z) = (starts[i], starts[i] + spans[i].0.width());
+        if z <= cells && placed.iter().all(|&(pa, pz)| z + 2 <= pa || pz + 2 <= a) {
+            placed.push((a, z));
+        }
+    }
+    let mut under = vec![' '; cells];
+    let mut rest = Vec::new();
+    for (i, (label, _)) in spans.iter().enumerate() {
+        if placed.iter().any(|&(a, _)| a == starts[i]) {
+            for (k, c) in label.chars().enumerate() {
+                if let Some(x) = under.get_mut(starts[i] + k) {
+                    *x = c;
+                }
+            }
+        } else {
+            rest.push(label.as_str());
+        }
+    }
+    let under: String = under.into_iter().collect();
+    let mut out = vec![bar];
+    let rest = rest.join(&b);
+    let end = under.trim_end().width();
+    if rest.is_empty() {
+        out.push(s.dim(&format!("  {}", under.trim_end())));
+    } else if end + 5 + rest.width() <= w {
+        out.push(s.dim(&format!("  {}   {rest}", under.trim_end())));
+    } else {
+        out.push(s.dim(&format!("  {}", under.trim_end())));
+        out.push(s.dim(&format!("  {rest}")));
     }
     out
 }
@@ -3777,5 +3854,34 @@ mod tests {
             strip(track(100, 10, Mouth::Chew, &colour())),
             "─".repeat(12)
         );
+    }
+
+    #[test]
+    fn ribbon_without_colour_is_one_row_of_labels() {
+        let spans = [("sync 2s".to_string(), Duration::from_secs(2))];
+        assert_eq!(ribbon(&spans, 80, &plain()), ["  sync 2s"]);
+    }
+
+    #[test]
+    fn ribbon_segments_follow_time_and_labels_fit() {
+        let sec = Duration::from_secs;
+        let spans = [
+            ("sync 2s".to_string(), sec(2)),
+            ("download 2m10s".to_string(), sec(130)),
+            ("packages 20s".to_string(), sec(20)),
+        ];
+        let r: Vec<String> = ribbon(&spans, 120, &colour())
+            .iter()
+            .map(|l| strip(l))
+            .collect();
+        assert_eq!(r[0].trim().width(), 100, "{r:?}");
+        // The longest phase is labelled under its own segment.
+        let seg = r[0].trim().chars().take_while(|_| true).count();
+        assert_eq!(seg, 100);
+        let at = r[1].find("download 2m10s").unwrap_or(0);
+        assert!((3..8).contains(&at), "{r:?}");
+        assert!(r.iter().all(|l| l.width() <= 120), "{r:?}");
+        assert!(r.iter().any(|l| l.contains("packages 20s")), "{r:?}");
+        assert!(r.iter().any(|l| l.contains("sync 2s")), "{r:?}");
     }
 }
