@@ -37,7 +37,7 @@ pub struct Delivered {
 }
 
 /// How one segment is painted, once it has been fitted to the width.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Paint {
     Plain,
     Dim,
@@ -633,13 +633,9 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
     // Packages: how fast they go, counted here — done over time so far.
     let numbers = numbers.or_else(|| {
         let t = took(p.started, p.ended, now)?.as_secs_f64();
-        (p.kind == PhaseKind::Packages && t >= 1.0 && p.done > 0).then(|| {
-            (
-                String::new(),
-                format!("{:.1} pkgs/s", p.done as f64 / t),
-                String::new(),
-            )
-        })
+        let r = p.done as f64 / t;
+        (p.kind == PhaseKind::Packages && t >= 1.0 && r >= 0.1)
+            .then(|| (String::new(), format!("{r:.1} pkgs/s"), String::new()))
     });
     row.extend(gauge_tail(g, pct, false, true, None, numbers, s));
     row
@@ -852,13 +848,28 @@ fn children(
                     // pacman's own percent for the one it is on, in the run's
                     // percent column, under the phase's own.
                     if let Some(p) = pct {
-                        let used: usize = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
+                        let mut used: usize = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
+                        // Narrow: the live row gives up its old version so
+                        // its bar still starts in the bar column.
+                        let at = ga.left + numbers_w(ga);
+                        if ga.cells >= 6
+                            && used + 2 > at
+                            && let Some(new) = pkg.and_then(|p| p.new.as_deref())
+                        {
+                            row.truncate(3);
+                            row.push(seg(Paint::Ok, new.to_string()));
+                            used = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
+                        }
                         // Its own bar in the run's bar column, when the row
                         // leaves it free: pacman's percent for this package.
-                        let at = ga.left + numbers_w(ga);
-                        if ga.cells >= 6 && used + 2 <= at {
+                        // Still too long: a shorter bar, its right end on
+                        // the column's, rather than none.
+                        let col = ga.left + numbers_w(ga);
+                        let at = col.max(used + 2);
+                        let cells = (col + ga.cells).saturating_sub(at);
+                        if ga.cells >= 6 && cells >= 8 {
                             row.push(seg(Paint::Plain, " ".repeat(at - used)));
-                            row.push(seg(Paint::Plain, track(p, ga.cells, Mouth::Chew, s)));
+                            row.push(seg(Paint::Plain, track(p, cells, Mouth::Chew, s)));
                             row.push(seg(Paint::Plain, format!(" {:>4}", format!("{p}%"))));
                             return row;
                         }
@@ -2517,8 +2528,25 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         s.warn(g(s, "▲", "!"))
     };
     // Wide screens: to do on the left, the notes and counts beside it.
-    let two = w >= 190 && !todo.is_empty() && !(know.is_empty() && quiet.is_empty());
-    let tw = if two { w * 3 / 5 } else { w };
+    // Only when both sides fit uncut: a second column that cuts what one
+    // column shows whole is worse than stacking.
+    let need_left = {
+        let cw = todo.iter().map(|t| t.0.width()).max().unwrap_or(0).min(28);
+        let nw = todo.len().to_string().len();
+        let why = todo.iter().map(|t| t.1.width()).max().unwrap_or(0);
+        let src = todo.iter().map(|t| t.2.width() + 4).max().unwrap_or(0);
+        4 + nw + 1 + cw + 2 + why + src
+    };
+    let need_right = {
+        let kw = know.iter().map(|k| k.0.width()).max().unwrap_or(0).min(24);
+        let notes = know.iter().map(|k| 8 + kw + k.1.width()).max().unwrap_or(0);
+        let b = format!(" {} ", s.bullet());
+        notes.max(11 + quiet.join(&b).width())
+    };
+    let two = !todo.is_empty()
+        && !(know.is_empty() && quiet.is_empty())
+        && need_left + 4 + need_right <= w;
+    let tw = w;
     let mut left: Vec<String> = Vec::new();
     let mut right: Vec<String> = Vec::new();
     if !todo.is_empty() || !know.is_empty() || !quiet.is_empty() {
@@ -2659,8 +2687,15 @@ fn ribbon(spans: &[(String, Duration, PhaseKind)], w: usize, s: &Styles) -> Vec<
         p => paint(p, t, s),
     };
     let mut bar = String::from("  ");
-    for (cw, x) in widths.iter().zip(spans) {
-        bar += &paint_kind(x.2, &g(s, "━", "=").repeat(*cw));
+    for (i, (cw, x)) in widths.iter().zip(spans).enumerate() {
+        // Two touching segments of one colour: a gap cell marks the seam.
+        let seam = i > 0 && kind_paint(spans[i - 1].2) == kind_paint(x.2);
+        if seam && *cw > 1 {
+            bar.push(' ');
+            bar += &paint_kind(x.2, &g(s, "━", "=").repeat(cw - 1));
+        } else {
+            bar += &paint_kind(x.2, &g(s, "━", "=").repeat(*cw));
+        }
     }
     let swatch = g(s, "■", "#");
     let items: Vec<(String, usize)> = spans
@@ -2927,8 +2962,9 @@ fn comet(pct: u8, cells: usize, mouth: Mouth, from: Option<u8>, s: &Styles) -> S
     let pct = usize::from(pct.min(100));
     let halves = pct * n * 2 / 100;
     let at = (halves / 2).min(n);
+    // All eaten: the power pellet's cell becomes the done mark.
     if at >= n {
-        return s.dim(&line.repeat(n));
+        return s.dim(&line.repeat(n.saturating_sub(1))) + &paint(Paint::Ok, s.check(), s);
     }
     let head = match mouth {
         Mouth::Wait | Mouth::Haunt => shut(),
@@ -2940,6 +2976,9 @@ fn comet(pct: u8, cells: usize, mouth: Mouth, from: Option<u8>, s: &Styles) -> S
         s.dim(&line.repeat(at - 2)) + &ghost() + &s.dim(line)
     } else if let Some(f) = from.filter(|_| mouth == Mouth::Chew) {
         let mut tail_at = (usize::from(f.min(100)) * n * 2 / 100 / 2).min(at);
+        // At most six cells: past that a long tail says more about the
+        // file's size than its speed.
+        tail_at = tail_at.max(at.saturating_sub(6));
         // Bytes moved but under a cell: still one cell of tail.
         if f < pct as u8 && tail_at == at && at > 0 {
             tail_at = at - 1;
@@ -4180,7 +4219,7 @@ mod tests {
         assert!(t.ends_with("ᗣ╌●") && t.width() == 12, "{t}");
         assert_eq!(
             strip(track(100, 10, Mouth::Chew, &colour())),
-            "─".repeat(12)
+            format!("{}✓", "─".repeat(11))
         );
     }
 
