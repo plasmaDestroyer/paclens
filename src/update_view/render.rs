@@ -487,6 +487,7 @@ fn gauge_tail(
     g: &Gauge,
     pct: u8,
     approx: bool,
+    heavy: bool,
     numbers: Option<(String, String, String)>,
     s: &Styles,
 ) -> Vec<Seg> {
@@ -512,14 +513,24 @@ fn gauge_tail(
         segs.push(seg(Paint::Plain, format!("  {eta:>ETA_W$}  ")));
     }
     if g.cells >= 6 {
-        let mouth = if size.starts_with("stalled") || rate.starts_with("stalled") {
-            Mouth::Wait
-        } else {
-            Mouth::Chew
+        // A second without bytes is ordinary jitter; three is a stall,
+        // and the ghost comes.
+        let stall = [&size, &rate]
+            .iter()
+            .find_map(|t| t.strip_prefix("stalled "))
+            .map(|t| t.trim_end_matches('s').parse::<u64>().unwrap_or(u64::MAX));
+        let mouth = match stall {
+            Some(n) if n >= 3 => Mouth::Haunt,
+            Some(_) => Mouth::Wait,
+            None => Mouth::Chew,
         };
         segs.push(seg(
             Paint::Plain,
-            format!("{} ", track(pct, g.cells, mouth, s)),
+            // The phase's own bar leads its files' bars: a heavier track.
+            format!("{} ", {
+                let t = track(pct, g.cells, mouth, s);
+                if heavy { t.replace('─', "━") } else { t }
+            }),
         ));
     }
     let p = if approx {
@@ -578,7 +589,7 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
         };
         (size_pair(&got, total), rate(&r), eta)
     });
-    row.extend(gauge_tail(g, pct, false, numbers, s));
+    row.extend(gauge_tail(g, pct, false, true, numbers, s));
     row
 }
 
@@ -632,7 +643,7 @@ fn children(
                         _ => size_pair(&got, total),
                     };
                     let mut row = vec![seg(Paint::Plain, name)];
-                    row.extend(gauge_tail(ga, f.pct, false, Some((size, r, eta)), s));
+                    row.extend(gauge_tail(ga, f.pct, false, false, Some((size, r, eta)), s));
                     row
                 })
                 .collect();
@@ -761,6 +772,18 @@ fn children(
                     // percent column, under the phase's own.
                     if let Some(p) = pct {
                         let used: usize = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
+                        // Its own bar in the run's bar column, when the row
+                        // leaves it free: pacman's percent for this package.
+                        // A long version pair pushes its start right; its
+                        // end stays on the column's.
+                        let at = (ga.left + numbers_w(ga)).max(used + 2);
+                        let end = ga.left + numbers_w(ga) + ga.cells;
+                        if ga.cells >= 6 && at + 12 <= end {
+                            row.push(seg(Paint::Plain, " ".repeat(at - used)));
+                            row.push(seg(Paint::Plain, track(p, end - at, Mouth::Chew, s)));
+                            row.push(seg(Paint::Plain, format!(" {:>4}", format!("{p}%"))));
+                            return row;
+                        }
                         let end = ga.left
                             + numbers_w(ga)
                             + if ga.cells >= 6 { ga.cells + 3 } else { 0 }
@@ -864,7 +887,7 @@ fn children(
                     let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
                         .unwrap_or(99)
                         .min(99);
-                    (track(pct, ga.cells, Mouth::Chew, s), format!("~{pct}%"))
+                    (track(pct, ga.cells, Mouth::Guess, s), format!("~{pct}%"))
                 } else {
                     (
                         track(100, ga.cells, Mouth::Over, s),
@@ -924,8 +947,9 @@ fn children(
     let n = tail.len();
     for (i, l) in tail.into_iter().enumerate() {
         let paint = if i + 1 == n { Paint::Plain } else { Paint::Dim };
+        // The same dim gutter as a package's message: source, then output.
         rows.push(vec![
-            seg(Paint::Dim, format!("{NESTED}  ")),
+            seg(Paint::Dim, format!("{NESTED}  {} ", g(s, "▎", "|"))),
             seg(paint, l.trim_end().to_string()),
         ]);
     }
@@ -1765,7 +1789,34 @@ fn sentences(t: &str, w: usize) -> Vec<String> {
     let lead = &t[..t.len() - t.trim_start().len()];
     t.trim_start()
         .split_inclusive(". ")
-        .flat_map(|x| wrap_words(&format!("{lead}{}", x.trim_end()), w))
+        .flat_map(|x| wrap_flat(x.trim_end(), w.saturating_sub(lead.len())))
+        .map(|r| format!("{lead}{r}"))
+        .collect()
+}
+
+/// The command a message asks for, bold where it stands: the text of
+/// `Run '…'`, or a line's `$ …`. A line pacman coloured stays as it is.
+fn command_bold(l: &str, s: &Styles) -> String {
+    if !s.colored() || l.contains('\u{1b}') && !l.contains("Run '") {
+        return l.to_string();
+    }
+    if let Some((a, r)) = l.split_once("Run '")
+        && let Some((c, z)) = r.split_once('\'')
+    {
+        return format!("{a}Run '{}'{z}", s.title(c));
+    }
+    let t = l.trim_start();
+    match t.strip_prefix("$ ") {
+        Some(c) => format!("{}$ {}", &l[..l.len() - t.len()], s.title(c)),
+        None => l.to_string(),
+    }
+}
+
+/// `t` wrapped to `w` at spaces, every row flush left.
+fn wrap_flat(t: &str, w: usize) -> Vec<String> {
+    wrap_words(t, w)
+        .into_iter()
+        .map(|r| r.trim_start().to_string())
         .collect()
 }
 
@@ -2055,7 +2106,7 @@ pub fn frame(
                     } else {
                         b.clone()
                     };
-                    above.push(format!("{lead} {gutter} {b}"));
+                    above.push(format!("{lead} {gutter} {}", command_bold(&b, s)));
                 }
             }
         }
@@ -2155,12 +2206,12 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
         line(&end_segs(run, view.motif, s), w, s),
     ];
     // Where the time went: each phase that took a second or more.
-    let spans: Vec<(String, Duration)> = run
+    let spans: Vec<(String, Duration, PhaseKind)> = run
         .phases
         .iter()
         .filter_map(|p| {
             let t = took(p.started, p.ended, Duration::ZERO)?;
-            (t.as_secs() >= 1).then(|| (format!("{} {}", name(p.kind), duration(t)), t))
+            (t.as_secs() >= 1).then(|| (format!("{} {}", name(p.kind), duration(t)), t, p.kind))
         })
         .collect();
     if run.outcome() == Outcome::Succeeded && !spans.is_empty() {
@@ -2256,15 +2307,29 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
                 let why = i
                     .checked_sub(1)
                     .and_then(|j| lines.get(j))
-                    .map(|w| w.trim().trim_end_matches(':').to_string())
+                    .map(|w| {
+                        // The step itself is the command; its lead-in
+                        // ("… by running the following command") is not.
+                        let w = w.trim().trim_end_matches(':');
+                        [
+                            " by running the following",
+                            " using the following",
+                            " with the following",
+                        ]
+                        .iter()
+                        .find_map(|x| w.split_once(x).map(|(a, _)| a))
+                        .unwrap_or(w)
+                        .to_string()
+                    })
                     .unwrap_or_default();
                 todo.push((cmd.trim().to_string(), why, p.clone()));
                 asked = true;
             }
         }
         if !asked && !lines.iter().any(|l| asks_user(l)) {
+            // Whole above, in scrollback; here its start, to recognise it.
             let text: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
-            know.push((p.clone(), text.join(" ")));
+            know.push((p.clone(), cut_plain(&text.join(" "), 60)));
         }
     }
     let opt = texts(&|k| *k == NoteKind::Optdepends);
@@ -2273,7 +2338,13 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     }
     let retried = texts(&|k| *k == NoteKind::Error { recovered: true });
     for t in &retried {
-        know.push(("retried".into(), retry(run, t, s.bullet())));
+        // Keyed by the package, like the other rows: `luajit  retried · …`.
+        let r = retry(run, t, s.bullet());
+        let sep = format!(" {} ", s.bullet());
+        know.push(match r.split_once(&sep) {
+            Some((p, rest)) => (p.to_string(), format!("retried{sep}{rest}")),
+            None => ("retried".into(), r),
+        });
     }
     // Snapshots by config, first → last: `snap-pac root 1001 → 1002`.
     let mut snaps: Vec<(&str, u64, u64)> = Vec::new();
@@ -2319,31 +2390,54 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     if !todo.is_empty() {
         out.push(String::new());
         out.push(format!("  {todo_mark} {}", s.title("to do")));
+        // A reboot ends the session: it goes last, after the steps that
+        // can be done before it.
+        todo.sort_by_key(|t| t.0 == "reboot");
         let cw = todo.iter().map(|t| t.0.width()).max().unwrap_or(0).min(28);
+        let nw = todo.len().to_string().len();
+        // Columns: number, command, why, source. Why wraps inside its own
+        // column; a source that does not fit after it takes its own row.
+        let ind = 4 + nw + 1 + cw + 2;
+        let avail = w.saturating_sub(ind).max(20);
         let sw = todo.iter().map(|t| t.2.width() + 4).max().unwrap_or(0);
         let ww = todo
             .iter()
             .map(|t| t.1.width())
             .max()
             .unwrap_or(0)
-            .min(w.saturating_sub(8 + cw + sw));
+            .min(avail.saturating_sub(sw));
         for (i, (cmd, why, whose)) in todo.iter().enumerate() {
-            let src = if whose.is_empty() {
-                String::new()
+            let src = (!whose.is_empty()).then(|| format!("{} {whose}", g(s, "←", "<-")));
+            let mut rows = if why.width() <= ww || src.is_none() && why.width() <= avail {
+                vec![why.clone()]
             } else {
-                s.dim(&format!("  {} {whose}", g(s, "←", "<-")))
+                wrap_flat(why, avail)
             };
-            let pad = " ".repeat(cw.saturating_sub(cmd.width()) + 2);
-            let wpad = if src.is_empty() {
-                String::new()
-            } else {
-                " ".repeat(ww.saturating_sub(why.width()))
-            };
-            out.push(format!(
-                "    {} {}{pad}{why}{wpad}{src}",
-                s.dim(&format!("{}", i + 1)),
+            let lead = format!(
+                "    {} {}{}",
+                s.dim(&format!("{:>nw$}", i + 1)),
                 s.title(cmd),
-            ));
+                " ".repeat(cw.saturating_sub(cmd.width()) + 2)
+            );
+            if let Some(src) = &src {
+                let last = rows.len() - 1;
+                if rows.len() == 1 && rows[0].width() <= ww {
+                    let pad = ww - rows[0].width();
+                    rows[0] = format!("{}{}  {}", rows[0], " ".repeat(pad), s.dim(src));
+                } else if rows[last].width() + 2 + src.width() <= avail {
+                    rows[last] = format!("{}  {}", rows[last], s.dim(src));
+                } else {
+                    rows.push(s.dim(src));
+                }
+            }
+            for (k, r) in rows.iter().enumerate() {
+                let head = if k == 0 {
+                    lead.clone()
+                } else {
+                    " ".repeat(ind)
+                };
+                out.push(format!("{head}{r}"));
+            }
         }
     }
     if !know.is_empty() {
@@ -2360,11 +2454,13 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     out
 }
 
-/// Where the time went. With colour, a ribbon: one segment per phase, its
-/// length the phase's share of the run, alternate segments amber and dim,
-/// and under it each label that fits under its own segment; the rest follow
-/// on that row. Without colour, or too narrow, the labels on one row.
-fn ribbon(spans: &[(String, Duration)], w: usize, s: &Styles) -> Vec<String> {
+/// Where the time went. With colour, a ribbon as wide as the bars: one
+/// segment per phase, its length the phase's share of the run, coloured by
+/// what the phase is (network cyan, packages green, hooks magenta, the rest
+/// dim). Each label sits at its segment's start, under the ribbon or over
+/// it, longest phase first; what fits nowhere follows on its own row.
+/// Without colour, or too narrow, the labels on one row.
+fn ribbon(spans: &[(String, Duration, PhaseKind)], w: usize, s: &Styles) -> Vec<String> {
     let b = format!(" {} ", s.bullet());
     let flat = || {
         let all: Vec<&str> = spans.iter().map(|x| x.0.as_str()).collect();
@@ -2374,7 +2470,8 @@ fn ribbon(spans: &[(String, Duration)], w: usize, s: &Styles) -> Vec<String> {
             s,
         )]
     };
-    let cells = w.saturating_sub(4).min(100);
+    // The bars end five columns from the edge, before their percent.
+    let cells = w.saturating_sub(7);
     if !s.colored() || cells < 30 {
         return flat();
     }
@@ -2383,61 +2480,37 @@ fn ribbon(spans: &[(String, Duration)], w: usize, s: &Styles) -> Vec<String> {
         .iter()
         .map(|x| ((x.1.as_secs_f64() / total * cells as f64).round() as usize).max(1))
         .collect();
-    // Rounding may overshoot; the longest segment gives the cells back.
-    while widths.iter().sum::<usize>() > cells {
-        let Some(m) = widths.iter_mut().max() else {
-            break;
-        };
-        *m -= 1;
+    // Rounding may overshoot or fall short; the longest segment evens it.
+    let sum: usize = widths.iter().sum();
+    if let Some(m) = widths.iter_mut().max() {
+        *m = (*m + cells).saturating_sub(sum).max(1);
     }
+    // A label rides inside its own segment when it fits there with a cell
+    // of ribbon on each side; the rest follow on one row under it.
     let mut bar = String::from("  ");
-    let mut starts = Vec::new();
-    let mut at = 0;
-    for (i, cw) in widths.iter().enumerate() {
-        let cell = g(s, "━", "=").repeat(*cw);
-        bar += &if i % 2 == 0 {
-            s.warn(&cell)
-        } else {
-            s.dim(&cell)
-        };
-        starts.push(at);
-        at += cw;
-    }
-    // Labels go under their segment's start, longest phase first, two
-    // columns apart; one that would collide joins the rest.
-    let mut order: Vec<usize> = (0..spans.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(spans[i].1));
-    let mut placed: Vec<(usize, usize)> = Vec::new();
-    for i in order {
-        let (a, z) = (starts[i], starts[i] + spans[i].0.width());
-        if z <= cells && placed.iter().all(|&(pa, pz)| z + 2 <= pa || pz + 2 <= a) {
-            placed.push((a, z));
-        }
-    }
-    let mut under = vec![' '; cells];
     let mut rest = Vec::new();
-    for (i, (label, _)) in spans.iter().enumerate() {
-        if placed.iter().any(|&(a, _)| a == starts[i]) {
-            for (k, c) in label.chars().enumerate() {
-                if let Some(x) = under.get_mut(starts[i] + k) {
-                    *x = c;
-                }
-            }
+    for (cw, x) in widths.iter().zip(spans) {
+        let fill = g(s, "━", "=");
+        let cell = if x.0.width() + 4 <= *cw {
+            format!("{fill} {} {}", x.0, fill.repeat(cw - x.0.width() - 3))
+        } else if x.0.width() + 2 <= *cw {
+            format!(" {} {}", x.0, fill.repeat(cw - x.0.width() - 2))
         } else {
-            rest.push(label.as_str());
-        }
+            rest.push(x.0.as_str());
+            fill.repeat(*cw)
+        };
+        bar += &match x.2 {
+            PhaseKind::Download | PhaseKind::Sync => paint(Paint::Ghost(Ghost::Inky), &cell, s),
+            PhaseKind::Packages => paint(Paint::Ok, &cell, s),
+            PhaseKind::PreHooks | PhaseKind::PostHooks => {
+                paint(Paint::Ghost(Ghost::Pinky), &cell, s)
+            }
+            _ => s.dim(&cell),
+        };
     }
-    let under: String = under.into_iter().collect();
     let mut out = vec![bar];
-    let rest = rest.join(&b);
-    let end = under.trim_end().width();
-    if rest.is_empty() {
-        out.push(s.dim(&format!("  {}", under.trim_end())));
-    } else if end + 5 + rest.width() <= w {
-        out.push(s.dim(&format!("  {}   {rest}", under.trim_end())));
-    } else {
-        out.push(s.dim(&format!("  {}", under.trim_end())));
-        out.push(s.dim(&format!("  {rest}")));
+    if !rest.is_empty() {
+        out.push(s.dim(&format!("  {}", rest.join(&b))));
     }
     out
 }
@@ -2596,13 +2669,17 @@ pub fn bar(pct: u8, cells: usize, candy: bool, s: &Styles) -> String {
     s.dim(&"-".repeat(eaten)) + &head + &s.dim(&rest)
 }
 
-/// How the head of a bar looks: chewing while the figure moves, waiting
-/// (shut, dim, a ghost behind it) while a file is stalled, and waiting at
-/// the end of a full track when a hook runs past its usual time.
+/// How the head of a bar looks: chewing while the figure moves; shut and
+/// dim while a file waits for bytes, with a ghost behind it once that is a
+/// stall; on an estimate (a hook's time against its usual time) a dashed
+/// track and hollow pellets, never chewing, and past the usual time shut at
+/// the end of the track with the ghost behind.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mouth {
     Chew,
     Wait,
+    Haunt,
+    Guess,
     Over,
 }
 
@@ -2620,42 +2697,48 @@ fn track(pct: u8, cells: usize, mouth: Mouth, s: &Styles) -> String {
         };
     }
     let n = cells + 2;
+    let guess = matches!(mouth, Mouth::Guess | Mouth::Over);
+    let line = if guess {
+        g(s, "╌", "-")
+    } else {
+        g(s, "─", "-")
+    };
+    let (pellet, power) = if guess {
+        (g(s, "◦", "."), g(s, "○", "o"))
+    } else {
+        (g(s, "·", "."), g(s, "•", "o"))
+    };
+    let ghost = || s.ghost(Ghost::Pinky, g(s, "ᗣ", "G"));
+    let shut = || s.dim(g(s, "●", "o"));
+    if mouth == Mouth::Over {
+        return s.dim(&line.repeat(n.saturating_sub(3))) + &ghost() + &s.dim(line) + &shut();
+    }
     let pct = usize::from(pct.min(100));
     let halves = pct * n * 2 / 100;
     let at = (halves / 2).min(n);
-    let line = g(s, "─", "-");
-    if at >= n || mouth == Mouth::Over {
-        let eaten = s.dim(&line.repeat(n.saturating_sub(1)));
-        return match mouth {
-            Mouth::Over => eaten + &s.dim(g(s, "●", "o")),
-            _ => eaten + &s.dim(line),
-        };
+    if at >= n {
+        return s.dim(&line.repeat(n));
     }
     let head = match mouth {
-        Mouth::Wait => s.dim(g(s, "●", "o")),
-        _ if halves % 2 == 1 => s.warn(g(s, "●", "o")),
+        Mouth::Wait | Mouth::Haunt => shut(),
+        Mouth::Chew if halves % 2 == 1 => s.warn(g(s, "●", "o")),
         _ => s.warn(g(s, "ᗧ", "C")),
     };
-    // A stalled file has a ghost two cells behind Pac-Man, on the track.
-    let mut eaten = s.dim(&line.repeat(at));
-    if mouth == Mouth::Wait && at >= 3 {
-        eaten = s.dim(&line.repeat(at - 2)) + &s.ghost(Ghost::Pinky, g(s, "ᗣ", "G")) + &s.dim(line);
-    }
-    let mut rest = String::new();
-    for j in at + 1..n {
-        rest.push_str(if j + 1 == n {
-            g(s, "•", "o")
-        } else if j > at + 1 && (n - 1 - j).is_multiple_of(3) {
-            g(s, "·", ".")
+    let eaten = if mouth == Mouth::Haunt && at >= 3 {
+        s.dim(&line.repeat(at - 2)) + &ghost() + &s.dim(line)
+    } else {
+        s.dim(&line.repeat(at))
+    };
+    let mut dots = String::new();
+    for j in at + 1..n.saturating_sub(1) {
+        dots.push_str(if j > at + 1 && (n - 1 - j).is_multiple_of(3) {
+            pellet
         } else {
             " "
         });
     }
-    let (dots, power) = match rest.strip_suffix(g(s, "•", "o")) {
-        Some(d) if at + 1 < n => (d.to_string(), g(s, "•", "o")),
-        _ => (rest.clone(), ""),
-    };
-    eaten + &head + &s.dim(&dots) + power
+    let end = if at + 1 < n { power } else { "" };
+    eaten + &head + &s.dim(&dots) + end
 }
 
 /// An uncommented `ILoveCandy` line in pacman.conf.
@@ -2767,7 +2850,13 @@ mod tests {
         let mut r = fixture_run();
         let w = "Warning: The unit file of warp-svc.service changed on disk. Run 'systemctl daemon-reload' to reload units.";
         r.apply_line(w, Z);
-        let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 40, "/t", &plain());
+        let c = closing(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            120,
+            "/t",
+            &plain(),
+        );
         // The thing to do, with what it is about.
         assert!(
             c.iter().any(|l| l.contains("systemctl daemon-reload")
@@ -2778,7 +2867,13 @@ mod tests {
         let mut r = fixture_run();
         let odd = "Warning: something odd happened and nothing says what to run about it.";
         r.apply_line(odd, Z);
-        let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 40, "/t", &plain());
+        let c = closing(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            120,
+            "/t",
+            &plain(),
+        );
         assert!(
             c.iter()
                 .any(|l| l.ends_with("nothing says what to run about it.")),
@@ -3718,7 +3813,8 @@ mod tests {
             &uni(),
         );
         assert!(c.iter().any(|l| l == "  ᗣ to do"), "{c:?}");
-        assert!(c.iter().any(|l| l.contains("1 reboot")), "{c:?}");
+        // A reboot ends the session: it is the last step.
+        assert!(c.iter().any(|l| l.starts_with("    2 reboot")), "{c:?}");
     }
 
     #[test]
@@ -3847,9 +3943,19 @@ mod tests {
         // Half a cell further, the mouth is shut: it chews as bytes arrive.
         let t = strip(track(55, 10, Mouth::Chew, &colour()));
         assert!(t.contains('●') && !t.contains('ᗧ'), "{t}");
-        // Stalled: shut, with a ghost behind.
+        // Stalled: shut; a ghost behind once it is a stall.
         let t = strip(track(50, 10, Mouth::Wait, &colour()));
+        assert!(t.contains("─●") && !t.contains('ᗣ'), "{t}");
+        let t = strip(track(50, 10, Mouth::Haunt, &colour()));
         assert!(t.contains("ᗣ─●"), "{t}");
+        // An estimate looks like one.
+        let t = strip(track(50, 10, Mouth::Guess, &colour()));
+        assert!(
+            t.starts_with("╌╌") && t.contains('◦') && t.ends_with('○'),
+            "{t}"
+        );
+        let t = strip(track(99, 10, Mouth::Over, &colour()));
+        assert!(t.ends_with("ᗣ╌●") && t.width() == 12, "{t}");
         assert_eq!(
             strip(track(100, 10, Mouth::Chew, &colour())),
             "─".repeat(12)
@@ -3858,7 +3964,11 @@ mod tests {
 
     #[test]
     fn ribbon_without_colour_is_one_row_of_labels() {
-        let spans = [("sync 2s".to_string(), Duration::from_secs(2))];
+        let spans = [(
+            "sync 2s".to_string(),
+            Duration::from_secs(2),
+            PhaseKind::Sync,
+        )];
         assert_eq!(ribbon(&spans, 80, &plain()), ["  sync 2s"]);
     }
 
@@ -3866,22 +3976,53 @@ mod tests {
     fn ribbon_segments_follow_time_and_labels_fit() {
         let sec = Duration::from_secs;
         let spans = [
-            ("sync 2s".to_string(), sec(2)),
-            ("download 2m10s".to_string(), sec(130)),
-            ("packages 20s".to_string(), sec(20)),
+            ("sync 2s".to_string(), sec(2), PhaseKind::Sync),
+            ("download 2m10s".to_string(), sec(130), PhaseKind::Download),
+            ("packages 20s".to_string(), sec(20), PhaseKind::Packages),
         ];
         let r: Vec<String> = ribbon(&spans, 120, &colour())
             .iter()
             .map(|l| strip(l))
             .collect();
-        assert_eq!(r[0].trim().width(), 100, "{r:?}");
-        // The longest phase is labelled under its own segment.
-        let seg = r[0].trim().chars().take_while(|_| true).count();
-        assert_eq!(seg, 100);
-        let at = r[1].find("download 2m10s").unwrap_or(0);
-        assert!((3..8).contains(&at), "{r:?}");
+        // As wide as the bars: they end five columns from the edge.
+        assert_eq!(r[0].trim().width(), 113, "{r:?}");
+        // The longest phase is labelled inside its own segment.
+        assert!(r[0].contains("━ download 2m10s ━"), "{r:?}");
         assert!(r.iter().all(|l| l.width() <= 120), "{r:?}");
         assert!(r.iter().any(|l| l.contains("packages 20s")), "{r:?}");
         assert!(r.iter().any(|l| l.contains("sync 2s")), "{r:?}");
+    }
+
+    #[test]
+    fn command_bold_marks_only_the_command() {
+        let c = colour();
+        let l = command_bold("Run 'systemctl daemon-reload' to reload units.", &c);
+        assert_eq!(strip(&l), "Run 'systemctl daemon-reload' to reload units.");
+        assert!(l.contains(&c.title("systemctl daemon-reload")), "{l:?}");
+        let l = command_bold("  $ usermod -aG input $USER", &c);
+        assert!(l.starts_with("  $ ") && l.contains(&c.title("usermod -aG input $USER")));
+        assert_eq!(command_bold("Run 'x' now", &plain()), "Run 'x' now");
+        assert_eq!(command_bold("nothing here", &c), "nothing here");
+    }
+
+    #[test]
+    fn a_step_drops_its_lead_in() {
+        let r = with_message(&[
+            "Make sure your user is in the `input` group by running the following command:",
+            "  $ usermod -aG input $USER",
+        ]);
+        let c = closing(
+            &r,
+            &view(Layout::Inline, Motif::Subtle),
+            160,
+            "/t",
+            &plain(),
+        );
+        assert!(
+            c.iter().any(|l| l.contains(
+                "usermod -aG input $USER  Make sure your user is in the `input` group  "
+            )),
+            "{c:?}"
+        );
     }
 }
