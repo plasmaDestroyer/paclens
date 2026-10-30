@@ -71,9 +71,20 @@ pub struct InFlight {
     pub stalled: bool,
     /// When it stalled.
     pub stalled_since: Option<Duration>,
+    /// Its percent as seen over the last two seconds, oldest first; the
+    /// first is the last one seen at or before two seconds ago.
+    pub seen: Vec<(Duration, u8)>,
 }
 
+/// How far back a file's comet tail reaches.
+pub const TAIL: Duration = Duration::from_secs(2);
+
 impl InFlight {
+    /// The percent it had `TAIL` ago (or when first seen, if later).
+    pub fn tail_from(&self) -> Option<u8> {
+        self.seen.first().map(|s| s.1)
+    }
+
     /// `detail` split into bytes so far, rate, time left.
     pub fn parts(&self) -> (String, String, String) {
         let t: Vec<&str> = self.detail.split_whitespace().collect();
@@ -443,10 +454,23 @@ impl Run {
                 (false, Some(k)) => {
                     let got = |d: &str| d.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
                     let since = k.stalled_since.filter(|_| got(&k.detail) == got(&f.detail));
+                    let mut seen = std::mem::take(&mut k.seen);
+                    if seen.last().is_none_or(|s| s.1 != f.pct) {
+                        seen.push((at, f.pct));
+                    }
+                    // Keep one sample at or before the window's start.
+                    let cut = at.saturating_sub(TAIL);
+                    let old = seen.iter().take_while(|s| s.0 <= cut).count();
+                    seen.drain(..old.saturating_sub(1));
                     *k = f.clone();
                     k.stalled_since = since;
+                    k.seen = seen;
+                    f.seen = k.seen.clone();
                 }
-                (false, None) => self.started_files.push(f.clone()),
+                (false, None) => {
+                    f.seen = vec![(at, f.pct)];
+                    self.started_files.push(f.clone());
+                }
                 // A started file that looks queued has stalled: keep what
                 // it last showed, and say so.
                 (true, Some(k)) => {
@@ -820,6 +844,7 @@ impl Run {
             queued,
             stalled: false,
             stalled_since: None,
+            seen: Vec::new(),
         })
     }
 
@@ -1173,6 +1198,7 @@ mod tests {
                 queued: false,
                 stalled: false,
                 stalled_since: None,
+                seen: vec![(Z, 50)],
             }]
         );
         let d = &r.phases[idx(PhaseKind::Download)];
@@ -1579,5 +1605,21 @@ mod tests {
         // A late line for an earlier phase does not move the run back.
         feed(&mut r, &[":: Running pre-transaction hooks..."]);
         assert_eq!(r.current(), Some(PhaseKind::Packages));
+    }
+
+    #[test]
+    fn a_file_keeps_two_seconds_of_its_percent() {
+        let mut f = InFlight {
+            name: "a".into(),
+            pct: 0,
+            detail: String::new(),
+            queued: false,
+            stalled: false,
+            stalled_since: None,
+            seen: vec![(Duration::ZERO, 10)],
+        };
+        assert_eq!(f.tail_from(), Some(10));
+        f.seen.clear();
+        assert_eq!(f.tail_from(), None);
     }
 }

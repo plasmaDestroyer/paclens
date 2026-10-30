@@ -501,6 +501,7 @@ fn gauge_tail(
     pct: u8,
     approx: bool,
     heavy: bool,
+    from: Option<u8>,
     numbers: Option<(String, String, String)>,
     s: &Styles,
 ) -> Vec<Seg> {
@@ -553,7 +554,7 @@ fn gauge_tail(
             Paint::Plain,
             // The phase's own bar leads its files' bars: a heavier track.
             format!("{} ", {
-                let t = track(pct, g.cells, mouth, s);
+                let t = comet(pct, g.cells, mouth, from, s);
                 if heavy { t.replace('─', "━") } else { t }
             }),
         ));
@@ -614,7 +615,7 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
         };
         (size_pair(&got, total), rate(&r), eta)
     });
-    row.extend(gauge_tail(g, pct, false, true, numbers, s));
+    row.extend(gauge_tail(g, pct, false, true, None, numbers, s));
     row
 }
 
@@ -673,7 +674,15 @@ fn children(
                         _ => size_pair(&got, total),
                     };
                     let mut row = vec![seg(Paint::Plain, name)];
-                    row.extend(gauge_tail(ga, f.pct, false, false, Some((size, r, eta)), s));
+                    row.extend(gauge_tail(
+                        ga,
+                        f.pct,
+                        false,
+                        false,
+                        f.tail_from(),
+                        Some((size, r, eta)),
+                        s,
+                    ));
                     row
                 })
                 .collect();
@@ -2792,6 +2801,13 @@ enum Mouth {
 /// ahead every third cell as pacman spaces them, and a power pellet `•` on
 /// the file's last byte.
 fn track(pct: u8, cells: usize, mouth: Mouth, s: &Styles) -> String {
+    comet(pct, cells, mouth, None, s)
+}
+
+/// `track` with a comet tail: the cells eaten since the file stood at
+/// `from` percent (two seconds ago, as seen) drawn heavy and amber — a
+/// long tail is a fast file, none is a still one. Measured, not smoothed.
+fn comet(pct: u8, cells: usize, mouth: Mouth, from: Option<u8>, s: &Styles) -> String {
     if !s.colored() {
         return match mouth {
             Mouth::Over => format!("[{}c]", "-".repeat(cells.saturating_sub(1))),
@@ -2829,6 +2845,9 @@ fn track(pct: u8, cells: usize, mouth: Mouth, s: &Styles) -> String {
     };
     let eaten = if mouth == Mouth::Haunt && at >= 3 {
         s.dim(&line.repeat(at - 2)) + &ghost() + &s.dim(line)
+    } else if let Some(f) = from.filter(|_| mouth == Mouth::Chew) {
+        let tail_at = (usize::from(f.min(100)) * n * 2 / 100 / 2).min(at);
+        s.dim(&line.repeat(tail_at)) + &s.warn(&g(s, "━", "=").repeat(at - tail_at))
     } else {
         s.dim(&line.repeat(at))
     };
@@ -3664,6 +3683,7 @@ mod tests {
             queued: false,
             stalled: false,
             stalled_since: None,
+            seen: Vec::new(),
         });
         for w in [1u16, 10, 23, 24] {
             let _ = frame(
@@ -3689,6 +3709,7 @@ mod tests {
             queued: false,
             stalled: false,
             stalled_since: None,
+            seen: Vec::new(),
         });
         // Colour too: the bar's escape codes must not eat the line's width.
         for st in [plain(), colour()] {
@@ -4171,6 +4192,7 @@ mod tests {
                 50,
                 false,
                 false,
+                None,
                 Some(("1/2 MiB".into(), r.into(), String::new())),
                 &c,
             )
@@ -4183,5 +4205,16 @@ mod tests {
         assert!(matches!(paint_of(t("stalled 2s")), Some(Paint::Dim)));
         assert!(matches!(paint_of(t("stalled")), Some(Paint::Dim)));
         assert!(matches!(paint_of(t("stalled 3s")), Some(Paint::Warn)));
+    }
+
+    #[test]
+    fn comet_tail_spans_what_was_eaten_since() {
+        let t = strip(&comet(50, 10, Mouth::Chew, Some(25), &colour()));
+        assert!(t.starts_with("───━━━ᗧ"), "{t}");
+        // No tail on a still file, or past a stall.
+        let t = strip(&comet(50, 10, Mouth::Chew, Some(50), &colour()));
+        assert!(t.starts_with("──────ᗧ"), "{t}");
+        let t = strip(&comet(50, 10, Mouth::Wait, Some(25), &colour()));
+        assert!(!t.contains('━'), "{t}");
     }
 }
