@@ -2768,9 +2768,9 @@ fn preview(t: &str, w: usize) -> String {
     match path {
         Some(p) if p.width() + 12 < w => {
             let head = t.split_once(p).map_or(t, |(a, _)| a).trim_end();
-            format!("{} {p}", cut_plain(head, w - p.width() - 1))
+            format!("{} {p}", cut_words(head, w - p.width() - 1))
         }
-        _ => cut_plain(t, w),
+        _ => cut_words(t, w),
     }
 }
 
@@ -4323,7 +4323,7 @@ mod tests {
             "{p}"
         );
         assert!(p.width() <= 60, "{p}");
-        assert_eq!(preview("no path at all here", 10), "no path a…");
+        assert_eq!(preview("no path at all here", 10), "no path…");
     }
 
     #[test]
