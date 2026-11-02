@@ -29,7 +29,7 @@ use crate::tui::input::encode_key;
 use super::log_line::{LineBuffer, classify_log};
 use super::medians::hook_medians;
 use super::model::Run;
-use super::region::Painter;
+use super::region::{CursorGuard, Painter};
 use super::render::{View, candy_enabled, closing};
 use super::screen::Settler;
 use super::screen_line::may_be_question;
@@ -186,6 +186,8 @@ pub fn run(
     let mut settler = Settler::new(cols);
     let mut model = Run::new(&command, medians, opts.installed.clone());
     let mut painter = Painter::new(opts.live, rows, cols);
+    // The painter hides the cursor; this shows it again on any way out.
+    let _cursor = opts.live.then_some(CursorGuard);
     if opts.keys {
         painter = painter.raw();
     }

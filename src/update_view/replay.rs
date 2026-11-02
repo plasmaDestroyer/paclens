@@ -13,7 +13,7 @@ use crate::cli::style::Styles;
 use super::log_line::classify_log;
 use super::medians::hook_medians;
 use super::model::Run;
-use super::region::Painter;
+use super::region::{CursorGuard, Painter};
 use super::render::{View, closing};
 use super::screen::Settler;
 use super::screen_line::may_be_question;
@@ -135,6 +135,7 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
     let mut run = Run::new(&command, medians, HashMap::new());
     let mut settler = Settler::new(cols);
     let mut painter = Painter::new(p.live, p.height, p.width);
+    let _cursor = p.live.then_some(CursorGuard);
     let mut log = p.log.iter().peekable();
     let mut now = Duration::ZERO;
     let end = p.log.last().map_or(Duration::ZERO, |(at, _)| *at);

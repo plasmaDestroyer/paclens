@@ -20,11 +20,13 @@ pub struct View {
 }
 
 /// `above` = lines to print permanently over the region; `region` = the
-/// live lines, redrawn each frame.
+/// live lines, redrawn each frame; `cursor` = pacman waits for an answer, so
+/// the cursor shows at the end of the region's last line, where it is typed.
 #[derive(Debug, Default)]
 pub struct Frame {
     pub above: Vec<String>,
     pub region: Vec<String>,
+    pub cursor: bool,
 }
 
 /// How much is already in `above`: `run.lines` and `run.phases` by count,
@@ -2321,7 +2323,15 @@ pub fn frame(
         }
         None => live(run, view, w, height, now, s),
     };
-    (Frame { above, region }, d)
+    let cursor = idle_prompt.is_some();
+    (
+        Frame {
+            above,
+            region,
+            cursor,
+        },
+        d,
+    )
 }
 
 /// `✓ download 38 · 702.91 MiB · 1m17s`
