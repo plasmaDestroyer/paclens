@@ -226,9 +226,8 @@ fn header(run: &Run, view: &View, now: Duration, s: &Styles) -> Vec<Seg> {
 fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
     let (mark_paint, mark) = match p.state {
         PhaseState::Done => (Paint::Ok, s.check()),
-        // The running mark in its phase's colour, as the receipt's
-        // ribbon paints it.
-        // Turning while paclens watches: it says alive, never how far.
+        // The running mark in its phase's colour, turning while paclens
+        // watches: it says alive, never how far.
         PhaseState::Running => (kind_paint(p.kind), spinner(now, s)),
         PhaseState::Pending => (Paint::Dim, g(s, "·", ".")),
     };
@@ -276,7 +275,7 @@ fn spinner(now: Duration, s: &Styles) -> &'static str {
 }
 
 /// A phase's colour: download cyan, packages green, hooks magenta, the
-/// rest amber while running (dim on the ribbon).
+/// rest amber.
 fn kind_paint(k: PhaseKind) -> Paint {
     match k {
         PhaseKind::Download => Paint::Ghost(Ghost::Inky),
@@ -2521,10 +2520,10 @@ pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles)
     closing_at(run, view, width, transcript, s, None)
 }
 
-/// The receipt's way in, on success with colour: Pac-Man eats the time
-/// ribbon left to right over the run's real phase times, each legend item
-/// arriving as it is reached; the last frame is the receipt itself. Drawn
-/// once the run is over, so it shows no progress that is not done.
+/// The receipt's way in, on success with colour: the finished tree for two
+/// beats, then the receipt with its rows dropping in and its result
+/// lighting last; the last frame is the receipt itself. Drawn once the run
+/// is over, so it shows no progress that is not done.
 pub fn closing_frames(
     run: &Run,
     view: &View,
@@ -2532,12 +2531,7 @@ pub fn closing_frames(
     transcript: &str,
     s: &Styles,
 ) -> Vec<Vec<String>> {
-    // Nothing to eat without a ribbon: a phase of a second or more.
-    let timed = run
-        .phases
-        .iter()
-        .any(|p| took(p.started, p.ended, Duration::ZERO).is_some_and(|t| t.as_secs() >= 1));
-    if !s.colored() || run.outcome() != Outcome::Succeeded || !timed {
+    if !s.colored() || run.outcome() != Outcome::Succeeded {
         return Vec::new();
     }
     // First the finished tree, the last phase lit (its latch), two beats.
@@ -2549,8 +2543,8 @@ pub fn closing_frames(
         .unwrap_or_default();
     let tree = live(run, view, usize::from(width), 40, end, s);
     let mut frames = vec![tree.clone(), tree];
-    // Then the ribbon eats in; the to-do and note rows drop in after it,
-    // a few a frame.
+    // Then the receipt: its to-do and note rows drop in a few a frame,
+    // and the result lights on the last one.
     let last = closing(run, view, width, transcript, s);
     let base = last
         .iter()
@@ -2583,7 +2577,7 @@ fn closing_at(
 ) -> Vec<String> {
     let w = usize::from(width);
     // Set apart from pacman's own last lines, under the command it is for.
-    // While the ribbon eats in, the result waits dim; it lands with it.
+    // While the rows drop in, the result waits dim; it lands last.
     let head = if reveal.is_some_and(|f| f < 1.0) {
         let plain: String = end_segs(run, view.motif, s)
             .into_iter()
@@ -2598,41 +2592,6 @@ fn closing_at(
         line(&[seg(Paint::Dim, run.command.clone())], w, s),
         head,
     ];
-    // Where the time went: each phase that took a second or more.
-    let spans: Vec<(String, Duration, PhaseKind)> = run
-        .phases
-        .iter()
-        .filter_map(|p| {
-            let t = took(p.started, p.ended, Duration::ZERO)?;
-            // Hooks that beat their usual time carry the win to the legend.
-            let hooks = match p.kind {
-                PhaseKind::PreHooks => &run.pre_hooks,
-                PhaseKind::PostHooks => &run.post_hooks,
-                _ => &Vec::new(),
-            };
-            // Net against the usual times: overruns count against wins.
-            // Exact times subtracted, the total rounded down: no rounding
-            // invents a second.
-            let net: f64 = hooks
-                .iter()
-                .filter_map(|h| {
-                    let t = took(h.started, h.ended, Duration::ZERO)?.as_secs_f64();
-                    h.median.map(|m| m.secs as f64 - t)
-                })
-                .sum();
-            let won = net.max(0.0).floor() as u64;
-            let win = if won > 0 {
-                format!(" {}{}", g(s, "−", "-"), duration(Duration::from_secs(won)))
-            } else {
-                String::new()
-            };
-            (t.as_secs() >= 1)
-                .then(|| (format!("{} {}{win}", name(p.kind), duration(t)), t, p.kind))
-        })
-        .collect();
-    if run.outcome() == Outcome::Succeeded && !spans.is_empty() {
-        out.extend(ribbon(&spans, w, reveal, s));
-    }
     if let Outcome::Failed(_) = run.outcome() {
         // pacman's errors verbatim, a little context, where the rest is.
         let errors = all_notes(run).filter(|n| matches!(n.kind, NoteKind::Error { .. }));
@@ -2923,122 +2882,6 @@ fn closing_at(
         }
     } else {
         out.extend(left);
-    }
-    out
-}
-
-/// Where the time went. With colour, a solid ribbon as wide as the bars:
-/// one segment per phase, its length the phase's share of the run, coloured
-/// by what the phase is (network cyan, packages green, hooks magenta, the
-/// rest dim), and a legend under it. Without colour, or too narrow, the
-/// labels on one row.
-fn ribbon(
-    spans: &[(String, Duration, PhaseKind)],
-    w: usize,
-    reveal: Option<f64>,
-    s: &Styles,
-) -> Vec<String> {
-    let b = format!(" {} ", s.bullet());
-    let flat = || {
-        let all: Vec<&str> = spans.iter().map(|x| x.0.as_str()).collect();
-        vec![line(
-            &[seg(Paint::Dim, format!("  {}", all.join(&b)))],
-            w,
-            s,
-        )]
-    };
-    // The bars end five columns from the edge, before their percent.
-    let cells = w.saturating_sub(7);
-    if !s.colored() || cells < 30 {
-        return flat();
-    }
-    let total: f64 = spans.iter().map(|x| x.1.as_secs_f64()).sum();
-    let mut widths: Vec<usize> = spans
-        .iter()
-        .map(|x| ((x.1.as_secs_f64() / total * cells as f64).round() as usize).max(2))
-        .collect();
-    // Rounding may overshoot or fall short; the longest segment evens it.
-    let sum: usize = widths.iter().sum();
-    if let Some(m) = widths.iter_mut().max() {
-        *m = (*m + cells).saturating_sub(sum).max(1);
-    }
-    // A solid ribbon, then one legend row in run order: each phase's
-    // swatch in its ribbon colour, its name and time.
-    let paint_kind = |k: PhaseKind, t: &str| match kind_paint(k) {
-        Paint::Warn => s.dim(t),
-        p => paint(p, t, s),
-    };
-    // Cell by cell: each phase's colour; two touching segments of one
-    // colour get a gap cell at the seam.
-    let mut cell: Vec<(usize, bool)> = Vec::new();
-    for (i, (cw, x)) in widths.iter().zip(spans).enumerate() {
-        let seam = i > 0 && kind_paint(spans[i - 1].2) == kind_paint(x.2);
-        for c in 0..*cw {
-            cell.push((i, !(seam && c == 0 && *cw > 1)));
-        }
-    }
-    // Eating in: cells up to Pac-Man drawn, pellets ahead.
-    let upto = reveal.map_or(cell.len(), |f| (f * cell.len() as f64) as usize);
-    let mut bar = String::from("  ");
-    for (j, &(i, fill)) in cell.iter().enumerate() {
-        // The ribbon, fully eaten, ends on the run's done mark.
-        if j + 1 == cell.len() && upto >= cell.len() {
-            bar += &paint(Paint::Ok, s.check(), s);
-            continue;
-        }
-        bar += &if j < upto {
-            if fill {
-                paint_kind(spans[i].2, g(s, "━", "="))
-            } else {
-                " ".to_string()
-            }
-        } else if j == upto {
-            s.warn(g(s, "ᗧ", "C"))
-        } else if j > upto + 1 && (cell.len() - 1 - j).is_multiple_of(3) {
-            s.dim(g(s, "·", "."))
-        } else {
-            " ".to_string()
-        };
-    }
-    // A legend item arrives once Pac-Man reaches its segment, in the slot
-    // it ends in: nothing shifts when the rest arrive.
-    let start = |i: usize| widths[..i].iter().sum::<usize>();
-    let reached: Vec<bool> = (0..spans.len()).map(|i| start(i) < upto.max(1)).collect();
-    let swatch = g(s, "■", "#");
-    let items: Vec<(String, usize)> = spans
-        .iter()
-        .zip(&reached)
-        .map(|(x, &r)| {
-            // A hook phase's net win reads green.
-            let label = match x.0.split_once(g(s, " −", " -")) {
-                Some((a, b)) => format!(
-                    "{}{}",
-                    s.dim(a),
-                    paint(Paint::Ok, &format!(" {}{b}", g(s, "−", "-")), s)
-                ),
-                None => s.dim(&x.0),
-            };
-            let t = if r {
-                format!("{} {label}", paint_kind(x.2, swatch))
-            } else {
-                " ".repeat(2 + x.0.width())
-            };
-            (t, 2 + x.0.width())
-        })
-        .collect();
-    // As few legend rows as fit, the items shared evenly between them, so
-    // no row holds one stray item.
-    let fits = |k: usize| {
-        let per = items.len().div_ceil(k);
-        items
-            .chunks(per.max(1))
-            .all(|c| 2 + c.iter().map(|i| i.1 + 2).sum::<usize>() <= w)
-    };
-    let k = (1..=items.len()).find(|&k| fits(k)).unwrap_or(items.len());
-    let mut out = vec![bar];
-    for c in items.chunks(items.len().div_ceil(k).max(1)) {
-        let row: Vec<&str> = c.iter().map(|i| i.0.as_str()).collect();
-        out.push(format!("  {}", row.join("  ")).trim_end().to_string());
     }
     out
 }
@@ -4550,41 +4393,6 @@ mod tests {
     }
 
     #[test]
-    fn ribbon_without_colour_is_one_row_of_labels() {
-        let spans = [(
-            "sync 2s".to_string(),
-            Duration::from_secs(2),
-            PhaseKind::Sync,
-        )];
-        assert_eq!(ribbon(&spans, 80, None, &plain()), ["  sync 2s"]);
-    }
-
-    #[test]
-    fn ribbon_segments_follow_time_and_labels_fit() {
-        let sec = Duration::from_secs;
-        let spans = [
-            ("sync 2s".to_string(), sec(2), PhaseKind::Sync),
-            ("download 2m10s".to_string(), sec(130), PhaseKind::Download),
-            ("packages 20s".to_string(), sec(20), PhaseKind::Packages),
-        ];
-        let r: Vec<String> = ribbon(&spans, 120, None, &colour())
-            .iter()
-            .map(|l| strip(l))
-            .collect();
-        // As wide as the bars: they end five columns from the edge.
-        assert_eq!(r[0].trim().width(), 113, "{r:?}");
-        // Solid, ending on the done mark; the legend under it in run order.
-        assert!(
-            r[0].trim().trim_end_matches('✓').chars().all(|c| c == '━') && r[0].ends_with('✓'),
-            "{r:?}"
-        );
-        assert_eq!(r[1], "  ■ sync 2s  ■ download 2m10s  ■ packages 20s");
-        assert!(r.iter().all(|l| l.width() <= 120), "{r:?}");
-        assert!(r.iter().any(|l| l.contains("packages 20s")), "{r:?}");
-        assert!(r.iter().any(|l| l.contains("sync 2s")), "{r:?}");
-    }
-
-    #[test]
     fn command_bold_marks_only_the_command() {
         let c = colour();
         let l = command_bold("Run 'systemctl daemon-reload' to reload units.", &c);
@@ -4694,45 +4502,16 @@ mod tests {
     }
 
     #[test]
-    fn ribbon_legend_rows_share_items_evenly() {
-        let sec = Duration::from_secs;
-        let spans: Vec<(String, Duration, PhaseKind)> = (0..7)
-            .map(|i| (format!("phase{i} 10s"), sec(10), PhaseKind::Checks))
-            .collect();
-        let r: Vec<String> = ribbon(&spans, 60, None, &colour())
-            .iter()
-            .map(|l| strip(l))
-            .collect();
-        let counts: Vec<usize> = r[1..].iter().map(|l| l.matches('■').count()).collect();
-        assert!(counts.iter().all(|&c| c >= 3), "{r:?}");
-        assert_eq!(counts.iter().sum::<usize>(), 7);
-    }
-
-    #[test]
-    fn receipt_eats_in_and_ends_as_itself() {
-        let sec = Duration::from_secs;
-        let spans = [
-            ("download 2m10s".to_string(), sec(130), PhaseKind::Download),
-            ("packages 20s".to_string(), sec(20), PhaseKind::Packages),
-        ];
-        let half: Vec<String> = ribbon(&spans, 80, Some(0.5), &colour())
-            .iter()
-            .map(|l| strip(l))
-            .collect();
-        // Pac-Man half way, pellets ahead; only the reached phase's legend.
-        assert!(half[0].contains('ᗧ') && half[0].contains('·'), "{half:?}");
-        assert!(
-            half[1].contains("download") && !half[1].contains("packages"),
-            "{half:?}"
-        );
-        assert_eq!(
-            ribbon(&spans, 80, Some(1.0), &colour()),
-            ribbon(&spans, 80, None, &colour())
-        );
-        // No ribbon (no timed phase), no colour: the receipt just appears.
+    fn receipt_drops_in_and_ends_as_itself() {
         let r = fixture_run();
         let v = view(Layout::Inline, Motif::Subtle);
-        assert!(closing_frames(&r, &v, 120, "/t", &colour()).is_empty());
+        let f = closing_frames(&r, &v, 120, "/t", &colour());
+        assert_eq!(f.len(), 2 + EAT_IN);
+        assert_eq!(f.last(), Some(&closing(&r, &v, 120, "/t", &colour())));
+        // The rows arrive: an early frame holds fewer than the last.
+        assert!(f[2].len() < f[f.len() - 1].len(), "{f:?}");
         assert!(closing_frames(&r, &v, 120, "/t", &plain()).is_empty());
+        // No time ribbon in the receipt.
+        assert!(!f.last().is_some_and(|c| c.iter().any(|l| l.contains('━'))));
     }
 }
