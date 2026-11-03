@@ -10,7 +10,7 @@ use crate::cli::style::{Ghost, Styles};
 use crate::config::{Layout, Motif};
 
 use super::medians::Median;
-use super::model::{Hook, Note, NoteKind, Outcome, Phase, PhaseKind, PhaseState, Run};
+use super::model::{BEAT, Hook, Note, NoteKind, Outcome, Phase, PhaseKind, PhaseState, Run};
 use super::screen_line::{ScreenEvent, classify_screen, is_prompt};
 
 pub struct View {
@@ -241,15 +241,26 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
         (PhaseKind::PreHooks | PhaseKind::PostHooks, _) => "hooks",
         _ => "pkgs",
     };
-    let text = format!(" {:<10} {n:>7} {noun:<5}  {time}", name(p.kind));
-    // The running phase stands out; finished ones step back.
+    // The running phase stands out; finished ones step back — but a phase
+    // that just finished stays lit for a beat, and a count that just rose
+    // lights green: each real step lands.
+    let fresh = |t: Option<Duration>| t.is_some_and(|t| now.saturating_sub(t) < BEAT);
     let text_paint = match p.state {
+        PhaseState::Done if fresh(p.ended) => Paint::Ok,
         PhaseState::Running => Paint::Bold,
         PhaseState::Done | PhaseState::Pending => Paint::Dim,
     };
+    let count_paint = if p.state == PhaseState::Running && fresh(p.bumped) {
+        Paint::Ok
+    } else {
+        text_paint
+    };
+    let rest = format!(" {noun:<5}  {time}");
     vec![
         seg(mark_paint, mark),
-        seg(text_paint, text.trim_end().to_string()),
+        seg(text_paint, format!(" {:<10} ", name(p.kind))),
+        seg(count_paint, format!("{n:>7}")),
+        seg(text_paint, rest.trim_end().to_string()),
     ]
 }
 
@@ -749,6 +760,32 @@ fn children(
                 }
                 rows.push(vec![seg(Paint::Dim, text)]);
             }
+            // What pacman counted finished, collected on one row, newest
+            // first and green: the pile grows as the queue shrinks.
+            if !run.eaten.is_empty() {
+                let sep = format!(" {} ", s.bullet());
+                // The count is pacman's; the names are the ones seen go.
+                let head = format!(
+                    "eaten  {:>2}  ",
+                    phase(run, k).map_or(0, |p| p.done).max(run.eaten.len())
+                );
+                let mut segs = vec![seg(Paint::Dim, head.clone())];
+                let mut used = 5 + head.width();
+                for (k, e) in run.eaten.iter().rev().enumerate() {
+                    let add = if k == 0 {
+                        e.clone()
+                    } else {
+                        format!("{sep}{e}")
+                    };
+                    if used + add.width() + 4 > w {
+                        segs.push(seg(Paint::Dim, format!("{sep}…")));
+                        break;
+                    }
+                    used += add.width();
+                    segs.push(seg(if k == 0 { Paint::Ok } else { Paint::Dim }, add));
+                }
+                rows.push(segs);
+            }
             rows
         }
         PhaseKind::Packages => {
@@ -824,6 +861,9 @@ fn children(
                     // Bold is the package pacman is on now, by its own
                     // percent; a settled last row stays dim.
                     let current = i + 1 == n && pct.is_some();
+                    // The newest one pacman finished lights green: each
+                    // package lands, then steps back as the next lands.
+                    let newest = pct.is_none() && i + 1 + usize::from(live.is_some()) == n;
                     // Each row says its state: done `✓`, the live one `▸`.
                     let mark = if pct.is_some() {
                         seg(Paint::Ok, format!("{} ", g(s, "▸", ">")))
@@ -834,7 +874,13 @@ fn children(
                         mark,
                         seg(Paint::Dim, format!("{:<verb_w$}", verb_of(&verb))),
                         seg(
-                            if current { Paint::Bold } else { Paint::Dim },
+                            if current {
+                                Paint::Bold
+                            } else if newest {
+                                Paint::Ok
+                            } else {
+                                Paint::Dim
+                            },
                             format!("{:<name_w$}  ", cut_plain(&name, name_w)),
                         ),
                     ];

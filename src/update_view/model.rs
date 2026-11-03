@@ -55,6 +55,9 @@ pub struct Phase {
     pub pct: Option<u8>,
     /// pacman's own words on the bar, e.g. bytes, rate and time left.
     pub detail: Option<String>,
+    /// When `done` last rose, and the count it rose to: the count lights.
+    pub bumped: Option<Duration>,
+    pub seen_done: usize,
 }
 
 /// One file pacman is downloading right now, as its live row shows it.
@@ -198,6 +201,10 @@ pub struct Run {
     /// The package pacman is working on now (verb, name, percent), read
     /// from its live row: settled lines only say which ones are done.
     pub live_package: Option<(String, String, u8)>,
+    /// Files pacman counted finished, newest last.
+    pub eaten: Vec<String>,
+    /// Started files pacman stopped listing, not yet counted finished.
+    pub left: Vec<InFlight>,
     /// Unrecognised lines, verbatim, in order — unrecognised hook output too.
     pub unknown: Vec<String>,
     /// Where each `unknown` line sits in `lines`.
@@ -247,6 +254,8 @@ impl Run {
                     ended: None,
                     pct: None,
                     detail: None,
+                    bumped: None,
+                    seen_done: 0,
                 })
                 .collect(),
             dbs: Vec::new(),
@@ -262,6 +271,8 @@ impl Run {
             totals_seen: Default::default(),
             started_files: Vec::new(),
             live_package: None,
+            eaten: Vec::new(),
+            left: Vec::new(),
             unknown: Vec::new(),
             unknown_at: Vec::new(),
             warning_at: Vec::new(),
@@ -398,7 +409,19 @@ impl Run {
     /// The live screen rows (not settled yet): pacman redraws its download
     /// `Total` row in place and settles it only when the download ends, so
     /// it is read from here while the download runs.
+    /// What pacman's live rows show now; then each phase whose count rose
+    /// since the last look notes when.
     pub fn observe_screen(&mut self, rows: &[String], at: Duration) {
+        self.observe(rows, at);
+        for p in &mut self.phases {
+            if p.done > p.seen_done {
+                p.bumped = Some(at);
+                p.seen_done = p.done;
+            }
+        }
+    }
+
+    fn observe(&mut self, rows: &[String], at: Duration) {
         // The package pacman is on now: its row is drawn, not yet settled.
         self.live_package = None;
         if self.current() == Some(PhaseKind::Packages) {
@@ -496,45 +519,38 @@ impl Run {
                 .position(|k| k.name == f.name)
                 .unwrap_or(usize::MAX)
         };
-        // A started file pacman no longer lists, and that pacman's own
-        // count says finished, stays for a beat at 100%, its final size
-        // kept, then goes. Leaving the list alone is not proof: as many as
-        // the count rose, furthest along first.
-        let was = self.phases[idx(PhaseKind::Download)].done;
-        let now_done = match &total {
+        // A started file pacman no longer lists waits in `left`; pacman's
+        // own count says how many finished. While the count is ahead of
+        // what is eaten, the one furthest along is eaten: it stays a beat
+        // at 100%, its final size kept, then goes. Leaving the list alone
+        // is not proof.
+        for o in &self.in_flight {
+            let listed = flight.iter().any(|f| f.name == o.name);
+            let known = self.left.iter().any(|l| l.name == o.name) || self.eaten.contains(&o.name);
+            if !o.queued && o.done_at.is_none() && !listed && !known {
+                self.left.push(o.clone());
+            }
+        }
+        let done = match &total {
             Some(ScreenEvent::DownloadTotal { done, .. }) => *done,
-            _ => was,
-        };
-        let mut gone: Vec<&InFlight> = self
-            .in_flight
-            .iter()
-            .filter(|o| !o.queued && o.done_at.is_none())
-            .filter(|o| !flight.iter().any(|f| f.name == o.name))
-            .collect();
-        gone.sort_by_key(|o| std::cmp::Reverse(o.pct));
-        let newly: Vec<String> = gone
-            .iter()
-            .take(now_done.saturating_sub(was))
-            .map(|o| o.name.clone())
-            .collect();
-        for old in &self.in_flight {
-            if old.queued || flight.iter().any(|f| f.name == old.name) {
-                continue;
-            }
-            if old.done_at.is_none() && !newly.contains(&old.name) {
-                continue;
-            }
-            let since = old.done_at.unwrap_or(at);
-            if at.saturating_sub(since) < BEAT {
-                let mut d = old.clone();
-                d.done_at = Some(since);
-                d.pct = 100;
-                d.stalled = false;
-                if old.done_at.is_none() {
-                    let size: Vec<&str> = d.detail.split_whitespace().take(2).collect();
-                    d.detail = size.join(" ");
-                }
-                flight.push(d);
+            _ => 0,
+        }
+        .max(self.phases[idx(PhaseKind::Download)].done);
+        self.left.sort_by_key(|l| l.pct);
+        while self.eaten.len() < done {
+            let Some(mut d) = self.left.pop() else { break };
+            d.done_at = Some(at);
+            d.pct = 100;
+            d.stalled = false;
+            let size: Vec<&str> = d.detail.split_whitespace().take(2).collect();
+            d.detail = size.join(" ");
+            self.eaten.push(d.name.clone());
+            flight.push(d);
+        }
+        for b in &self.in_flight {
+            let fresh = b.done_at.is_some_and(|t| at.saturating_sub(t) < BEAT);
+            if fresh && !flight.iter().any(|f| f.name == b.name) {
+                flight.push(b.clone());
             }
         }
         flight.sort_by_key(|f| order(f));
