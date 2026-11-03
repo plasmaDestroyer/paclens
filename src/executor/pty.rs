@@ -20,6 +20,16 @@ pub struct Pty {
 impl Pty {
     /// Drop the writer and the master — closes the pty, which unblocks a
     /// reader on EOF/EIO. Hands back the child for whoever still needs it.
+    /// pacman's terminal follows ours when the pane is resized.
+    pub fn resize(&self, rows: u16, cols: u16) {
+        let _ = self.master.resize(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+    }
+
     pub fn close(self) -> Box<dyn Child + Send + Sync> {
         drop(self.writer);
         drop(self.master);

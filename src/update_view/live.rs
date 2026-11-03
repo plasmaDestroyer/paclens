@@ -169,6 +169,7 @@ pub fn run(
     };
 
     let mut pty = spawn(argv, rows, cols)?;
+    let mut size = (cols, rows);
     let _raw = opts.keys.then(RawGuard::new).transpose()?;
     let mut reader = std::mem::replace(&mut pty.reader, Box::new(io::empty()));
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -226,6 +227,15 @@ pub fn run(
                     settler.tail(20.min(usize::from(rows / 2))),
                 )
             });
+        // The pane can change size mid-run: draw and erase at its size now,
+        // and let pacman's terminal follow.
+        if let Ok((c, r)) = terminal::size()
+            && (c, r) != size
+        {
+            size = (c, r);
+            painter.resize(r, c);
+            pty.resize(r, c);
+        }
         painter.tick(out, &model, &view, now, idle.as_deref(), &opts.styles)?;
         if idle.is_some() {
             painter.prompt(out, &settler.partial())?;

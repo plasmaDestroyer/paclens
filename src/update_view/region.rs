@@ -215,6 +215,13 @@ impl Painter {
         }
     }
 
+    /// The terminal's size now: a pane resized mid-run is drawn for and
+    /// erased at its new size, not the one it had at the start.
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.rows = rows;
+        self.cols = cols;
+    }
+
     /// Plain lines end `\r\n`, for while stdin is in raw mode.
     pub fn raw(mut self) -> Self {
         self.eol = "\r\n";
@@ -257,7 +264,10 @@ impl Painter {
         if !self.live {
             return Ok(());
         }
-        let (f, d) = frame(run, view, self.sent, self.cols, self.rows, now, idle, s);
+        // One column short of the edge: a row filled to the last column
+        // sits in the terminal's wrap limbo, and terminals differ there.
+        let w = self.cols.saturating_sub(1).max(1);
+        let (f, d) = frame(run, view, self.sent, w, self.rows, now, idle, s);
         self.sent = d;
         self.region.draw(out, &f, self.rows, self.cols)?;
         // Terminal progress (OSC 9;4): the running phase's share done.
