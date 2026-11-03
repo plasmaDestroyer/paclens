@@ -2067,6 +2067,12 @@ YYYY-MM-DD | no --noconfirm for pacman
            | Pac-Man eating the time ribbon, rows dropping in, the result
            | lighting with the ribbon's `✓`), all in the live region: the
            | scrollback gets the receipt once, unchanged. Plain mode: none.
+           | Later the same day the owner dropped the time ribbon: phase
+           | times by colour read as noise (pre- and post-hooks alike). The
+           | end keeps the tree beat and the rows dropping in. And a redraw
+           | must never erase to the screen's end from the region's top row:
+           | that is a whole-screen clear, and tmux (and others) push the
+           | screen into scrollback, a copy per frame. Rows clear as written.
 
 ```
 
