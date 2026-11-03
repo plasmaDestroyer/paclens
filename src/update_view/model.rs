@@ -74,7 +74,13 @@ pub struct InFlight {
     /// Its percent as seen over the last two seconds, oldest first; the
     /// first is the last one seen at or before two seconds ago.
     pub seen: Vec<(Duration, u8)>,
+    /// Finished at this time: it stays a beat, full, then leaves.
+    pub done_at: Option<Duration>,
 }
+
+/// How long a finished file stays on, full and green, before it leaves:
+/// the moment it is done gets seen.
+pub const BEAT: Duration = Duration::from_millis(800);
 
 /// How far back a file's comet tail reaches.
 pub const TAIL: Duration = Duration::from_secs(2);
@@ -490,6 +496,25 @@ impl Run {
                 .position(|k| k.name == f.name)
                 .unwrap_or(usize::MAX)
         };
+        // A started file pacman no longer lists finished: it stays for a
+        // beat, at 100%, its final size kept, then goes.
+        for old in &self.in_flight {
+            if old.queued || flight.iter().any(|f| f.name == old.name) {
+                continue;
+            }
+            let since = old.done_at.unwrap_or(at);
+            if at.saturating_sub(since) < BEAT {
+                let mut d = old.clone();
+                d.done_at = Some(since);
+                d.pct = 100;
+                d.stalled = false;
+                if old.done_at.is_none() {
+                    let size: Vec<&str> = d.detail.split_whitespace().take(2).collect();
+                    d.detail = size.join(" ");
+                }
+                flight.push(d);
+            }
+        }
         flight.sort_by_key(|f| order(f));
         self.in_flight = flight;
         if let Some(ev) = total {
@@ -845,6 +870,7 @@ impl Run {
             stalled: false,
             stalled_since: None,
             seen: Vec::new(),
+            done_at: None,
         })
     }
 
@@ -1199,6 +1225,7 @@ mod tests {
                 stalled: false,
                 stalled_since: None,
                 seen: vec![(Z, 50)],
+                done_at: None,
             }]
         );
         let d = &r.phases[idx(PhaseKind::Download)];
@@ -1617,9 +1644,46 @@ mod tests {
             stalled: false,
             stalled_since: None,
             seen: vec![(Duration::ZERO, 10)],
+            done_at: None,
         };
         assert_eq!(f.tail_from(), Some(10));
         f.seen.clear();
         assert_eq!(f.tail_from(), None);
+    }
+
+    #[test]
+    fn a_finished_file_stays_a_beat_then_leaves() {
+        let mut r = run();
+        r.apply_line(":: Retrieving packages...", Z);
+        r.packages.push(Pkg {
+            name: "zed".into(),
+            new: Some("1.25.3-1".into()),
+            ..Pkg::default()
+        });
+        r.packages.push(Pkg {
+            name: "uv".into(),
+            new: Some("0.13.5-1".into()),
+            ..Pkg::default()
+        });
+        let zed = " zed-1.25.3-1-x86_64   40.1 MiB  5.0 MiB/s 00:08 [---C o o]  50%";
+        let uv = " uv-0.13.5-1-x86_64   1.0 MiB  1.0 MiB/s 00:08 [---C o o]  20%";
+        r.observe_screen(&[zed.into(), uv.into()], Z);
+        // zed gone from pacman's list: done.
+        let ms = Duration::from_millis;
+        r.observe_screen(&[uv.into()], ms(100));
+        let z = r.in_flight.iter().find(|f| f.name == "zed");
+        assert!(
+            z.is_some_and(|z| z.pct == 100 && z.done_at == Some(ms(100)) && z.detail == "40.1 MiB"),
+            "{:?}",
+            r.in_flight
+        );
+        r.observe_screen(&[uv.into()], ms(500));
+        assert!(r.in_flight.iter().any(|f| f.name == "zed"));
+        r.observe_screen(&[uv.into()], ms(100) + BEAT);
+        assert!(
+            !r.in_flight.iter().any(|f| f.name == "zed"),
+            "{:?}",
+            r.in_flight
+        );
     }
 }

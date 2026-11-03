@@ -694,17 +694,23 @@ fn children(
                         None => (rate(&r), eta),
                     };
                     // No rate column: the size column says it instead.
+                    // Finished: all of it came, so it reads full.
                     let size = match stall {
                         Some(st) if !ga.rate => st,
+                        _ if f.done_at.is_some() && total.is_some() => {
+                            size_pair(total.unwrap_or_default(), total)
+                        }
                         _ => size_pair(&got, total),
                     };
-                    let mut row = vec![seg(Paint::Plain, name)];
+                    // Just finished: the name lights green for its beat.
+                    let done = f.done_at.is_some();
+                    let mut row = vec![seg(if done { Paint::Ok } else { Paint::Plain }, name)];
                     row.extend(gauge_tail(
                         ga,
                         f.pct,
                         false,
                         false,
-                        f.tail_from(),
+                        f.tail_from().filter(|_| !done),
                         Some((size, r, eta)),
                         s,
                     ));
@@ -3832,6 +3838,7 @@ mod tests {
             stalled: false,
             stalled_since: None,
             seen: Vec::new(),
+            done_at: None,
         });
         for w in [1u16, 10, 23, 24] {
             let _ = frame(
@@ -3858,6 +3865,7 @@ mod tests {
             stalled: false,
             stalled_since: None,
             seen: Vec::new(),
+            done_at: None,
         });
         // Colour too: the bar's escape codes must not eat the line's width.
         for st in [plain(), colour()] {
