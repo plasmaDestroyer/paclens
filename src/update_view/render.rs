@@ -2554,10 +2554,20 @@ fn closing_at(
 ) -> Vec<String> {
     let w = usize::from(width);
     // Set apart from pacman's own last lines, under the command it is for.
+    // While the ribbon eats in, the result waits dim; it lands with it.
+    let head = if reveal.is_some_and(|f| f < 1.0) {
+        let plain: String = end_segs(run, view.motif, s)
+            .into_iter()
+            .map(|x| x.1)
+            .collect();
+        line(&[seg(Paint::Dim, plain)], w, s)
+    } else {
+        line(&end_segs(run, view.motif, s), w, s)
+    };
     let mut out = vec![
         String::new(),
         line(&[seg(Paint::Dim, run.command.clone())], w, s),
-        line(&end_segs(run, view.motif, s), w, s),
+        head,
     ];
     // Where the time went: each phase that took a second or more.
     let spans: Vec<(String, Duration, PhaseKind)> = run
