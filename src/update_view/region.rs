@@ -65,7 +65,7 @@ impl Region {
         write!(out, "\x1b[?2026h{HIDE}")?;
         self.erase(out)?;
         for l in &frame.above {
-            write!(out, "{l}\r\n")?;
+            put(out, l)?;
         }
         let room = usize::from(rows.saturating_sub(1));
         let (mut used, mut skip) = (0, frame.region.len());
@@ -79,7 +79,7 @@ impl Region {
         }
         let mut last = frame.region[skip..].last().cloned();
         for l in &frame.region[skip..] {
-            write!(out, "{l}\r\n")?;
+            put(out, l)?;
         }
         // The last line alone is too tall: its end still shows, so a long
         // prompt keeps its answer choices.
@@ -89,9 +89,11 @@ impl Region {
         {
             let end = tail_fit(whole, room, cols);
             used = rows_of(&end, cols);
-            write!(out, "{end}\r\n")?;
+            put(out, &end)?;
             last = Some(end);
         }
+        // Rows the last frame had and this one has not.
+        queue!(out, Clear(ClearType::FromCursorDown))?;
         self.height = u16::try_from(used).unwrap_or(u16::MAX);
         // Waiting for an answer: back up to the end of the question.
         self.parked = false;
@@ -126,8 +128,9 @@ impl Region {
             write!(out, "\r\n")?;
         }
         for l in lines {
-            write!(out, "{l}\r\n")?;
+            put(out, l)?;
         }
+        queue!(out, Clear(ClearType::FromCursorDown))?;
         self.height = 0;
         write!(out, "{SHOW}")?;
         out.flush()
@@ -140,9 +143,17 @@ impl Region {
         if up > 0 {
             queue!(out, MoveUp(up))?;
         }
-        write!(out, "\r")?;
-        queue!(out, Clear(ClearType::FromCursorDown))
+        // No erase to the screen's end from here: from the top row that is
+        // a whole-screen clear, which tmux and others push into scrollback,
+        // a copy per frame. Each line clears its own row as it is written.
+        write!(out, "\r")
     }
+}
+
+/// One line over whatever was on its row: the row cleared first, the rest
+/// of its last wrapped row after.
+fn put(out: &mut impl Write, l: &str) -> io::Result<()> {
+    write!(out, "\x1b[2K{l}\x1b[K\r\n")
 }
 
 /// The visible characters of `line`, colour escapes left out.
@@ -342,7 +353,7 @@ mod tests {
         let first = draw(&mut r, &frame(&[], 3), 40);
         assert!(!first.contains("\x1b[3A"));
         let second = draw(&mut r, &frame(&[], 1), 40);
-        assert!(second.starts_with("\x1b[3A\r\x1b[J"), "{second:?}");
+        assert!(second.starts_with("\x1b[3A\r\x1b[2K"), "{second:?}");
         assert!(!first.contains("\x1b[?1049h") && !second.contains("\x1b[?1049h"));
     }
 
@@ -350,7 +361,10 @@ mod tests {
     fn above_goes_before_region() {
         let mut r = Region::new();
         let s = draw(&mut r, &frame(&["kept"], 1), 40);
-        assert!(s.ends_with("kept\r\nrow 0\r\n"), "{s:?}");
+        assert!(
+            s.ends_with("kept\x1b[K\r\n\x1b[2Krow 0\x1b[K\r\n\x1b[J"),
+            "{s:?}"
+        );
     }
 
     #[test]
@@ -358,7 +372,7 @@ mod tests {
         let mut r = Region::new();
         let s = draw(&mut r, &frame(&[], 12), 8);
         assert_eq!(s.matches("\r\n").count(), 7);
-        assert!(!s.contains("row 4\r") && s.contains("row 5\r") && s.contains("row 11\r"));
+        assert!(!s.contains("row 4\x1b") && s.contains("row 5\x1b") && s.contains("row 11\x1b"));
         let s = draw(&mut r, &frame(&[], 0), 8);
         assert!(s.starts_with("\x1b[7A"), "{s:?}");
     }
@@ -398,7 +412,7 @@ mod tests {
         let mut out = Vec::new();
         r.draw(&mut out, &f, 4, 10).unwrap();
         let s = String::from_utf8(out).unwrap();
-        assert!(s.ends_with("? [Y/n]\r\n\x1b[?2026l"), "{s:?}");
+        assert!(s.ends_with("? [Y/n]\x1b[K\r\n\x1b[J\x1b[?2026l"), "{s:?}");
         assert_eq!(r.height, 3);
     }
 
@@ -410,7 +424,7 @@ mod tests {
         r.close(&mut out, &["done".to_string()]).unwrap();
         let s = String::from_utf8(out).unwrap();
         assert!(
-            s.starts_with("\x1b[2A") && s.ends_with("done\r\n\x1b[?25h"),
+            s.starts_with("\x1b[2A") && s.ends_with("done\x1b[K\r\n\x1b[J\x1b[?25h"),
             "{s:?}"
         );
         assert_eq!(r.height, 0);
@@ -418,7 +432,10 @@ mod tests {
         draw(&mut r, &frame(&[], 2), 40);
         let mut out = Vec::new();
         r.leave(&mut out, &["failed".to_string()]).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "failed\r\n\x1b[?25h");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\x1b[2Kfailed\x1b[K\r\n\x1b[J\x1b[?25h"
+        );
     }
 
     #[test]
@@ -464,9 +481,24 @@ mod tests {
         f.cursor = true;
         let s = draw(&mut r, &f, 40);
         // Up to the question's row, after its last character, shown.
-        assert!(s.ends_with("[Y/n] \r\n\x1b[1A\x1b[19G\x1b[?25h"), "{s:?}");
+        assert!(
+            s.ends_with("[Y/n] \x1b[K\r\n\x1b[J\x1b[1A\x1b[19G\x1b[?25h"),
+            "{s:?}"
+        );
         // The next frame erases from the region's top: one row less up.
         let s = draw(&mut r, &frame(&[], 1), 40);
-        assert!(s.starts_with("\x1b[1A\r\x1b[J"), "{s:?}");
+        assert!(s.starts_with("\x1b[1A\r\x1b[2K"), "{s:?}");
+    }
+
+    #[test]
+    fn a_redraw_never_clears_from_the_region_top() {
+        // From the top row, an erase to the screen's end is a whole-screen
+        // clear, which tmux pushes into scrollback: a copy every frame.
+        let mut r = Region::new();
+        draw(&mut r, &frame(&[], 2), 40);
+        let s = draw(&mut r, &frame(&[], 2), 40);
+        assert!(s.starts_with("\x1b[2A\r\x1b[2K"), "{s:?}");
+        let after_up = &s["\x1b[2A\r".len()..];
+        assert!(!after_up.starts_with("\x1b[J"), "{s:?}");
     }
 }

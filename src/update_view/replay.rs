@@ -260,9 +260,11 @@ mod tests {
     fn failed_exit_points_at_the_transcript() {
         let s = play_fixture(Layout::Inline, Motif::Subtle, Some(1), true);
         assert!(s.contains("/tmp/last.out"));
-        // The region stays: no erase after the last frame.
-        let tail = &s[s.rfind("\x1b[J").unwrap_or(0)..];
+        // The region stays: the last frame drawn is not moved over.
+        let tail = &s[s.rfind("\x1b[?2026h").unwrap_or(0)..];
         assert!(tail.contains("post-hooks"), "{tail:?}");
+        let after = &tail[tail.rfind("\x1b[?2026l").unwrap_or(0)..];
+        assert!(!after.contains("A\r"), "{after:?}");
     }
 
     #[test]
