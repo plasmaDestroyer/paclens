@@ -496,10 +496,32 @@ impl Run {
                 .position(|k| k.name == f.name)
                 .unwrap_or(usize::MAX)
         };
-        // A started file pacman no longer lists finished: it stays for a
-        // beat, at 100%, its final size kept, then goes.
+        // A started file pacman no longer lists, and that pacman's own
+        // count says finished, stays for a beat at 100%, its final size
+        // kept, then goes. Leaving the list alone is not proof: as many as
+        // the count rose, furthest along first.
+        let was = self.phases[idx(PhaseKind::Download)].done;
+        let now_done = match &total {
+            Some(ScreenEvent::DownloadTotal { done, .. }) => *done,
+            _ => was,
+        };
+        let mut gone: Vec<&InFlight> = self
+            .in_flight
+            .iter()
+            .filter(|o| !o.queued && o.done_at.is_none())
+            .filter(|o| !flight.iter().any(|f| f.name == o.name))
+            .collect();
+        gone.sort_by_key(|o| std::cmp::Reverse(o.pct));
+        let newly: Vec<String> = gone
+            .iter()
+            .take(now_done.saturating_sub(was))
+            .map(|o| o.name.clone())
+            .collect();
         for old in &self.in_flight {
             if old.queued || flight.iter().any(|f| f.name == old.name) {
+                continue;
+            }
+            if old.done_at.is_none() && !newly.contains(&old.name) {
                 continue;
             }
             let since = old.done_at.unwrap_or(at);
@@ -1653,33 +1675,44 @@ mod tests {
 
     #[test]
     fn a_finished_file_stays_a_beat_then_leaves() {
-        let mut r = run();
-        r.apply_line(":: Retrieving packages...", Z);
-        r.packages.push(Pkg {
-            name: "zed".into(),
-            new: Some("1.25.3-1".into()),
-            ..Pkg::default()
-        });
-        r.packages.push(Pkg {
-            name: "uv".into(),
-            new: Some("0.13.5-1".into()),
-            ..Pkg::default()
-        });
         let zed = " zed-1.25.3-1-x86_64   40.1 MiB  5.0 MiB/s 00:08 [---C o o]  50%";
         let uv = " uv-0.13.5-1-x86_64   1.0 MiB  1.0 MiB/s 00:08 [---C o o]  20%";
-        r.observe_screen(&[zed.into(), uv.into()], Z);
-        // zed gone from pacman's list: done.
+        let t0 = " Total ( 0/79)   41.1 MiB  6.0 MiB/s 00:02:51 [---C o o] 3%";
+        let t1 = " Total ( 1/79)   52.1 MiB  6.0 MiB/s 00:02:51 [---C o o] 4%";
+        let start = || {
+            let mut r = run();
+            r.apply_line(":: Retrieving packages...", Z);
+            for (n, v) in [("zed", "1.25.3-1"), ("uv", "0.13.5-1")] {
+                r.packages.push(Pkg {
+                    name: n.into(),
+                    new: Some(v.into()),
+                    ..Pkg::default()
+                });
+            }
+            r.observe_screen(&[zed.into(), uv.into(), t0.into()], Z);
+            r
+        };
         let ms = Duration::from_millis;
-        r.observe_screen(&[uv.into()], ms(100));
+        // Gone from the list, but pacman's count did not rise: no beat.
+        let mut q = start();
+        q.observe_screen(&[uv.into(), t0.into()], ms(100));
+        assert!(
+            !q.in_flight.iter().any(|f| f.name == "zed"),
+            "{:?}",
+            q.in_flight
+        );
+        // Gone, and pacman counts one more done: it stays a beat, full.
+        let mut r = start();
+        r.observe_screen(&[uv.into(), t1.into()], ms(100));
         let z = r.in_flight.iter().find(|f| f.name == "zed");
         assert!(
             z.is_some_and(|z| z.pct == 100 && z.done_at == Some(ms(100)) && z.detail == "40.1 MiB"),
             "{:?}",
             r.in_flight
         );
-        r.observe_screen(&[uv.into()], ms(500));
+        r.observe_screen(&[uv.into(), t1.into()], ms(500));
         assert!(r.in_flight.iter().any(|f| f.name == "zed"));
-        r.observe_screen(&[uv.into()], ms(100) + BEAT);
+        r.observe_screen(&[uv.into(), t1.into()], ms(100) + BEAT);
         assert!(
             !r.in_flight.iter().any(|f| f.name == "zed"),
             "{:?}",
