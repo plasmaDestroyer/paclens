@@ -438,9 +438,19 @@ mod tests {
         let session = start(plan, None, (24, 80), Some(dir.clone()), None);
         let (text, report) = drain(&session, None);
         assert_eq!(report.succeeded(), 2, "{text}");
-        let ttys: Vec<&str> = text.lines().filter(|l| l.contains("/dev/pts/")).collect();
+        // The device name alone: the next step's header can land on the
+        // same line as `tty`'s output when steps follow fast.
+        let ttys: Vec<String> = text
+            .match_indices("/dev/pts/")
+            .map(|(i, _)| {
+                text[i..]
+                    .chars()
+                    .take_while(|c| *c == '/' || c.is_ascii_alphanumeric())
+                    .collect()
+            })
+            .collect();
         assert_eq!(ttys.len(), 2, "{text}");
-        assert_eq!(ttys[0].trim(), ttys[1].trim(), "two terminals:\n{text}");
+        assert_eq!(ttys[0], ttys[1], "two terminals:\n{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
