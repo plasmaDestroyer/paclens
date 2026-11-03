@@ -5,7 +5,7 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use crossterm::cursor::{MoveToColumn, MoveUp};
+use crossterm::cursor::MoveUp;
 use crossterm::queue;
 use crossterm::terminal::{Clear, ClearType};
 use unicode_width::UnicodeWidthChar;
@@ -16,13 +16,15 @@ use super::model::{Outcome, Run};
 use super::render::{Delivered, Frame, View, frame};
 
 /// The cursor is hidden while the view draws: a block blinking under the
-/// region says "type here" when there is nothing to type. It shows only
-/// where pacman waits for an answer.
+/// region says "type here" when there is nothing to type. Where pacman waits
+/// for an answer, a cursor is drawn in the text instead.
 /// One frame of the receipt's eat-in.
 const EAT_BEAT: Duration = Duration::from_millis(40);
 
 const HIDE: &str = "\x1b[?25l";
 const SHOW: &str = "\x1b[?25h";
+/// A cursor drawn in the text: a reverse-video cell.
+const BLOCK: &str = "\x1b[7m \x1b[27m";
 
 /// Shows the cursor again when dropped: every return path and unwinding
 /// leave the terminal as they found it.
@@ -36,12 +38,11 @@ impl Drop for CursorGuard {
     }
 }
 
-/// How many terminal rows the last drawn region took. The cursor sits on
-/// the row under it, or, `parked`, at the end of its last row (a prompt).
+/// How many terminal rows the last drawn region took; the cursor sits on
+/// the row under it.
 #[derive(Default)]
 pub struct Region {
     height: u16,
-    parked: bool,
 }
 
 impl Region {
@@ -67,9 +68,18 @@ impl Region {
         for l in &frame.above {
             put(out, l)?;
         }
+        // Waiting for an answer: a drawn cursor block after the question.
+        // The terminal's own cursor never moves into the region, so every
+        // redraw starts from the one row it can be sure of: the one below.
+        let mut region = frame.region.clone();
+        if frame.cursor
+            && let Some(l) = region.last_mut()
+        {
+            l.push_str(BLOCK);
+        }
         let room = usize::from(rows.saturating_sub(1));
-        let (mut used, mut skip) = (0, frame.region.len());
-        for l in frame.region.iter().rev() {
+        let (mut used, mut skip) = (0, region.len());
+        for l in region.iter().rev() {
             let h = rows_of(l, cols);
             if used + h > room {
                 break;
@@ -77,41 +87,22 @@ impl Region {
             used += h;
             skip -= 1;
         }
-        let mut last = frame.region[skip..].last().cloned();
-        for l in &frame.region[skip..] {
+        for l in &region[skip..] {
             put(out, l)?;
         }
         // The last line alone is too tall: its end still shows, so a long
         // prompt keeps its answer choices.
-        if skip == frame.region.len()
+        if skip == region.len()
             && room > 0
-            && let Some(whole) = frame.region.last()
+            && let Some(whole) = region.last()
         {
             let end = tail_fit(whole, room, cols);
             used = rows_of(&end, cols);
             put(out, &end)?;
-            last = Some(end);
         }
         // Rows the last frame had and this one has not.
         queue!(out, Clear(ClearType::FromCursorDown))?;
         self.height = u16::try_from(used).unwrap_or(u16::MAX);
-        // Waiting for an answer: back up to the end of the question.
-        self.parked = false;
-        if frame.cursor
-            && used > 0
-            && let Some(l) = last
-        {
-            let w = visible(&l).filter_map(|c| c.width()).sum::<usize>();
-            let c = usize::from(cols.max(1));
-            let col = if w == 0 { 0 } else { (w - 1) % c + 1 };
-            queue!(
-                out,
-                MoveUp(1),
-                MoveToColumn(u16::try_from(col).unwrap_or(0))
-            )?;
-            write!(out, "{SHOW}")?;
-            self.parked = true;
-        }
         write!(out, "\x1b[?2026l")?;
         out.flush()
     }
@@ -124,9 +115,6 @@ impl Region {
 
     /// Keep the last region on screen and print `lines` under it.
     pub fn leave(&mut self, out: &mut impl Write, lines: &[String]) -> io::Result<()> {
-        if std::mem::take(&mut self.parked) {
-            write!(out, "\r\n")?;
-        }
         for l in lines {
             put(out, l)?;
         }
@@ -137,9 +125,7 @@ impl Region {
     }
 
     fn erase(&mut self, out: &mut impl Write) -> io::Result<()> {
-        // Parked, the cursor is on the region's last row, not under it.
-        let up = self.height - u16::from(self.parked && self.height > 0);
-        self.parked = false;
+        let up = self.height;
         if up > 0 {
             queue!(out, MoveUp(up))?;
         }
@@ -474,20 +460,20 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_parks_the_cursor_at_its_end() {
+    fn a_prompt_gets_a_drawn_cursor_and_the_real_one_stays_below() {
         let mut r = Region::new();
         let mut f = frame(&[], 1);
         f.region.push(":: Proceed? [Y/n] ".into());
         f.cursor = true;
         let s = draw(&mut r, &f, 40);
-        // Up to the question's row, after its last character, shown.
+        // A reverse-video cell after the question; nothing moves back up.
         assert!(
-            s.ends_with("[Y/n] \x1b[K\r\n\x1b[J\x1b[1A\x1b[19G\x1b[?25h"),
+            s.ends_with("[Y/n] \x1b[7m \x1b[27m\x1b[K\r\n\x1b[J"),
             "{s:?}"
         );
-        // The next frame erases from the region's top: one row less up.
+        // The next frame erases the whole region from the row below it.
         let s = draw(&mut r, &frame(&[], 1), 40);
-        assert!(s.starts_with("\x1b[1A\r\x1b[2K"), "{s:?}");
+        assert!(s.starts_with("\x1b[2A\r\x1b[2K"), "{s:?}");
     }
 
     #[test]
