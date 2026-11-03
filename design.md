@@ -2050,6 +2050,24 @@ YYYY-MM-DD | no --noconfirm for pacman
            | phase's share of the run; repo headings in the plan carry a
            | rule weighted by their share of the download.
 
+2026-11-03 | every real step lands: rewards from events, never from a clock (#81)
+           | Goal: satisfying for OCD (things click into place) and dopamine
+           | for ADHD (frequent small rewards), judged by the same three-judge
+           | loop. Each reward is tied to a real event and lasts a beat
+           | (0.8 s): a file pacman's own Total count says finished stays full
+           | and green, then joins the `eaten` dock (a row leaving the list is
+           | not proof; it waits for the count); a phase count that rises
+           | lights; a phase that ends latches green; the newest installed
+           | package lands green; a hook under its usual time shows `−Ns`,
+           | over it `+Ns` dim, and the receipt carries only the net, from
+           | exact times rounded down once. Checks start on pacman's live
+           | check row and carry its own percent. The only clock-driven mark
+           | is the running phase's spinner, which says alive, never how far.
+           | On success the end plays a short fold (the finished tree, then
+           | Pac-Man eating the time ribbon, rows dropping in, the result
+           | lighting with the ribbon's `✓`), all in the live region: the
+           | scrollback gets the receipt once, unchanged. Plain mode: none.
+
 ```
 
 ---
