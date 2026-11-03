@@ -14,7 +14,7 @@ use super::log_line::classify_log;
 use super::medians::hook_medians;
 use super::model::Run;
 use super::region::{CursorGuard, Painter};
-use super::render::{View, closing};
+use super::render::{View, closing, closing_frames};
 use super::screen::Settler;
 use super::screen_line::may_be_question;
 
@@ -178,7 +178,8 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
     painter.tick(out, &run, &p.view, now.max(end), None, &p.styles)?;
     run.finish(p.exit, now);
     let lines = closing(&run, &p.view, p.width, p.transcript, &p.styles);
-    painter.close(out, &run, &lines)
+    let frames = closing_frames(&run, &p.view, p.width, p.transcript, &p.styles);
+    painter.close(out, &run, &lines, &frames)
 }
 
 /// Apply every log line due by `now`.

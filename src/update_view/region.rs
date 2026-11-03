@@ -18,6 +18,9 @@ use super::render::{Delivered, Frame, View, frame};
 /// The cursor is hidden while the view draws: a block blinking under the
 /// region says "type here" when there is nothing to type. It shows only
 /// where pacman waits for an answer.
+/// One frame of the receipt's eat-in.
+const EAT_BEAT: Duration = Duration::from_millis(40);
+
 const HIDE: &str = "\x1b[?25l";
 const SHOW: &str = "\x1b[?25h";
 
@@ -270,7 +273,15 @@ impl Painter {
 
     /// The end: on exit 0 the region gives way to `lines`; on a failure it
     /// stays, with `lines` under it.
-    pub fn close(&mut self, out: &mut impl Write, run: &Run, lines: &[String]) -> io::Result<()> {
+    /// On success, `frames` play first in the region (the receipt's
+    /// eat-in), a beat each.
+    pub fn close(
+        &mut self,
+        out: &mut impl Write,
+        run: &Run,
+        lines: &[String],
+        frames: &[Vec<String>],
+    ) -> io::Result<()> {
         let failed = matches!(run.outcome(), Outcome::Failed(_));
         if !self.live {
             if !self.shown.is_empty() {
@@ -285,6 +296,14 @@ impl Painter {
             self.region.leave(out, lines)?;
             write!(out, "\x1b]9;4;2;100\x07")?;
         } else {
+            for f in frames {
+                let f = Frame {
+                    region: f.clone(),
+                    ..Frame::default()
+                };
+                self.region.draw(out, &f, self.rows, self.cols)?;
+                std::thread::sleep(EAT_BEAT);
+            }
             self.region.close(out, lines)?;
             write!(out, "\x1b]9;4;0;0\x07")?;
         }
@@ -430,7 +449,7 @@ mod tests {
         }
         p.line(&mut out, ":: Proceed with installation? [Y/n] y")
             .unwrap();
-        p.close(&mut out, &run, &["end".to_string()]).unwrap();
+        p.close(&mut out, &run, &["end".to_string()], &[]).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "resolving dependencies...\n:: Proceed with installation? [Y/n] y\nend\n"

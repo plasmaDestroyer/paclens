@@ -30,7 +30,7 @@ use super::log_line::{LineBuffer, classify_log};
 use super::medians::hook_medians;
 use super::model::Run;
 use super::region::{CursorGuard, Painter};
-use super::render::{View, candy_enabled, closing};
+use super::render::{View, candy_enabled, closing, closing_frames};
 use super::screen::Settler;
 use super::screen_line::may_be_question;
 
@@ -264,7 +264,8 @@ pub fn run(
         .map(|d| d.join(TRANSCRIPT).display().to_string())
         .unwrap_or_default();
     let lines = closing(&model, &view, cols, &transcript_path, &opts.styles);
-    painter.close(out, &model, &lines)?;
+    let frames = closing_frames(&model, &view, cols, &transcript_path, &opts.styles);
+    painter.close(out, &model, &lines, &frames)?;
     Ok(code)
 }
 
