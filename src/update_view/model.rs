@@ -201,6 +201,8 @@ pub struct Run {
     /// The package pacman is working on now (verb, name, percent), read
     /// from its live row: settled lines only say which ones are done.
     pub live_package: Option<(String, String, u8)>,
+    /// The check pacman is drawing now, with its percent.
+    pub live_check: Option<(String, u8)>,
     /// Files pacman counted finished, newest last.
     pub eaten: Vec<String>,
     /// Started files pacman stopped listing, not yet counted finished.
@@ -272,6 +274,7 @@ impl Run {
             started_files: Vec::new(),
             live_package: None,
             eaten: Vec::new(),
+            live_check: None,
             left: Vec::new(),
             unknown: Vec::new(),
             unknown_at: Vec::new(),
@@ -412,6 +415,17 @@ impl Run {
     /// What pacman's live rows show now; then each phase whose count rose
     /// since the last look notes when.
     pub fn observe_screen(&mut self, rows: &[String], at: Duration) {
+        // The check pacman is on now and its own percent.
+        self.live_check = None;
+        if self.current() == Some(PhaseKind::Checks) {
+            self.live_check = rows
+                .iter()
+                .rev()
+                .find_map(|r| match classify_screen(r, false) {
+                    ScreenEvent::Check { name, pct, .. } if pct < 100 => Some((name, pct)),
+                    _ => None,
+                });
+        }
         self.observe(rows, at);
         for p in &mut self.phases {
             if p.done > p.seen_done {
@@ -531,6 +545,9 @@ impl Run {
                 self.left.push(o.clone());
             }
         }
+        // A file pacman lists again was not done after all.
+        self.left
+            .retain(|l| !flight.iter().any(|f| f.name == l.name));
         let done = match &total {
             Some(ScreenEvent::DownloadTotal { done, .. }) => *done,
             _ => 0,
@@ -1734,5 +1751,29 @@ mod tests {
             "{:?}",
             r.in_flight
         );
+    }
+
+    #[test]
+    fn a_file_that_comes_back_is_not_eaten() {
+        let mut r = run();
+        r.apply_line(":: Retrieving packages...", Z);
+        for n in ["aaa", "bbb"] {
+            r.packages.push(Pkg {
+                name: n.into(),
+                new: Some("1-1".into()),
+                ..Pkg::default()
+            });
+        }
+        let a = " aaa-1-1-x86_64   9.5 MiB  1.0 MiB/s 00:01 [---C o o]  95%";
+        let b = " bbb-1-1-x86_64   2.0 MiB  1.0 MiB/s 00:08 [---C o o]  20%";
+        let t0 = " Total ( 0/2)   11.5 MiB  2.0 MiB/s 00:02:51 [---C o o] 50%";
+        let t1 = " Total ( 1/2)   12.5 MiB  2.0 MiB/s 00:02:51 [---C o o] 60%";
+        let ms = Duration::from_millis;
+        r.observe_screen(&[a.into(), b.into(), t0.into()], Z);
+        r.observe_screen(&[b.into(), t0.into()], ms(50));
+        // aaa is back; bbb gone; pacman counts one done: that is bbb.
+        r.observe_screen(&[a.into(), t1.into()], ms(100));
+        assert_eq!(r.eaten, ["bbb"]);
+        assert_eq!(r.in_flight.iter().filter(|f| f.name == "aaa").count(), 1);
     }
 }

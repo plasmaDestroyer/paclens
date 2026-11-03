@@ -1104,7 +1104,26 @@ fn children(
                 .filter(|n| Some(*n) != now_on.as_ref())
                 .map(|n| vec![seg(Paint::Ok, s.check()), seg(Paint::Dim, format!(" {n}"))])
                 .collect();
-            if let Some(n) = now_on {
+            // The one it is on: its name, and pacman's own percent as a
+            // bar in the run's bar column when pacman draws one.
+            if let Some((n, p)) = run
+                .live_check
+                .clone()
+                .filter(|(n, _)| now_on.as_ref() == Some(n))
+            {
+                let mut row = vec![
+                    seg(Paint::Warn, g(s, "▸", ">")),
+                    seg(Paint::Bold, format!(" {n}")),
+                ];
+                let used = 5 + 2 + n.width();
+                let at = ga.left + numbers_w(ga);
+                if ga.cells >= 6 && used + 2 <= at {
+                    row.push(seg(Paint::Plain, " ".repeat(at - used)));
+                    row.push(seg(Paint::Plain, track(p, ga.cells, Mouth::Chew, s)));
+                    row.push(seg(Paint::Plain, format!(" {:>4}", format!("{p}%"))));
+                }
+                rows.push(row);
+            } else if let Some(n) = now_on {
                 rows.push(vec![
                     seg(Paint::Warn, g(s, "▸", ">")),
                     seg(Paint::Bold, format!(" {n}")),
@@ -2878,22 +2897,21 @@ fn ribbon(
             " ".to_string()
         };
     }
-    // A legend item arrives once Pac-Man reaches its segment.
+    // A legend item arrives once Pac-Man reaches its segment, in the slot
+    // it ends in: nothing shifts when the rest arrive.
     let start = |i: usize| widths[..i].iter().sum::<usize>();
-    let spans: Vec<&(String, Duration, PhaseKind)> = spans
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| start(*i) < upto.max(1))
-        .map(|(_, x)| x)
-        .collect();
+    let reached: Vec<bool> = (0..spans.len()).map(|i| start(i) < upto.max(1)).collect();
     let swatch = g(s, "■", "#");
     let items: Vec<(String, usize)> = spans
         .iter()
-        .map(|x| {
-            (
-                format!("{} {}", paint_kind(x.2, swatch), s.dim(&x.0)),
-                2 + x.0.width(),
-            )
+        .zip(&reached)
+        .map(|(x, &r)| {
+            let t = if r {
+                format!("{} {}", paint_kind(x.2, swatch), s.dim(&x.0))
+            } else {
+                " ".repeat(2 + x.0.width())
+            };
+            (t, 2 + x.0.width())
         })
         .collect();
     // As few legend rows as fit, the items shared evenly between them, so
@@ -2908,7 +2926,7 @@ fn ribbon(
     let mut out = vec![bar];
     for c in items.chunks(items.len().div_ceil(k).max(1)) {
         let row: Vec<&str> = c.iter().map(|i| i.0.as_str()).collect();
-        out.push(format!("  {}", row.join("  ")));
+        out.push(format!("  {}", row.join("  ")).trim_end().to_string());
     }
     out
 }
