@@ -1076,7 +1076,7 @@ fn children(
                 // whole name (to the screen's edge), its time just after.
                 // The running one too long for the row is cut, so its bar
                 // stays on its own row on a narrow screen.
-                let cut_running = running && !one_row && room >= 12;
+                let cut_running = running && median.is_some() && !one_row && room >= 12;
                 let one_row = one_row || cut_running;
                 let shown = if cut_running {
                     cut_words(&desc, room)
@@ -1096,12 +1096,16 @@ fn children(
                     // Done a second or more under its usual time: a win,
                     // measured against past runs.
                     let usual = h.median.map(|m| Duration::from_secs(m.secs));
-                    if let Some(u) =
-                        usual.filter(|u| !running && took + Duration::from_secs(1) <= *u)
-                    {
+                    // Whole seconds, as the times beside it are shown.
+                    let gain = usual.map_or(0, |u| u.as_secs().saturating_sub(took.as_secs()));
+                    if !running && gain >= 1 {
                         row.push(seg(
                             Paint::Ok,
-                            format!("  {}{}", g(s, "−", "-"), duration(u - took)),
+                            format!(
+                                "  {}{}",
+                                g(s, "−", "-"),
+                                duration(Duration::from_secs(gain))
+                            ),
                         ));
                     }
                     rows.push(row);
@@ -2597,14 +2601,15 @@ fn closing_at(
                 PhaseKind::PostHooks => &run.post_hooks,
                 _ => &Vec::new(),
             };
-            let won: u64 = hooks
+            // Net against the usual times: overruns count against wins.
+            let net: i64 = hooks
                 .iter()
                 .filter_map(|h| {
                     let t = took(h.started, h.ended, Duration::ZERO)?.as_secs();
-                    h.median.map(|m| m.secs.saturating_sub(t))
+                    h.median.map(|m| m.secs.cast_signed() - t.cast_signed())
                 })
-                .filter(|&d| d >= 1)
                 .sum();
+            let won = net.max(0).unsigned_abs();
             let win = if won > 0 {
                 format!(" {}{}", g(s, "−", "-"), duration(Duration::from_secs(won)))
             } else {
@@ -2993,8 +2998,17 @@ fn ribbon(
         .iter()
         .zip(&reached)
         .map(|(x, &r)| {
+            // A hook phase's net win reads green.
+            let label = match x.0.split_once(g(s, " −", " -")) {
+                Some((a, b)) => format!(
+                    "{}{}",
+                    s.dim(a),
+                    paint(Paint::Ok, &format!(" {}{b}", g(s, "−", "-")), s)
+                ),
+                None => s.dim(&x.0),
+            };
             let t = if r {
-                format!("{} {}", paint_kind(x.2, swatch), s.dim(&x.0))
+                format!("{} {label}", paint_kind(x.2, swatch))
             } else {
                 " ".repeat(2 + x.0.width())
             };
