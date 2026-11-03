@@ -1096,8 +1096,8 @@ fn children(
                     // Done a second or more under its usual time: a win,
                     // measured against past runs.
                     let usual = h.median.map(|m| Duration::from_secs(m.secs));
-                    // Whole seconds, as the times beside it are shown.
-                    let gain = usual.map_or(0, |u| u.as_secs().saturating_sub(took.as_secs()));
+                    // The exact saving, rounded down.
+                    let gain = usual.map_or(0, |u| u.saturating_sub(took).as_secs());
                     if !running && gain >= 1 {
                         row.push(seg(
                             Paint::Ok,
@@ -2602,14 +2602,16 @@ fn closing_at(
                 _ => &Vec::new(),
             };
             // Net against the usual times: overruns count against wins.
-            let net: i64 = hooks
+            // Exact times subtracted, the total rounded down: no rounding
+            // invents a second.
+            let net: f64 = hooks
                 .iter()
                 .filter_map(|h| {
-                    let t = took(h.started, h.ended, Duration::ZERO)?.as_secs();
-                    h.median.map(|m| m.secs.cast_signed() - t.cast_signed())
+                    let t = took(h.started, h.ended, Duration::ZERO)?.as_secs_f64();
+                    h.median.map(|m| m.secs as f64 - t)
                 })
                 .sum();
-            let won = net.max(0).unsigned_abs();
+            let won = net.max(0.0).floor() as u64;
             let win = if won > 0 {
                 format!(" {}{}", g(s, "−", "-"), duration(Duration::from_secs(won)))
             } else {
