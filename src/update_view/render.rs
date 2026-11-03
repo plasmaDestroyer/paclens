@@ -574,6 +574,8 @@ fn gauge_tail(
     }
     if g.cells >= 6 {
         let mouth = match stall {
+            // A file row at 100%: all its bytes came. Full, green.
+            _ if pct >= 100 && !heavy && !approx => Mouth::Done,
             Some(n) if n >= 3 => Mouth::Haunt,
             Some(_) => Mouth::Wait,
             None => Mouth::Chew,
@@ -765,10 +767,21 @@ fn children(
             if !run.eaten.is_empty() {
                 let sep = format!(" {} ", s.bullet());
                 // The count is pacman's; the names are the ones seen go.
-                let head = format!(
-                    "eaten  {:>2}  ",
-                    phase(run, k).map_or(0, |p| p.done).max(run.eaten.len())
-                );
+                // With the bytes those files came to, from the plan's sizes.
+                let by: f64 = run
+                    .eaten
+                    .iter()
+                    .filter_map(|e| run.packages.iter().find(|p| &p.name == e))
+                    .filter_map(|p| p.download.as_deref().and_then(bytes))
+                    .sum();
+                let n = phase(run, k).map_or(0, |p| p.done).max(run.eaten.len());
+                let size = if by > 0.0 {
+                    let b = size_pair(&format!("{by} B"), None);
+                    format!(" {} {}", s.bullet(), tidy_size(b.trim()))
+                } else {
+                    String::new()
+                };
+                let head = format!("eaten  {n:>2}{size}  ");
                 let mut segs = vec![seg(Paint::Dim, head.clone())];
                 let mut used = 5 + head.width();
                 for (k, e) in run.eaten.iter().rev().enumerate() {
@@ -1023,6 +1036,17 @@ fn children(
                 let Some(Median { secs, .. }) = median else {
                     let gap = if one_row { pad(used) } else { "  ".to_string() };
                     row.push(seg(Paint::Dim, format!("{gap}{times}")));
+                    // Done a second or more under its usual time: a win,
+                    // measured against past runs.
+                    let usual = h.median.map(|m| Duration::from_secs(m.secs));
+                    if let Some(u) =
+                        usual.filter(|u| !running && took + Duration::from_secs(1) <= *u)
+                    {
+                        row.push(seg(
+                            Paint::Ok,
+                            format!("  {}{}", g(s, "−", "-"), duration(u - took)),
+                        ));
+                    }
                     rows.push(row);
                     continue;
                 };
@@ -2427,12 +2451,34 @@ pub fn closing_frames(
     if !s.colored() || run.outcome() != Outcome::Succeeded || !timed {
         return Vec::new();
     }
-    (1..=EAT_IN)
-        .map(|i| {
-            let f = i as f64 / EAT_IN as f64;
-            closing_at(run, view, width, transcript, s, Some(f))
-        })
-        .collect()
+    // First the finished tree, the last phase lit (its latch), two beats.
+    let end = run
+        .phases
+        .iter()
+        .filter_map(|p| p.ended)
+        .max()
+        .unwrap_or_default();
+    let tree = live(run, view, usize::from(width), 40, end, s);
+    let mut frames = vec![tree.clone(), tree];
+    // Then the ribbon eats in; the to-do and note rows drop in after it,
+    // a few a frame.
+    let last = closing(run, view, width, transcript, s);
+    let base = last
+        .iter()
+        .enumerate()
+        .skip(3)
+        .find(|(_, l)| l.is_empty())
+        .map_or(last.len(), |(i, _)| i);
+    let rest = last.len() - base;
+    for i in 1..=EAT_IN {
+        let f = i as f64 / EAT_IN as f64;
+        let mut fr = closing_at(run, view, width, transcript, s, Some(f));
+        fr.truncate(base);
+        let shown = (rest * i).div_ceil(EAT_IN);
+        fr.extend(last[base..base + shown].iter().cloned());
+        frames.push(fr);
+    }
+    frames
 }
 
 /// Frames in the receipt's eat-in.
@@ -2813,6 +2859,11 @@ fn ribbon(
     let upto = reveal.map_or(cell.len(), |f| (f * cell.len() as f64) as usize);
     let mut bar = String::from("  ");
     for (j, &(i, fill)) in cell.iter().enumerate() {
+        // The ribbon, fully eaten, ends on the run's done mark.
+        if j + 1 == cell.len() && upto >= cell.len() {
+            bar += &paint(Paint::Ok, s.check(), s);
+            continue;
+        }
         bar += &if j < upto {
             if fill {
                 paint_kind(spans[i].2, g(s, "━", "="))
@@ -2821,7 +2872,7 @@ fn ribbon(
             }
         } else if j == upto {
             s.warn(g(s, "ᗧ", "C"))
-        } else if (cell.len() - 1 - j).is_multiple_of(3) {
+        } else if j > upto + 1 && (cell.len() - 1 - j).is_multiple_of(3) {
             s.dim(g(s, "·", "."))
         } else {
             " ".to_string()
@@ -3053,6 +3104,7 @@ pub fn bar(pct: u8, cells: usize, candy: bool, s: &Styles) -> String {
 /// the end of the track with the ghost behind.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mouth {
+    Done,
     Chew,
     Wait,
     Haunt,
@@ -3094,6 +3146,10 @@ fn comet(pct: u8, cells: usize, mouth: Mouth, from: Option<u8>, s: &Styles) -> S
     };
     let ghost = || s.ghost(Ghost::Pinky, g(s, "ᗣ", "G"));
     let shut = || s.dim(g(s, "●", "o"));
+    if mouth == Mouth::Done {
+        return paint(Paint::Ok, &g(s, "━", "=").repeat(n.saturating_sub(1)), s)
+            + &paint(Paint::Ok, s.check(), s);
+    }
     if mouth == Mouth::Over {
         return s.dim(&line.repeat(n.saturating_sub(3))) + &ghost() + &s.dim(line) + &shut();
     }
@@ -4387,8 +4443,11 @@ mod tests {
             .collect();
         // As wide as the bars: they end five columns from the edge.
         assert_eq!(r[0].trim().width(), 113, "{r:?}");
-        // Solid; the legend under it in run order.
-        assert!(r[0].trim().chars().all(|c| c == '━'), "{r:?}");
+        // Solid, ending on the done mark; the legend under it in run order.
+        assert!(
+            r[0].trim().trim_end_matches('✓').chars().all(|c| c == '━') && r[0].ends_with('✓'),
+            "{r:?}"
+        );
         assert_eq!(r[1], "  ■ sync 2s  ■ download 2m10s  ■ packages 20s");
         assert!(r.iter().all(|l| l.width() <= 120), "{r:?}");
         assert!(r.iter().any(|l| l.contains("packages 20s")), "{r:?}");
