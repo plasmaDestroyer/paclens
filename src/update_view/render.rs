@@ -158,7 +158,8 @@ fn count(p: &Phase) -> String {
     match (p.state, p.total) {
         (PhaseState::Pending, _) => String::new(),
         // Steps are known only as each starts: the count waits for the end.
-        (PhaseState::Running, _) if p.kind == PhaseKind::Checks => String::new(),
+        // Steps are known only as each starts: the one it is on.
+        (PhaseState::Running, _) if p.kind == PhaseKind::Checks => p.done.to_string(),
         (PhaseState::Running, None) if p.done == 0 => String::new(),
         (PhaseState::Running, Some(t)) => format!("{}/{t}", p.done),
         _ => p.done.to_string(),
@@ -806,7 +807,12 @@ fn children(
                     head.clone(),
                 )];
                 let mut used = 5 + head.width();
-                for (k, e) in run.eaten.iter().rev().enumerate() {
+                let gone = run
+                    .eaten
+                    .iter()
+                    .rev()
+                    .filter(|e| !run.in_flight.iter().any(|f| &f.name == *e));
+                for (k, e) in gone.enumerate() {
                     let add = if k == 0 {
                         e.clone()
                     } else {
@@ -1010,9 +1016,13 @@ fn children(
                 }
                 _ => false,
             };
-            if let Some(i) = started.iter().rposition(|h| won(h)) {
-                from = from.min(i);
-            }
+            // Held: the winner and the running one only; quick hooks in
+            // between are in the phase's count.
+            let shown: Vec<&Hook> = match started.iter().rposition(|h| won(h)) {
+                Some(i) if i < from => vec![started[i], started[started.len() - 1]],
+                _ => started[from..].to_vec(),
+            };
+            from = started.len() - shown.len();
             // pacman's trailing `...` says "running" and a `.` ends a
             // sentence; the mark says the first, the row needs neither.
             let desc_of = |h: &Hook| {
@@ -1024,7 +1034,7 @@ fn children(
                     .to_string()
             };
             // Done times in one column after the longest name shown.
-            let desc_w = started[from..]
+            let desc_w = shown
                 .iter()
                 .map(|h| desc_of(h).width())
                 .max()
@@ -1040,7 +1050,7 @@ fn children(
             } else {
                 5 + 2 + desc_w + 2 + 6
             };
-            for (i, h) in started[from..].iter().enumerate() {
+            for (i, h) in shown.iter().enumerate() {
                 let desc = desc_of(h);
                 let running = h.ended.is_none() && from + i + 1 == started.len();
                 let took = took(h.started, h.ended, now).unwrap_or_default();
@@ -1064,7 +1074,13 @@ fn children(
                 let one_row = desc.width() <= room;
                 // A finished hook too long for the time column keeps its
                 // whole name (to the screen's edge), its time just after.
-                let shown = if one_row {
+                // The running one too long for the row is cut, so its bar
+                // stays on its own row on a narrow screen.
+                let cut_running = running && !one_row && room >= 12;
+                let one_row = one_row || cut_running;
+                let shown = if cut_running {
+                    cut_words(&desc, room)
+                } else if one_row {
                     desc.clone()
                 } else if !running {
                     cut_plain(&desc, w.saturating_sub(5 + 2 + 2 + times.width() + 1))
@@ -2575,7 +2591,27 @@ fn closing_at(
         .iter()
         .filter_map(|p| {
             let t = took(p.started, p.ended, Duration::ZERO)?;
-            (t.as_secs() >= 1).then(|| (format!("{} {}", name(p.kind), duration(t)), t, p.kind))
+            // Hooks that beat their usual time carry the win to the legend.
+            let hooks = match p.kind {
+                PhaseKind::PreHooks => &run.pre_hooks,
+                PhaseKind::PostHooks => &run.post_hooks,
+                _ => &Vec::new(),
+            };
+            let won: u64 = hooks
+                .iter()
+                .filter_map(|h| {
+                    let t = took(h.started, h.ended, Duration::ZERO)?.as_secs();
+                    h.median.map(|m| m.secs.saturating_sub(t))
+                })
+                .filter(|&d| d >= 1)
+                .sum();
+            let win = if won > 0 {
+                format!(" {}{}", g(s, "−", "-"), duration(Duration::from_secs(won)))
+            } else {
+                String::new()
+            };
+            (t.as_secs() >= 1)
+                .then(|| (format!("{} {}{win}", name(p.kind), duration(t)), t, p.kind))
         })
         .collect();
     if run.outcome() == Outcome::Succeeded && !spans.is_empty() {
