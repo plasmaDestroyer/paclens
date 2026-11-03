@@ -83,11 +83,23 @@ pub fn is_prompt(l: &str) -> bool {
 }
 
 /// Could this unfinished line be pacman (or sudo) waiting for an answer?
-/// A progress row — download, checks, a hook's bar — ends in `NN%` and is
-/// only paused, never asking.
+/// A question ends as questions do: `[Y/n]`, `?`, or `:` (`password for
+/// x:`, `Enter a number (default=1):`). Anything else — a progress row, a
+/// sync row like ` core` — is only paused, never asking.
 pub fn may_be_question(partial: &str) -> bool {
     let t = partial.trim_end();
-    !t.is_empty() && !t.ends_with('%')
+    t.ends_with(']') || t.ends_with('?') || t.ends_with(':')
+}
+
+/// What to show while pacman (or sudo) waits: a password prompt alone —
+/// earlier tries and `Sorry, try again.` already went up once — else the
+/// screen's last rows, for questions that need their context.
+pub fn question_rows(partial: &str, tail: Vec<String>) -> Vec<String> {
+    if partial.to_lowercase().contains("password") {
+        vec![partial.trim_end().to_string()]
+    } else {
+        tail
+    }
 }
 
 pub fn classify_screen(line: &str, in_sync: bool) -> ScreenEvent {
@@ -307,6 +319,26 @@ mod tests {
         assert!(may_be_question(":: Proceed with installation? [Y/n] "));
         assert!(may_be_question("[sudo] password for someone:"));
         assert!(!may_be_question("   "));
+        // A sync row paused mid-draw is not a question.
+        assert!(!may_be_question(" core"));
+        assert!(may_be_question("Enter a number (default=1):"));
+    }
+
+    #[test]
+    fn a_password_prompt_shows_alone() {
+        let tail = vec![
+            "[sudo] password for x:".to_string(),
+            "Sorry, try again.".into(),
+            "[sudo] password for x:".into(),
+        ];
+        assert_eq!(
+            question_rows("[sudo] password for x: ", tail.clone()),
+            ["[sudo] password for x:"]
+        );
+        assert_eq!(
+            question_rows(":: Replace a with b? [Y/n]", tail.clone()),
+            tail
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use super::model::Run;
 use super::region::{CursorGuard, Painter};
 use super::render::{View, closing, closing_frames};
 use super::screen::Settler;
-use super::screen_line::may_be_question;
+use super::screen_line::{may_be_question, question_rows};
 
 /// One timed write of the recorded terminal output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +139,12 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
     let mut log = p.log.iter().peekable();
     let mut now = Duration::ZERO;
     let end = p.log.last().map_or(Duration::ZERO, |(at, _)| *at);
-    let idle_rows = |settler: &Settler| settler.tail(20.min(usize::from(p.height / 2)));
+    let idle_rows = |settler: &Settler| {
+        question_rows(
+            &settler.partial(),
+            settler.tail(20.min(usize::from(p.height / 2))),
+        )
+    };
     for c in p.chunks {
         let waiting = may_be_question(&settler.partial());
         let mut waited = Duration::ZERO;

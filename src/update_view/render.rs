@@ -2615,12 +2615,11 @@ fn closing_at(
             .map(|n| n.text.clone())
             .collect()
     };
-    // Three tiers. To do: a command or step the run's own output asked for,
+    // Two tiers. To do: a command or step the run's own output asked for,
     // with whose words they were. Good to know: records and notes that ask
-    // nothing. Quiet: counts of what stays in scrollback and the transcript.
+    // nothing. Counts of what is already in scrollback are not repeated.
     let mut todo: Vec<(String, String, String)> = Vec::new();
     let mut know: Vec<(String, String)> = Vec::new();
-    let mut quiet: Vec<String> = Vec::new();
     if let Some(t) = texts(&|k| *k == NoteKind::Reboot).first() {
         // The hook's own reason, when it gives one.
         // The hook's own words.
@@ -2638,10 +2637,6 @@ fn closing_at(
         todo.push(("rebuild".into(), rebuild.join(", "), String::new()));
     }
     // "local is newer than repo" was shown before the plan and asks nothing.
-    let newer = texts(&|k| *k == NoteKind::Warning)
-        .iter()
-        .filter(|w| w.contains(" is newer than "))
-        .count();
     for w in texts(&|k| *k == NoteKind::Warning)
         .into_iter()
         .filter(|w| !w.contains(" is newer than "))
@@ -2745,17 +2740,6 @@ fn closing_at(
             .collect();
         know.push(("snap-pac".into(), list.join(", ")));
     }
-    if newer > 0 {
-        quiet.push(format!("{newer} newer than repo"));
-    }
-    let n = run.unknown.len();
-    if n > 0 {
-        let lines = if n == 1 { "line" } else { "lines" };
-        quiet.push(format!(
-            "{n} more {lines} of output {} paclens transcript",
-            s.bullet()
-        ));
-    }
     // Not cut to the width: the receipt stays on screen, and a cut line loses
     // the part that says what to do. The terminal wraps it.
     let todo_mark = if arcade {
@@ -2775,17 +2759,13 @@ fn closing_at(
     };
     let need_right = {
         let kw = know.iter().map(|k| k.0.width()).max().unwrap_or(0).min(24);
-        let notes = know.iter().map(|k| 8 + kw + k.1.width()).max().unwrap_or(0);
-        let b = format!(" {} ", s.bullet());
-        notes.max(11 + quiet.join(&b).width())
+        know.iter().map(|k| 8 + kw + k.1.width()).max().unwrap_or(0)
     };
-    let two = !todo.is_empty()
-        && !(know.is_empty() && quiet.is_empty())
-        && need_left + 4 + need_right <= w;
+    let two = !todo.is_empty() && !know.is_empty() && need_left + 4 + need_right <= w;
     let tw = w;
     let mut left: Vec<String> = Vec::new();
     let mut right: Vec<String> = Vec::new();
-    if !todo.is_empty() || !know.is_empty() || !quiet.is_empty() {
+    if !todo.is_empty() || !know.is_empty() {
         out.push(String::new());
     }
     if !todo.is_empty() {
@@ -2868,10 +2848,6 @@ fn closing_at(
             };
             side.push(format!("      {k:<kw$}  {t}"));
         }
-    }
-    if !quiet.is_empty() {
-        let b = format!(" {} ", s.bullet());
-        side.push(s.dim(&format!("  {} quiet  {}", s.bullet(), quiet.join(&b))));
     }
     if two {
         for i in 0..left.len().max(right.len()) {
@@ -3352,13 +3328,13 @@ mod tests {
     }
 
     #[test]
-    fn receipt_counts_unrecognised_lines() {
+    fn receipt_does_not_recount_what_scrollback_holds() {
         let mut r = fixture_run();
         r.unknown = vec!["odd".into(), "odder".into()];
         let c = closing(&r, &view(Layout::Inline, Motif::Subtle), 120, "/t", &uni());
         assert!(
-            c.iter()
-                .any(|l| l.ends_with(" 2 more lines of output · paclens transcript")),
+            !c.iter()
+                .any(|l| l.contains("more lines") || l.contains("quiet")),
             "{c:?}"
         );
     }
