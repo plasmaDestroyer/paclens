@@ -1108,6 +1108,15 @@ fn children(
                             ),
                         ));
                     }
+                    // Over its usual time: said too, dim, no hold. Losses
+                    // are kept as honestly as wins.
+                    let over = usual.map_or(0, |u| took.saturating_sub(u).as_secs());
+                    if !running && over >= 1 {
+                        row.push(seg(
+                            Paint::Dim,
+                            format!("  +{}", duration(Duration::from_secs(over))),
+                        ));
+                    }
                     rows.push(row);
                     continue;
                 };
