@@ -792,7 +792,19 @@ fn children(
                     String::new()
                 };
                 let head = format!("eaten  {n:>2}{size}  ");
-                let mut segs = vec![seg(Paint::Dim, head.clone())];
+                // The count and bytes light when pacman's count rises; the
+                // newest name lights once its own finish row has gone.
+                let fresh = phase(run, k)
+                    .and_then(|p| p.bumped)
+                    .is_some_and(|t| now.saturating_sub(t) < BEAT);
+                let newest_landed = run
+                    .eaten
+                    .last()
+                    .is_some_and(|e| !run.in_flight.iter().any(|f| &f.name == e));
+                let mut segs = vec![seg(
+                    if fresh { Paint::Ok } else { Paint::Dim },
+                    head.clone(),
+                )];
                 let mut used = 5 + head.width();
                 for (k, e) in run.eaten.iter().rev().enumerate() {
                     let add = if k == 0 {
@@ -805,7 +817,14 @@ fn children(
                         break;
                     }
                     used += add.width();
-                    segs.push(seg(if k == 0 { Paint::Ok } else { Paint::Dim }, add));
+                    segs.push(seg(
+                        if k == 0 && newest_landed {
+                            Paint::Ok
+                        } else {
+                            Paint::Dim
+                        },
+                        add,
+                    ));
                 }
                 rows.push(segs);
             }
@@ -981,7 +1000,19 @@ fn children(
             // its time so far against the median of past runs: a bar in
             // the run's columns, marked as the estimate it is (`~`).
             let started: Vec<&Hook> = list.iter().filter(|h| h.started.is_some()).collect();
-            let from = started.len().saturating_sub(2);
+            let mut from = started.len().saturating_sub(2);
+            // A hook that just beat its usual time stays in view for a
+            // beat, even when quick ones start after it.
+            let won = |h: &Hook| match (h.started, h.ended, h.median) {
+                (Some(a), Some(z), Some(m)) => {
+                    z.saturating_sub(a) + Duration::from_secs(1) <= Duration::from_secs(m.secs)
+                        && now.saturating_sub(z) < BEAT * 2
+                }
+                _ => false,
+            };
+            if let Some(i) = started.iter().rposition(|h| won(h)) {
+                from = from.min(i);
+            }
             // pacman's trailing `...` says "running" and a `.` ends a
             // sentence; the mark says the first, the row needs neither.
             let desc_of = |h: &Hook| {

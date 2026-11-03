@@ -415,16 +415,25 @@ impl Run {
     /// What pacman's live rows show now; then each phase whose count rose
     /// since the last look notes when.
     pub fn observe_screen(&mut self, rows: &[String], at: Duration) {
-        // The check pacman is on now and its own percent.
+        // The check pacman is on now and its own percent. Its live row is
+        // pacman saying checks began: the phase starts on it, not only once
+        // a check line settles.
         self.live_check = None;
-        if self.current() == Some(PhaseKind::Checks) {
-            self.live_check = rows
-                .iter()
-                .rev()
-                .find_map(|r| match classify_screen(r, false) {
-                    ScreenEvent::Check { name, pct, .. } if pct < 100 => Some((name, pct)),
-                    _ => None,
-                });
+        let checking = rows
+            .iter()
+            .rev()
+            .map(|r| classify_screen(r, false))
+            .find(|ev| matches!(ev, ScreenEvent::Check { pct, .. } if *pct < 100));
+        if let Some(ev) = checking
+            && matches!(
+                self.current(),
+                None | Some(PhaseKind::Download | PhaseKind::Plan | PhaseKind::Checks)
+            )
+        {
+            if let ScreenEvent::Check { name, pct, .. } = &ev {
+                self.live_check = Some((name.clone(), *pct));
+            }
+            self.apply_screen(ev, at);
         }
         self.observe(rows, at);
         for p in &mut self.phases {
