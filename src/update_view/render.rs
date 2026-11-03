@@ -227,7 +227,8 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
         PhaseState::Done => (Paint::Ok, s.check()),
         // The running mark in its phase's colour, as the receipt's
         // ribbon paints it.
-        PhaseState::Running => (kind_paint(p.kind), g(s, "▸", ">")),
+        // Turning while paclens watches: it says alive, never how far.
+        PhaseState::Running => (kind_paint(p.kind), spinner(now, s)),
         PhaseState::Pending => (Paint::Dim, g(s, "·", ".")),
     };
     let time = took(p.started, p.ended, now)
@@ -262,6 +263,15 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
         seg(count_paint, format!("{n:>7}")),
         seg(text_paint, rest.trim_end().to_string()),
     ]
+}
+
+/// A braille spinner turning ten steps a second; `>` without colour.
+fn spinner(now: Duration, s: &Styles) -> &'static str {
+    const STEPS: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    if !s.colored() {
+        return ">";
+    }
+    STEPS[(now.as_millis() / 100 % 10) as usize]
 }
 
 /// A phase's colour: download cyan, packages green, hooks magenta, the
