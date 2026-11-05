@@ -161,9 +161,7 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
             run.observe_screen(&settler.tail(40), now + waited);
             let idle = (waiting && waited >= IDLE).then(|| idle_rows(&settler));
             painter.tick(out, &run, &p.view, now + waited, idle.as_deref(), &p.styles)?;
-            if idle.is_some() {
-                painter.prompt(out, &settler.partial())?;
-            }
+            painter.prompt(out, &settler.partial(), idle.is_some())?;
         }
         now += c.delay;
         for (l, styled) in settler.feed_styled(&c.bytes) {

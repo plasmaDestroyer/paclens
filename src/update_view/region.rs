@@ -239,13 +239,23 @@ impl Painter {
         Ok(())
     }
 
-    /// Plain mode, while pacman waits: its whole unfinished line, printed
-    /// once without a newline, so a piped run still shows the question.
-    pub fn prompt(&mut self, out: &mut impl Write, partial: &str) -> io::Result<()> {
-        if self.live || !self.shown.is_empty() || partial.is_empty() {
+    /// Plain mode: pacman's unfinished line once it is `idle` (waiting),
+    /// printed without a newline so a piped run still shows the question;
+    /// after that, what the answer adds to it (pacman's echo of the keys
+    /// typed), with a backspace taking a character back.
+    pub fn prompt(&mut self, out: &mut impl Write, partial: &str, idle: bool) -> io::Result<()> {
+        if self.live || partial == self.shown || (self.shown.is_empty() && !idle) {
             return Ok(());
         }
-        write!(out, "{partial}")?;
+        let same = self
+            .shown
+            .chars()
+            .zip(partial.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let gone = self.shown.chars().count() - same;
+        let added: String = partial.chars().skip(same).collect();
+        write!(out, "{}{added}", "\x08 \x08".repeat(gone))?;
         self.shown = partial.to_string();
         out.flush()
     }
@@ -458,7 +468,7 @@ mod tests {
         for _ in 0..3 {
             p.tick(&mut out, &run, &view, Duration::ZERO, Some(&idle), &s)
                 .unwrap();
-            p.prompt(&mut out, &idle[0]).unwrap();
+            p.prompt(&mut out, &idle[0], true).unwrap();
         }
         p.line(&mut out, ":: Proceed with installation? [Y/n] y")
             .unwrap();
@@ -466,6 +476,24 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "resolving dependencies...\n:: Proceed with installation? [Y/n] y\nend\n"
+        );
+    }
+
+    #[test]
+    fn plain_prompt_echoes_the_answer_as_it_is_typed() {
+        let mut p = Painter::new(false, 24, 80);
+        let mut out = Vec::new();
+        let q = ":: Proceed with installation? [Y/n]";
+        p.prompt(&mut out, q, false).unwrap();
+        assert!(out.is_empty(), "not shown before pacman waits");
+        p.prompt(&mut out, q, true).unwrap();
+        p.prompt(&mut out, &format!("{q} n"), false).unwrap();
+        p.prompt(&mut out, q, false).unwrap();
+        p.prompt(&mut out, &format!("{q} y"), false).unwrap();
+        p.line(&mut out, &format!("{q} y")).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!("{q} n\x08 \x08\x08 \x08 y\n")
         );
     }
 

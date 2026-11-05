@@ -252,9 +252,7 @@ pub fn run(
             settler.resize(c);
         }
         painter.tick(out, &model, &view, now, idle.as_deref(), &opts.styles)?;
-        if idle.is_some() {
-            painter.prompt(out, &settler.partial())?;
-        }
+        painter.prompt(out, &settler.partial(), idle.is_some())?;
         if let Some(status) = exited {
             break status;
         }
