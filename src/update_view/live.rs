@@ -32,7 +32,7 @@ use super::model::Run;
 use super::region::{CursorGuard, Painter};
 use super::render::{View, candy_enabled, closing, closing_frames};
 use super::screen::Settler;
-use super::screen_line::{may_be_question, question_rows};
+use super::screen_line::{answering, may_be_question, question_rows};
 
 /// The last run's raw pty output, `script(1)` style.
 pub const TRANSCRIPT: &str = "pacman-last.out";
@@ -231,6 +231,8 @@ pub fn run(
     if opts.keys {
         painter = painter.raw();
     }
+    // The question pacman waits on, kept while an answer is typed after it.
+    let mut asked = String::new();
     let status = loop {
         let now = start.elapsed();
         while let Ok(bytes) = rx.try_recv() {
@@ -261,13 +263,14 @@ pub fn run(
         if exited.is_some() {
             input.reaped();
         }
-        let idle =
-            (may_be_question(&settler.partial()) && last_bytes.elapsed() >= IDLE).then(|| {
-                question_rows(
-                    &settler.partial(),
-                    settler.tail(20.min(usize::from(rows / 2))),
-                )
-            });
+        let partial = settler.partial();
+        if may_be_question(&partial) && last_bytes.elapsed() >= IDLE {
+            asked = partial.clone();
+        } else if !answering(&partial, &asked) {
+            asked.clear();
+        }
+        let idle = (!asked.is_empty())
+            .then(|| question_rows(&partial, settler.tail(20.min(usize::from(rows / 2)))));
         // The pane can change size mid-run: draw and erase at its size now,
         // and let pacman's terminal follow.
         if let Ok((c, r)) = terminal::size()

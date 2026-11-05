@@ -91,6 +91,14 @@ pub fn may_be_question(partial: &str) -> bool {
     t.ends_with(']') || t.ends_with('?') || t.ends_with(':')
 }
 
+/// The question still being answered: `asked` was the partial line when it
+/// was last a question, and the user's typed answer only extends it. A new
+/// line (Enter) ends it. Without this, typing `n` at `[Y/n]` hid the
+/// question and the view looked busy while pacman waited for Enter.
+pub fn answering(partial: &str, asked: &str) -> bool {
+    !asked.is_empty() && partial.starts_with(asked)
+}
+
 /// What to show while pacman (or sudo) waits: a password prompt alone —
 /// earlier tries and `Sorry, try again.` already went up once — else the
 /// screen's last rows, for questions that need their context.
@@ -317,6 +325,12 @@ mod tests {
             "(10/75) checking package integrity   [C o o o ]   0%"
         ));
         assert!(may_be_question(":: Proceed with installation? [Y/n] "));
+        let asked = ":: Proceed with installation? [Y/n] ";
+        assert!(answering(":: Proceed with installation? [Y/n] n", asked));
+        assert!(answering(asked, asked));
+        assert!(!answering("", asked), "Enter: a new line");
+        assert!(!answering(":: Retrieving packages...", asked));
+        assert!(!answering("anything", ""));
         assert!(may_be_question("[sudo] password for someone:"));
         assert!(!may_be_question("   "));
         // A sync row paused mid-draw is not a question.
