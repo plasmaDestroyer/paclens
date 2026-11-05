@@ -252,11 +252,21 @@ pub fn map_exec_key(key: KeyEvent, done: bool) -> Action {
 pub fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         // Ctrl-A..Ctrl-Z → 0x01..0x1a (Ctrl-C = 0x03 interrupts the child).
+        // Ctrl-\ ] ^ _ → 0x1c..0x1f; crossterm reads those bytes back as
+        // Ctrl-4..Ctrl-7, so both spellings count (Ctrl-\ = SIGQUIT).
         if let KeyCode::Char(c) = key.code {
             let c = c.to_ascii_lowercase();
             if c.is_ascii_lowercase() {
                 return Some(vec![c as u8 - b'a' + 1]);
             }
+            let high = match c {
+                '4' | '\\' => 0x1c,
+                '5' | ']' => 0x1d,
+                '6' | '^' => 0x1e,
+                '7' | '_' => 0x1f,
+                _ => return None,
+            };
+            return Some(vec![high]);
         }
         return None;
     }
@@ -567,5 +577,20 @@ mod tests {
             Some(vec![0x04])
         );
         assert_eq!(encode_key(plain(KeyCode::F(5))), None);
+    }
+
+    #[test]
+    fn ctrl_backslash_reaches_the_child_in_either_spelling() {
+        for c in ['4', '\\'] {
+            assert_eq!(
+                encode_key(key(KeyCode::Char(c), KeyModifiers::CONTROL)),
+                Some(vec![0x1c]),
+                "{c}"
+            );
+        }
+        assert_eq!(
+            encode_key(key(KeyCode::Char('1'), KeyModifiers::CONTROL)),
+            None
+        );
     }
 }
