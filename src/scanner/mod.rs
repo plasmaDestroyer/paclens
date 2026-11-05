@@ -968,9 +968,10 @@ fn assemble(
     scan
 }
 
-/// The news feed and the mirror check (#1, #6), at once: a hung network
-/// costs one timeout for each, side by side, not in a row (the mirror is
-/// asked only when the master answered). Each is off with its own knob.
+/// The news feed and the mirror check (#1, #6), side by side. A dead
+/// network costs one timeout: the news and the master's marker fail
+/// together, and the mirror is asked only when the master answered. A
+/// mirror that hangs after that adds one more. Each is off with its knob.
 fn network(
     runner: &dyn CommandRunner,
     config: &Config,
