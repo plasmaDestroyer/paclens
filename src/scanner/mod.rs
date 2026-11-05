@@ -1467,6 +1467,15 @@ mod tests {
         }
 
         #[test]
+        fn a_dangling_lock_symlink_is_still_a_lock() {
+            let (lock, proc_root) = tree("dangling", &[(1, "systemd")]);
+            std::fs::remove_file(&lock).unwrap();
+            std::os::unix::fs::symlink(lock.with_extension("gone"), &lock).unwrap();
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Stale);
+            assert_eq!(recheck_db_lock_at(&DbLock::Stale, &lock, &proc_root), None);
+        }
+
+        #[test]
         fn the_tick_clears_a_lock_that_went() {
             let (lock, proc_root) = tree("tick-gone", &[(1, "systemd")]);
             std::fs::remove_file(&lock).unwrap();

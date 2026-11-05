@@ -1047,7 +1047,15 @@ impl App {
     pub fn db_lock(&self) -> &crate::analyzer::dblock::DbLock {
         &self.db_lock
     }
+    /// A refused `u` left the old lock's sentence in the flash; it goes with
+    /// the lock it describes. Any other flash stays.
     pub fn set_db_lock(&mut self, lock: crate::analyzer::dblock::DbLock) {
+        if lock != self.db_lock
+            && self.flash.is_some()
+            && self.flash == self.db_lock.explain(self.privilege_tool())
+        {
+            self.flash = None;
+        }
         self.db_lock = lock;
     }
     pub fn reboot_status(&self) -> crate::analyzer::RebootStatus {
@@ -1909,6 +1917,26 @@ mod tests {
         assert!(app.is_scanning());
         app.replace_scan(scan_with_sources(three_sources()));
         assert!(!app.is_scanning());
+    }
+
+    #[test]
+    fn a_released_lock_takes_its_own_flash_with_it_and_no_other() {
+        use crate::analyzer::dblock::DbLock;
+        let mut app = app();
+        let held = DbLock::Held {
+            pid: 4242,
+            name: "pacman".into(),
+            confidence: crate::model::Confidence::Inferred,
+        };
+        app.set_db_lock(held.clone());
+        app.set_flash(held.explain(app.privilege_tool()).unwrap_or_default());
+        app.set_db_lock(DbLock::Free);
+        assert_eq!(app.flash(), None, "\"wait for it\" outlived the lock");
+
+        app.set_db_lock(held);
+        app.set_flash("scan failed: boom");
+        app.set_db_lock(DbLock::Free);
+        assert_eq!(app.flash(), Some("scan failed: boom"));
     }
 
     #[test]
