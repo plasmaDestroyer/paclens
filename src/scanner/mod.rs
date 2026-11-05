@@ -937,14 +937,9 @@ fn assemble(
     // source row, so it lands with the finished result rather than partway.
     scan.kernel = read_running_kernel();
     scan.pacfiles = find_pacfiles(&config.cleanup.config_dirs);
-    // A network round trip, so it runs after the lanes rather than holding a
-    // row: nothing on the source table waits for it.
-    if config.scan.arch_news && lanes.pacman {
-        scan.news = crate::providers::news::fetch(runner, config.scan.provider_timeout_secs);
-    }
-    if config.scan.mirror_check && lanes.pacman {
-        scan.mirror = crate::providers::mirror::check(runner, config.scan.provider_timeout_secs);
-    }
+    // Network round trips, so they run after the lanes rather than holding a
+    // row: nothing on the source table waits for them.
+    (scan.news, scan.mirror) = network(runner, config, lanes.pacman);
     // What each repo serves, against what pacman accepts (#78): one local
     // `pacman -Si`, after the lanes, because it needs the repo list.
     if lanes.pacman
@@ -971,6 +966,32 @@ fn assemble(
     let paths = crate::analyzer::migrate::probe_paths(&candidates, &config.overlap.extra_mappings);
     scan.profile_dir_sizes = measure_profile_dirs(runner, home_dir, &paths);
     scan
+}
+
+/// The news feed and the mirror check (#1, #6), at once: a hung network
+/// costs one timeout, not three in a row. Each is off with its own knob.
+fn network(
+    runner: &dyn CommandRunner,
+    config: &Config,
+    pacman: bool,
+) -> (
+    Vec<crate::providers::news::NewsItem>,
+    Option<crate::providers::mirror::MirrorCheck>,
+) {
+    let timeout = config.scan.provider_timeout_secs;
+    std::thread::scope(|s| {
+        let news = s.spawn(|| {
+            if config.scan.arch_news && pacman {
+                crate::providers::news::fetch(runner, timeout)
+            } else {
+                Vec::new()
+            }
+        });
+        let mirror = (config.scan.mirror_check && pacman)
+            .then(|| crate::providers::mirror::check(runner, timeout))
+            .flatten();
+        (news.join().unwrap_or_default(), mirror)
+    })
 }
 
 /// The unchanging half of what `compose` needs.
@@ -1367,6 +1388,23 @@ fn reconcile_flatpak_updates(updates: &mut [PendingUpdate], installed: &[Package
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_mirror_check_runs_only_with_its_knob_and_pacman() {
+        use crate::providers::test_support::MockRunner;
+        let runner = MockRunner::new().with(
+            "pacman-conf --repo=core Server",
+            "https://m.org/core/os/x86_64\n",
+            0,
+        );
+        let mut config = Config::default();
+        config.scan.arch_news = false;
+        let (_, m) = super::network(&runner, &config, true);
+        assert_eq!(m.unwrap().server, "https://m.org/core/os/x86_64");
+        assert_eq!(super::network(&runner, &config, false).1, None);
+        config.scan.mirror_check = false;
+        assert_eq!(super::network(&runner, &config, true).1, None);
+    }
+
     mod db_lock {
         use super::super::{probe_db_lock_at, recheck_db_lock_at};
         use crate::analyzer::dblock::DbLock;
