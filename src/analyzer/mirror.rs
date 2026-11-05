@@ -80,7 +80,7 @@ impl Verdict {
     /// What to run about it: prints a fresher list, writes nothing.
     pub fn hint(&self) -> Option<&'static str> {
         matches!(self, Verdict::Behind { .. })
-            .then_some("fresher list (prints, writes nothing): reflector --latest 20 --sort rate")
+            .then_some("list fresh mirrors (writes nothing): reflector --latest 20 --sort rate")
     }
 
     /// The dashboard row. Only a finding gets one; `unknown` stays in

@@ -541,6 +541,20 @@ fn subpane(theme: &Theme, title: &'static str) -> Block<'static> {
         .padding(Padding::horizontal(1))
 }
 
+/// Width of an attention row's label; the bullet and its space add two.
+const KV_LABEL: usize = 14;
+
+/// The mirror row's value: the host after the lag when the whole of it fits
+/// in `room` columns, never a cut one (#6).
+fn mirror_value(label: String, host: &str, room: usize) -> String {
+    let long = format!("{label} · {host}");
+    if long.chars().count() <= room {
+        long
+    } else {
+        label
+    }
+}
+
 /// System pane: cache size, orphans, overlaps, scan age — the analyzer's
 /// dashboard debut (design §13 "dashboard enrichment").
 fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
@@ -552,7 +566,7 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     let kv = |label: &str, value: String, style: Style| {
         Line::from(vec![
             Span::styled(format!("{} ", theme.glyphs.bullet), theme.dim),
-            Span::styled(format!("{:14}", label), theme.dim),
+            Span::styled(format!("{:w$}", label, w = KV_LABEL), theme.dim),
             Span::styled(value, style),
         ])
     };
@@ -595,15 +609,12 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     if let (Some(label), crate::analyzer::mirror::Verdict::Behind { host, .. }) =
         (mirror.label(), &mirror)
     {
-        // The host when the pane has room for all of it; never a cut one.
-        let long = format!("{label} · {host}");
-        let room = (inner.width as usize).saturating_sub(16);
-        let value = if long.chars().count() <= room {
-            long
-        } else {
-            label
-        };
-        found.push(kv("core mirror", value, theme.accent));
+        let room = (inner.width as usize).saturating_sub(KV_LABEL + 2);
+        found.push(kv(
+            "core mirror",
+            mirror_value(label, host, room),
+            theme.accent,
+        ));
     }
     for (_, bins, runs) in crate::analyzer::shadows::groups(&app.scan().shadows) {
         found.push(kv(
@@ -3647,6 +3658,17 @@ mod tests {
         assert!(
             !text.contains("reboot"),
             "furniture on a healthy system:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_mirror_row_takes_the_host_only_when_all_of_it_fits() {
+        let long = "2 days behind · m.org";
+        let n = long.chars().count();
+        assert_eq!(mirror_value("2 days behind".into(), "m.org", n), long);
+        assert_eq!(
+            mirror_value("2 days behind".into(), "m.org", n - 1),
+            "2 days behind"
         );
     }
 
