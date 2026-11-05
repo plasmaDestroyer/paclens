@@ -155,7 +155,7 @@ paclens migrate firefox --run   # run the copy: plan, y/N, backup, rollback bloc
 paclens history                 # what past upgrades changed, newest first
 paclens history --package firefox   # one package: every line the log has
 paclens pacman -Syu             # pacman under the live view; installs and upgrades (-S) only
-paclens transcript              # the last `paclens pacman` run, as pacman printed it
+paclens transcript              # the last pacman run under the view (`pacman` or `update`), as printed
 ```
 
 (Or press `c` on the dashboard for the same report in the TUI.)

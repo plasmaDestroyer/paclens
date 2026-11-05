@@ -2087,7 +2087,9 @@ YYYY-MM-DD | no --noconfirm for pacman
            | stdout and stderr but stays in paclens's session, with the
            | user's terminal as its own: the `sudo -v` at the start covers
            | it, and pacman still draws on the pty. Nothing new runs as root
-           | and no password passes through paclens. The pty is nobody's
+           | and, on this shared path, no password passes through paclens
+           | (the fallback below types it through the view, as
+           | `paclens pacman` does). The pty is nobody's
            | terminal, so the view sends ^C to sudo as a signal and sudo
            | passes it on (^Z is not sent: sudo would stop paclens with it).
            | Right before the step, `sudo -n -v` checks the timestamp is
