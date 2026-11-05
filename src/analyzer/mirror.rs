@@ -1,11 +1,14 @@
 //! Whether the mirror pacman asks first for `core` is behind Arch (#6).
 //!
-//! The gap between two `lastupdate` markers is measured, so the number is
-//! shown as it is. What it is *not* is a partial upgrade: a full upgrade from
-//! a coherent older mirror leaves a coherent older system. So the sentence
-//! says "behind", and stops there (design §13, 2026-11-05).
+//! The gap is the master's newest change (`lastupdate`) less the master time
+//! the mirror's copy was taken (its `lastsync`): both on the master's clock,
+//! so no local clock enters it. It never overstates: a quiet master leaves
+//! nothing the mirror lacks, and the gap reads under a day. The number is
+//! measured and shown as it is. What it is *not* is a partial upgrade: a full
+//! upgrade from a coherent older mirror leaves a coherent older system. So
+//! the sentence says "behind", and stops there (design §13, 2026-11-05).
 //!
-//! The marker moves on any change to the master's tree, not only to `core`,
+//! The master's marker moves on any change to its tree, not only to `core`,
 //! and pacman falls back to the next server when the first fails; the gap is
 //! about that one server, and the sentences name it.
 
@@ -27,22 +30,13 @@ pub enum Verdict {
     Behind { host: String, days: i64 },
 }
 
-/// The mirror root a `core` server URL sits under: everything before
-/// `core/os/<arch>`. Any other layout is not guessed at.
-pub fn base(server: &str) -> Option<&str> {
-    let (rest, arch) = server.trim_end_matches('/').rsplit_once('/')?;
-    let rest = rest.strip_suffix("/core/os")?;
-    if arch.is_empty() {
-        return None;
-    }
-    Some(&server[..=rest.len()])
-}
-
-/// The host part of a server URL, or the whole URL when it has none.
+/// The host part of a server URL, or the whole URL when it has none. A
+/// `user:password@` in it is never printed.
 pub fn host(server: &str) -> &str {
     server
         .split_once("://")
         .and_then(|(_, r)| r.split('/').next())
+        .map(|a| a.rsplit_once('@').map_or(a, |(_, h)| h))
         .filter(|h| !h.is_empty())
         .unwrap_or(server)
 }
@@ -76,9 +70,7 @@ impl Verdict {
     pub fn note(&self) -> Option<String> {
         match self {
             Verdict::Quiet => None,
-            Verdict::Unknown { host } => Some(format!(
-                "core mirror {host}: no lastupdate to compare, staleness unknown"
-            )),
+            Verdict::Unknown { host } => Some(format!("core mirror {host}: staleness unknown")),
             Verdict::Behind { host, days: n } => {
                 Some(format!("core mirror {host} is {} behind Arch", days(*n)))
             }
@@ -88,7 +80,7 @@ impl Verdict {
     /// What to run about it: prints a fresher list, writes nothing.
     pub fn hint(&self) -> Option<&'static str> {
         matches!(self, Verdict::Behind { .. })
-            .then_some("a fresher list, printed only: reflector --latest 20 --sort rate")
+            .then_some("fresher list (prints, writes nothing): reflector --latest 20 --sort rate")
     }
 
     /// The dashboard row. Only a finding gets one; `unknown` stays in
@@ -117,32 +109,6 @@ mod tests {
     }
 
     #[test]
-    fn base_strips_core_os_arch() {
-        assert_eq!(base(SERVER), Some("https://archlinux.cachyos.org/repo/"));
-        assert_eq!(
-            base("https://geo.mirror.pkgbuild.com/core/os/x86_64/"),
-            Some("https://geo.mirror.pkgbuild.com/")
-        );
-        assert_eq!(
-            base("file:///srv/mirror/core/os/x86_64"),
-            Some("file:///srv/mirror/")
-        );
-    }
-
-    #[test]
-    fn any_other_layout_has_no_base() {
-        for s in [
-            "https://x.org/arch/",
-            "https://x.org/core/os/",
-            "https://x.org/extra/os/x86_64",
-            "https://x.org/mycore/os/x86_64",
-            "",
-        ] {
-            assert_eq!(base(s), None, "{s:?}");
-        }
-    }
-
-    #[test]
     fn host_is_the_authority() {
         assert_eq!(host(SERVER), "archlinux.cachyos.org");
         assert_eq!(
@@ -150,6 +116,10 @@ mod tests {
             "file:///srv/m/core/os/x86_64"
         );
         assert_eq!(host("weird"), "weird");
+        assert_eq!(
+            host("https://user:secret@example.org/core/os/x86_64"),
+            "example.org"
+        );
     }
 
     #[test]
@@ -173,7 +143,7 @@ mod tests {
         );
         assert_eq!(
             v.note().unwrap(),
-            "core mirror archlinux.cachyos.org: no lastupdate to compare, staleness unknown"
+            "core mirror archlinux.cachyos.org: staleness unknown"
         );
         assert_eq!(v.label(), None);
         assert_eq!(v.hint(), None);
@@ -205,13 +175,15 @@ mod tests {
 
     #[test]
     fn sentences_fit_one_80_column_line() {
-        // A long real-world host still leaves the line readable.
-        let v = Verdict::Behind {
-            host: "mirror.sg.cdn-perfprod.com".into(),
+        // The longest host in this machine's mirrorlist-sized set.
+        let host = "archlinux.uk.mirror.allworldit.com".to_string();
+        let behind = Verdict::Behind {
+            host: host.clone(),
             days: 365,
         };
-        assert!(v.note().unwrap().len() + 2 <= 80);
-        assert!(v.hint().unwrap().len() + 4 <= 80);
-        assert!(v.label().unwrap().len() <= 21);
+        assert!(behind.note().unwrap().len() + 2 <= 80);
+        assert!(behind.hint().unwrap().len() + 4 <= 80);
+        assert!(behind.label().unwrap().len() <= 21);
+        assert!(Verdict::Unknown { host }.note().unwrap().len() + 2 <= 80);
     }
 }
