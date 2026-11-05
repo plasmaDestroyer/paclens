@@ -120,10 +120,10 @@ fn run_loop(
             .draw(|frame| draw::draw(frame, app))
             .context("failed to draw the terminal frame")?;
 
-        // A lock seen earlier and gone now: one stat, so "wait for it" does
-        // not outlive the pacman that held it (#5).
-        if app.db_lock().is_locked() && !Path::new(crate::analyzer::dblock::LOCK_PATH).exists() {
-            app.set_db_lock(crate::analyzer::dblock::DbLock::Free);
+        // A lock that went, or whose holder exited: "wait for it" must not
+        // outlive the pacman that held it (#5).
+        if let Some(lock) = scanner::recheck_db_lock(app.db_lock()) {
+            app.set_db_lock(lock);
         }
         // Land a finished background scan, if any.
         if let Some(active) = &job {

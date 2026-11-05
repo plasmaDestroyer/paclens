@@ -326,7 +326,7 @@ fn probe_db_lock_at(lock: &Path, proc_root: &Path) -> crate::analyzer::dblock::D
     let mut visible = std::fs::read_to_string(proc_root.join("1/comm")).is_ok();
     let mut procs = Vec::new();
     let Ok(entries) = std::fs::read_dir(proc_root) else {
-        return verdict(lock.exists(), false, &procs);
+        return verdict(!gone(lock), false, &procs);
     };
     for entry in entries.flatten() {
         let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
@@ -355,7 +355,47 @@ fn probe_db_lock_at(lock: &Path, proc_root: &Path) -> crate::analyzer::dblock::D
         });
     }
     // Released while we looked: free, not "likely stale".
-    verdict(lock.exists(), visible, &procs)
+    verdict(!gone(lock), visible, &procs)
+}
+
+/// Only "no such file" means gone: any other failed stat is a look that did
+/// not happen, and must never read as a released lock (#5).
+fn gone(path: &Path) -> bool {
+    matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// The TUI's per-tick check: what `prev` has become, or `None` when nothing
+/// worth a probe changed. One stat while the lock stands; a full probe only
+/// when the lock went or the process named as its holder exited — a crashed
+/// pacman must not leave "wait for it" on screen.
+pub fn recheck_db_lock(
+    prev: &crate::analyzer::dblock::DbLock,
+) -> Option<crate::analyzer::dblock::DbLock> {
+    recheck_db_lock_at(
+        prev,
+        Path::new(crate::analyzer::dblock::LOCK_PATH),
+        Path::new("/proc"),
+    )
+}
+
+fn recheck_db_lock_at(
+    prev: &crate::analyzer::dblock::DbLock,
+    lock: &Path,
+    proc_root: &Path,
+) -> Option<crate::analyzer::dblock::DbLock> {
+    use crate::analyzer::dblock::DbLock;
+    if !prev.is_locked() {
+        return None;
+    }
+    if gone(lock) {
+        return Some(DbLock::Free);
+    }
+    match prev {
+        DbLock::Held { pid, .. } if gone(&proc_root.join(pid.to_string())) => {
+            Some(probe_db_lock_at(lock, proc_root))
+        }
+        _ => None,
+    }
 }
 
 /// Return a usable `ScanResult`: a fresh cache hit when possible, otherwise a
@@ -1317,7 +1357,7 @@ fn reconcile_flatpak_updates(updates: &mut [PendingUpdate], installed: &[Package
 #[cfg(test)]
 mod tests {
     mod db_lock {
-        use super::super::probe_db_lock_at;
+        use super::super::{probe_db_lock_at, recheck_db_lock_at};
         use crate::analyzer::dblock::DbLock;
         use crate::model::Confidence;
         use std::path::{Path, PathBuf};
@@ -1424,6 +1464,49 @@ mod tests {
                 probe_db_lock_at(&lock.join("db.lck"), &proc_root),
                 DbLock::Unknown
             );
+        }
+
+        #[test]
+        fn the_tick_clears_a_lock_that_went() {
+            let (lock, proc_root) = tree("tick-gone", &[(1, "systemd")]);
+            std::fs::remove_file(&lock).unwrap();
+            assert_eq!(
+                recheck_db_lock_at(&DbLock::Stale, &lock, &proc_root),
+                Some(DbLock::Free)
+            );
+        }
+
+        #[test]
+        fn the_tick_never_reads_a_failed_stat_as_released() {
+            let (lock, proc_root) = tree("tick-nostat", &[(1, "systemd")]);
+            let bad = lock.join("db.lck"); // ENOTDIR, not ENOENT
+            assert_eq!(recheck_db_lock_at(&DbLock::Unknown, &bad, &proc_root), None);
+        }
+
+        #[test]
+        fn the_tick_reprobes_when_the_holder_exits() {
+            let (lock, proc_root) = tree("tick-exit", &[(1, "systemd")]);
+            let crashed = DbLock::Held {
+                pid: 4242,
+                name: "pacman".into(),
+                confidence: Confidence::Inferred,
+            };
+            assert_eq!(
+                recheck_db_lock_at(&crashed, &lock, &proc_root),
+                Some(DbLock::Stale)
+            );
+        }
+
+        #[test]
+        fn the_tick_leaves_a_live_holder_and_a_free_lock_alone() {
+            let (lock, proc_root) = tree("tick-live", &[(1, "systemd"), (4242, "pacman")]);
+            let live = DbLock::Held {
+                pid: 4242,
+                name: "pacman".into(),
+                confidence: Confidence::Inferred,
+            };
+            assert_eq!(recheck_db_lock_at(&live, &lock, &proc_root), None);
+            assert_eq!(recheck_db_lock_at(&DbLock::Free, &lock, &proc_root), None);
         }
 
         #[test]

@@ -64,7 +64,7 @@ pub fn run(
         // The block first: the list below is what runs once it clears.
         if let Some(why) = &blocked {
             println!("{}", styles.error(&format!("nothing would run: {why}")));
-            println!("{}\n", styles.dim("once the lock clears:"));
+            println!("{}", styles.dim("once the lock clears:"));
         }
         print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
         return Ok(());
