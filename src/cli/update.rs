@@ -68,7 +68,7 @@ pub fn run(
         return Ok(());
     }
     if let Some(why) = blocked {
-        anyhow::bail!("nothing ran — {why}");
+        anyhow::bail!("nothing ran: {why}");
     }
     execute_flow(config, &plan, parallel, styles)
 }
