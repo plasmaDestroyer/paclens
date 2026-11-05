@@ -42,8 +42,12 @@ pub fn check(runner: &dyn CommandRunner, timeout_secs: u64) -> Option<MirrorChec
     }
     let now = chrono::Utc::now().timestamp();
     let read = |url: &str| fetch(runner, url, timeout_secs).and_then(|b| parse_stamp(&b, now));
-    let mirror = base(&server).and_then(|b| read(&format!("{b}lastsync")));
+    // The master first: without it there is nothing to compare against, so
+    // offline costs one timeout and no request goes to the mirror.
     let reference = read(REFERENCE);
+    let mirror = reference
+        .and(base(&server))
+        .and_then(|b| read(&format!("{b}lastsync")));
     Some(MirrorCheck {
         server,
         mirror,
@@ -198,6 +202,19 @@ mod tests {
                 reference: Some(1_793_902_445),
             })
         );
+    }
+
+    #[test]
+    fn no_master_means_the_mirror_is_not_asked() {
+        // The mirror would answer; it must not be asked.
+        let runner = MockRunner::new()
+            .with("pacman-conf --repo=core Server", SERVERS, 0)
+            .with(
+                &format!("{CURL} https://archlinux.cachyos.org/repo/lastsync"),
+                "1793900867\n",
+                0,
+            );
+        assert_eq!(check(&runner, 10).unwrap().mirror, None);
     }
 
     #[test]
