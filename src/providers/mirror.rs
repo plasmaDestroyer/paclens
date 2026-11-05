@@ -49,10 +49,23 @@ pub fn check(runner: &dyn CommandRunner, timeout_secs: u64) -> Option<MirrorChec
         .and(base(&server))
         .and_then(|b| read(&format!("{b}lastsync")));
     Some(MirrorCheck {
-        server,
+        server: without_userinfo(&server),
         mirror,
         reference,
     })
+}
+
+/// The URL with any `user:password@` taken out: the check lands in the scan
+/// cache, and paclens never stores credentials (design §11).
+fn without_userinfo(server: &str) -> String {
+    let Some((scheme, rest)) = server.split_once("://") else {
+        return server.to_string();
+    };
+    let end = rest.find('/').unwrap_or(rest.len());
+    match rest[..end].rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://{host}{}", &rest[end..]),
+        None => server.to_string(),
+    }
 }
 
 /// The mirror root a `core` server URL sits under: everything before
@@ -243,12 +256,45 @@ mod tests {
     fn a_failed_http_read_is_no_number_even_with_a_body() {
         let runner = MockRunner::new()
             .with("pacman-conf --repo=core Server", SERVERS, 0)
+            .with(&format!("{CURL} {REFERENCE}"), "1793902445\n", 0)
             .with(
                 &format!("{CURL} https://archlinux.cachyos.org/repo/lastsync"),
                 "1793900867\n",
                 22,
             );
-        assert_eq!(check(&runner, 10).unwrap().mirror, None);
+        let c = check(&runner, 10).unwrap();
+        // The master answered, so the mirror was asked and its error page refused.
+        assert_eq!((c.reference, c.mirror), (Some(1_793_902_445), None));
+    }
+
+    #[test]
+    fn credentials_are_used_but_never_kept() {
+        let runner = MockRunner::new()
+            .with(
+                "pacman-conf --repo=core Server",
+                "https://u:secret@m.example/arch/core/os/x86_64\n",
+                0,
+            )
+            .with(&format!("{CURL} {REFERENCE}"), "1793902445\n", 0)
+            .with(
+                &format!("{CURL} https://u:secret@m.example/arch/lastsync"),
+                "1793900867\n",
+                0,
+            );
+        let c = check(&runner, 10).unwrap();
+        assert_eq!(c.server, "https://m.example/arch/core/os/x86_64");
+        assert_eq!(c.mirror, Some(1_793_900_867));
+    }
+
+    #[test]
+    fn without_userinfo_leaves_other_urls_alone() {
+        assert_eq!(
+            without_userinfo("https://a@b.org/x@y/core"),
+            "https://b.org/x@y/core"
+        );
+        assert_eq!(without_userinfo("https://b.org/core"), "https://b.org/core");
+        assert_eq!(without_userinfo("file:///srv/m/core"), "file:///srv/m/core");
+        assert_eq!(without_userinfo("weird"), "weird");
     }
 
     #[test]
