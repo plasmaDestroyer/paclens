@@ -2176,8 +2176,10 @@ YYYY-MM-DD | no --noconfirm for pacman
            | leaves a coherent older system, and claiming a breakage the
            | evidence cannot show is a number that lies (§3). Only the first
            | server: pacman falls back per file on failure, so the sentence
-           | names the host it checked (without any `user:pass@`). Offline
-           | (the master unreachable) is silent; the master answering and the
+           | names the host it checked (without any `user:pass@`). The master
+           | is read first and the mirror only when it answered, beside the
+           | news: offline costs one provider timeout, is silent, and sends
+           | nothing to the mirror; the master answering and the
            | mirror not is `core mirror <host>: staleness unknown` in `status`
            | only — a mirror without the file would otherwise hold a
            | dashboard row for ever. The row carries the host when the pane

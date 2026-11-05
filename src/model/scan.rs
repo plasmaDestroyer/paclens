@@ -34,6 +34,9 @@ use super::{Package, PendingUpdate, Source};
 /// `flatpak-user` / `flatpak-system` ids that nothing matches any more, so it
 /// must be discarded rather than read.
 /// v17: source scan failures are retained, so an empty failed check is not a zero.
+/// v20: `mirror` — the first `core` server's marker against the master's (#6).
+/// v21: that marker is the mirror's `lastsync`, not its `lastupdate`; a v20
+/// cache holds the rejected metric and must not be read as the new one.
 pub const SCHEMA_VERSION: u32 = 21;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
