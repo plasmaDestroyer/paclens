@@ -2073,6 +2073,11 @@ YYYY-MM-DD | no --noconfirm for pacman
            | must never erase to the screen's end from the region's top row:
            | that is a whole-screen clear, and tmux (and others) push the
            | screen into scrollback, a copy per frame. Rows clear as written.
+           | The receipt's quiet tier went too: its counts (`newer than
+           | repo`, unrecognised lines) recounted what scrollback already
+           | holds, so the receipt is to do and good to know. `local is newer
+           | than repo` is the one line re-laid in scrollback, as an aligned
+           | row with every figure kept; pacman's words are in the transcript.
 
 ```
 
