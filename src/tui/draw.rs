@@ -569,6 +569,10 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
     // Below the plan, only findings get a row: a healthy machine says so in
     // one line instead of a column of zeros.
     let mut found: Vec<Line<'static>> = Vec::new();
+    // First among the findings: `u` will not run past it (#5).
+    if let Some(label) = app.db_lock().label() {
+        found.push(kv("pacman db", label, theme.error));
+    }
     let since = crate::analyzer::news::last_upgrade(app.history_transactions());
     let news = crate::analyzer::news::relevant(app.scan(), since);
     if let Some(first) = news.first() {
@@ -3526,6 +3530,35 @@ mod tests {
         assert!(
             !text.contains("by name"),
             "noise on the ordinary case:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_held_db_lock_leads_the_findings_and_a_free_one_is_absent() {
+        use crate::analyzer::dblock::DbLock;
+        use crate::analyzer::kernel::RunningKernel;
+        let mut s = scan_with(Vec::new());
+        let mut kernel = pkg("linux-cachyos", SourceId::pacman());
+        kernel.version = "7.2.3-1".to_string();
+        s.packages = vec![kernel];
+        s.kernel = Some(RunningKernel {
+            release: "7.2.2-1-cachyos".to_string(),
+            modules_present: false,
+        });
+        let mut app = App::new(s, Theme::none(), AppOptions::test());
+        let text = render(&app, 100, 24);
+        assert!(!text.contains("pacman db"), "furniture:\n{text}");
+        app.set_db_lock(DbLock::Held {
+            pid: 4242,
+            name: "pacman".into(),
+            confidence: crate::model::Confidence::Inferred,
+        });
+        let text = render(&app, 100, 24);
+        let row = |needle: &str| text.lines().position(|l| l.contains(needle));
+        assert!(text.contains("pacman (pid 4242) running"), "{text}");
+        assert!(
+            row("pacman db") < row("reboot"),
+            "the lock must lead the findings:\n{text}"
         );
     }
 

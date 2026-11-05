@@ -91,6 +91,7 @@ pub fn run(
             theme,
             app::AppOptions::from_config(config, executor::sudo::detect()),
         );
+        app.set_db_lock(scanner::probe_db_lock());
         let mut job = None;
         if start_scanning {
             app.set_scanning(true);
@@ -125,7 +126,12 @@ fn run_loop(
                 Ok(ScanEvent::Progress(scan)) => app.replace_scan_partial(*scan),
                 Ok(ScanEvent::Done(result)) => {
                     match *result {
-                        Ok(scan) => app.replace_scan(scan), // clears the scanning flag
+                        Ok(scan) => {
+                            app.replace_scan(scan); // clears the scanning flag
+                            // After a run, too: a cancelled pacman can leave
+                            // the lock behind (#5).
+                            app.set_db_lock(scanner::probe_db_lock());
+                        }
                         Err(err) => {
                             // The lanes that never reported still have not:
                             // their rows keep last scan's numbers and say so,
@@ -288,6 +294,7 @@ fn run_loop(
                 // themselves inside the pty console.
                 let plan = app.update_plan();
                 let tool = app.privilege_tool();
+                app.set_db_lock(scanner::probe_db_lock());
                 if !app.scan_settled() {
                     // A plan built from half a scan is a plan for a machine
                     // that does not exist. "You're up to date" here would be
@@ -297,6 +304,14 @@ fn run_loop(
                     app.set_flash("nothing selected to update");
                 } else if executor::executable_steps(&plan, tool) == 0 {
                     app.set_flash("no privilege tool found (sudo/doas/pkexec) — cannot update");
+                } else if let Some(why) = app
+                    .db_lock()
+                    .blocks(&plan)
+                    .then(|| app.db_lock().explain(tool))
+                    .flatten()
+                {
+                    // Before pacman fails on it with a terse error (#5).
+                    app.set_flash(why);
                 } else {
                     let (rows, cols) = terminal
                         .size()

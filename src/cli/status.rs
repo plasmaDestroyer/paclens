@@ -11,6 +11,7 @@
 
 use std::path::Path;
 
+use crate::analyzer::dblock::DbLock;
 use crate::cli::style::Styles;
 use crate::config::Config;
 use crate::format::{human_bytes, relative_time};
@@ -32,7 +33,10 @@ pub fn run(
     )
     .ok()
     .and_then(|log| crate::analyzer::news::last_upgrade(&crate::analyzer::history::parse(&log)));
-    print!("{}", render_status_since(&scan, since, styles));
+    // Live, not from the scan: a lock outlives no cache (#5).
+    let lock = scanner::probe_db_lock();
+    let tool = crate::executor::sudo::detect();
+    print!("{}", render_status_since(&scan, since, &lock, tool, styles));
     Ok(())
 }
 
@@ -71,7 +75,7 @@ fn check_line(scan: Option<&ScanResult>) -> (String, u8) {
 /// deterministic and unit-testable.
 #[cfg(test)]
 fn render_status(scan: &ScanResult, s: &Styles) -> String {
-    render_status_since(scan, None, s)
+    render_status_since(scan, None, &DbLock::Free, None, s)
 }
 
 /// [`render_status`], with news filtered to posts newer than `since` — the
@@ -79,6 +83,8 @@ fn render_status(scan: &ScanResult, s: &Styles) -> String {
 fn render_status_since(
     scan: &ScanResult,
     since: Option<chrono::DateTime<chrono::FixedOffset>>,
+    lock: &DbLock,
+    tool: Option<&str>,
     s: &Styles,
 ) -> String {
     let total = scan.updates.len();
@@ -175,6 +181,11 @@ fn render_status_since(
         crate::analyzer::outranked::summary(&crate::analyzer::outranked::outranked(scan))
     {
         out.push_str(&s.summary_updates(&format!("  {note}")));
+        out.push('\n');
+    }
+    // An update would stop on it, so it reads as an error (#5).
+    if let Some(why) = lock.explain(tool) {
+        out.push_str(&s.error(&format!("  {why}")));
         out.push('\n');
     }
     // Same sentence the dashboard prints, from the same analyzer (#3).
@@ -632,6 +643,23 @@ mod tests {
         assert!(out.contains("* ok"), "source should still read ok:\n{out}");
         assert!(out.contains("config asks for yay"), "{out}");
         assert!(out.contains("using paru"), "{out}");
+    }
+
+    #[test]
+    fn a_held_db_lock_is_named_and_a_free_one_is_silent() {
+        use crate::model::Confidence;
+        let scan = scan_with(Vec::new(), Vec::new(), true);
+        let held = DbLock::Held {
+            pid: 4242,
+            name: "pacman".into(),
+            confidence: Confidence::Inferred,
+        };
+        let out = render_status_since(&scan, None, &held, Some("sudo"), &ascii_styles());
+        assert!(out.contains("pacman (pid 4242) likely holds it"), "{out}");
+        let out = render_status_since(&scan, None, &DbLock::Stale, Some("doas"), &ascii_styles());
+        assert!(out.contains("doas rm /var/lib/pacman/db.lck"), "{out}");
+        let out = render_status(&scan, &ascii_styles());
+        assert!(!out.contains("db.lck") && !out.contains("locked"), "{out}");
     }
 
     #[test]

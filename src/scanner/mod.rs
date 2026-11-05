@@ -294,6 +294,48 @@ fn read_running_kernel() -> Option<crate::analyzer::kernel::RunningKernel> {
     })
 }
 
+/// Who holds pacman's lock, read live (#5). Never part of a scan: a lock lasts
+/// seconds, a cached scan up to an hour, and a cached "locked" would block an
+/// update for nothing. The analyzer decides what the facts mean.
+///
+/// ponytail: walks every process's `fd` directory; only the caller's own are
+/// readable, so this costs a few ms and runs only when the lock exists. The
+/// path is the default `DBPath`; a custom one goes unseen and pacman reports
+/// the lock itself, as before — read `pacman-conf DBPath` if that matters.
+pub fn probe_db_lock() -> crate::analyzer::dblock::DbLock {
+    use crate::analyzer::dblock::{DbLock, LOCK_PATH, LockProc, verdict};
+    let lock = Path::new(LOCK_PATH);
+    if !lock.exists() {
+        return DbLock::Free;
+    }
+    // hidepid hides other users' processes, pid 1 among them.
+    let visible = std::fs::read_to_string("/proc/1/comm").is_ok();
+    let mut procs = Vec::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
+            continue;
+        };
+        let dir = entry.path();
+        // Gone between the listing and here.
+        let Ok(comm) = std::fs::read_to_string(dir.join("comm")) else {
+            continue;
+        };
+        // An `(deleted)` target is an old lock, not this one.
+        let holds = std::fs::read_dir(dir.join("fd")).is_ok_and(|fds| {
+            fds.flatten()
+                .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|t| t == lock))
+        });
+        procs.push(LockProc {
+            pid,
+            // Any process may name itself anything; it is printed.
+            comm: comm.trim().chars().filter(|c| !c.is_control()).collect(),
+            holds,
+        });
+    }
+    // Released while we looked: free, not "likely stale".
+    verdict(lock.exists(), visible, &procs)
+}
+
 /// Return a usable `ScanResult`: a fresh cache hit when possible, otherwise a
 /// new scan that is then written back to the cache.
 ///

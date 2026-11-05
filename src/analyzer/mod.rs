@@ -3,6 +3,7 @@
 //! Pure: given the same `ScanResult`, always produces the same output. Never
 //! calls providers or subprocesses, never writes to disk.
 
+pub mod dblock;
 mod graph;
 pub mod history;
 pub mod kernel;

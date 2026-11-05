@@ -206,6 +206,9 @@ pub struct App {
     enabled: HashMap<SourceId, bool>,
     /// Transient status line, cleared on the next key.
     flash: Option<String>,
+    /// pacman's lock, probed live by the event loop — never from the scan,
+    /// which can be an hour older than the lock (#5).
+    db_lock: crate::analyzer::dblock::DbLock,
     /// A background scan is running; the dashboard shows it instead of the
     /// scan age.
     scanning: bool,
@@ -393,6 +396,7 @@ impl App {
             dash_selected,
             enabled,
             flash: None,
+            db_lock: crate::analyzer::dblock::DbLock::Free,
             scanning: false,
             carried: std::collections::HashSet::new(),
             scan_started: None,
@@ -1040,6 +1044,12 @@ impl App {
 
     /// Does the running kernel still match the installed one (#3)? Recomputed
     /// per frame from the scan — it is a comparison of two strings, not work.
+    pub fn db_lock(&self) -> &crate::analyzer::dblock::DbLock {
+        &self.db_lock
+    }
+    pub fn set_db_lock(&mut self, lock: crate::analyzer::dblock::DbLock) {
+        self.db_lock = lock;
+    }
     pub fn reboot_status(&self) -> crate::analyzer::RebootStatus {
         crate::analyzer::reboot_status(self.scan.kernel.as_ref(), &self.scan.packages)
     }

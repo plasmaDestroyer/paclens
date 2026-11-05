@@ -55,10 +55,20 @@ pub fn run(
     // Typing `update` is the decision: no plan and no [Y/n] of paclens's
     // own. pacman and the helper show what they will change and ask for
     // themselves (design §13, 2026-10-06). `--dry-run` still shows it all.
+    // Checked live, before anything asks for a password: pacman would only
+    // say "unable to lock database" after the sudo prompt (#5).
+    let tool = executor::sudo::detect();
+    let lock = scanner::probe_db_lock();
+    let blocked = lock.blocks(&plan).then(|| lock.explain(tool)).flatten();
     if dry_run || plan.is_empty() {
-        let tool = executor::sudo::detect();
         print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
+        if let Some(why) = blocked {
+            println!("{}", styles.error(&format!("\n{why}")));
+        }
         return Ok(());
+    }
+    if let Some(why) = blocked {
+        anyhow::bail!("nothing ran — {why}");
     }
     execute_flow(config, &plan, parallel, styles)
 }
