@@ -771,18 +771,20 @@ holds it. A step declares that it takes the lock (`ActionStep::pacman_db`:
 pacman, and the AUR helper for its `pacman -U`); a plan without one runs.
 `status` shows the same sentence; the dashboard keeps it on its bottom border
 and reads `plan  blocked by pacman db`. Each tick costs one stat (two while a
-holder is named): the row clears when the lock goes, and re-probes when the
-named holder exits. Only ENOENT means gone; any other failed stat stays a look
+holder is named): a lock that appears is probed, the row clears when the lock
+goes, and re-probes when the named holder exits. Another user's `fd` directory
+is unreadable by design, so a root pacman is named by its process name, not its
+descriptor. Only ENOENT means gone; any other failed stat stays a look
 that did not happen. It is never part of a scan: a lock lasts
 seconds, a cached scan up to an hour.
 
 | evidence | answer |
 |---|---|
-| a readable fd on the lock (only when paclens runs as root) | held by *name* (pid) — `Confirmed` |
+| a readable fd on the lock (only for the caller's own processes, so in practice when paclens runs as root) | held by *name* (pid) — `Confirmed` |
 | a running pacman / pacman-static | likely held by *name* (pid) — `Inferred` |
 | only pamac-daemon / packagekitd (they idle) | *name* may hold it, or it is stale — `Inferred` |
 | nothing found, every process seen | likely stale; the `rm` as text, behind "none running?" |
-| `/proc` hidden (`hidepid`), a read of it failed, or the lock cannot be stat'ed | lock unclear, holder not identified — no `rm` suggested |
+| `/proc` hidden (`hidepid`), paclens in a container (not the host's pid namespace), a read of it failed, or the lock cannot be stat'ed | lock unclear, holder not identified — no `rm` suggested |
 
 paclens never removes the lock. `paclens pacman <args>` is not gated — pacman's
 read-only operations take no lock — so pacman reports a lock there itself. A
