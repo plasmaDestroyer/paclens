@@ -337,7 +337,7 @@ TOML. Contains the serialized `ScanResult` struct.
 
 1. `--refresh` flag → always invalidate, re-scan
 2. `schema_version` mismatch → delete cache, re-scan, log warning
-3. pacman db modified since last scan: compare `scanned_at` against mtime of `/var/lib/pacman/local/` → invalidate if db is newer
+3. pacman db modified since last scan: compare `scanned_at` against mtime of `/var/lib/pacman/local/` → invalidate if db is newer; the same for `/etc/pacman.conf` and `/etc/pacman.d/mirrorlist`, since the mirror check names a server (#6)
 4. `scanned_at` older than `config.general.cache_ttl` → invalidate
 5. `config.toml` modified more recently than `scan.toml` → invalidate (source enable/disable may have changed)
 6. Otherwise → load from cache
@@ -2153,6 +2153,31 @@ YYYY-MM-DD | no --noconfirm for pacman
            | `paclens pacman <args>` (read-only ops take no lock; pacman
            | names the lock itself there), the TUI's removal step, and a
            | custom `DBPath` (`pacman-conf DBPath` would read it).
+
+2026-11-05 | a core mirror behind Arch is named, not called a partial upgrade (#6)
+           | Two `lastupdate` markers, read with curl in the scan like the
+           | news: the first `core` server's (`pacman-conf --repo=core
+           | Server`, root = the URL minus `core/os/<arch>`; any other layout
+           | is not guessed) and the master's at rsync.archlinux.org — not
+           | geo.mirror.pkgbuild.com, a tier 1 mirror with its own lag. A gap
+           | of a day or more (Arch asks tier 2 mirrors to sync at least
+           | daily) reads `core mirror <host> is N days behind Arch`, whole
+           | days rounded down. The issue said "partial-upgrade risk"; that
+           | is dropped from every surface. A full upgrade from a coherent
+           | older mirror leaves a coherent older system, and claiming a
+           | breakage the evidence cannot show is a number that lies (§3).
+           | The marker also moves for image uploads and any tree change, so
+           | "behind" is the claim and nothing more. Only the first server:
+           | pacman falls back per file on failure, so the sentence names the
+           | host it checked. Offline (the master unreachable) is silent;
+           | the master answering and the mirror not is `unknown` in
+           | `status` only — a mirror without the file would otherwise hold
+           | a dashboard row for ever. The fix is text that writes nothing:
+           | `reflector --latest 20 --sort rate` prints a list. A changed
+           | pacman.conf or mirrorlist invalidates the cache. Not in `update`
+           | or at `u`: the dashboard already shows it, and `update` does
+           | not scan (2026-09-17). Third-party repos (CachyOS, chaotic,
+           | ALHP) are not checked; each needs its own reference.
 
 ```
 
