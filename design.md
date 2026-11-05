@@ -769,15 +769,17 @@ its `sudo -v`, and the TUI's `u` — paclens checks `/var/lib/pacman/db.lck` liv
 (`scanner::probe_db_lock`) and the analyzer (`analyzer::dblock`) says what
 holds it. A step declares that it takes the lock (`ActionStep::pacman_db`:
 pacman, and the AUR helper for its `pacman -U`); a plan without one runs.
-`status` and the dashboard show the same sentence. It is never part of a scan:
-a lock lasts seconds, a cached scan up to an hour.
+`status` shows the same sentence; the dashboard keeps it on its bottom border
+and reads `plan  blocked by pacman db`. It is never part of a scan: a lock lasts
+seconds, a cached scan up to an hour.
 
 | evidence | answer |
 |---|---|
 | a readable fd on the lock (only when paclens runs as root) | held by *name* (pid) — `Confirmed` |
-| a running pacman / pacman-static / pamac-daemon / packagekitd | *name* (pid) likely holds it — `Inferred` |
-| nothing found, every process visible | likely stale, with the `rm` as text |
-| nothing found, `/proc` mounted `hidepid` | holder unknown — no `rm` suggested |
+| a running pacman / pacman-static | likely held by *name* (pid) — `Inferred` |
+| only pamac-daemon / packagekitd (they idle) | *name* may hold it, or it is stale — `Inferred` |
+| nothing found, every process seen | likely stale; the `rm` as text, behind "if no package tools run" |
+| `/proc` hidden (`hidepid`) or a read of it failed | holder not identified — no `rm` suggested |
 
 paclens never removes the lock. `paclens pacman <args>` is not gated — pacman's
 read-only operations take no lock — so pacman reports a lock there itself. A
@@ -2130,15 +2132,19 @@ YYYY-MM-DD | no --noconfirm for pacman
            | nothing until its own pacman child runs, and that child is named.
            | Rejected: "lock older than boot = stale for certain" — `btime`
            | moves when the clock is set after boot, so a lock taken before
-           | an NTP step would read as dead while live. With `hidepid`,
-           | "no pacman found" proves nothing, so the answer is unknown and
-           | no `rm` is offered. Whether a step takes the lock is declared on
+           | an NTP step would read as dead while live. With `hidepid`, or a
+           | read of `/proc` that failed, "no pacman found" proves nothing, so
+           | the answer is unknown and no `rm` is offered. pamac-daemon and
+           | packagekitd idle for hours, so one running "may hold it, or it is
+           | stale" rather than "wait": waiting on an idle daemon never ends. Whether a step takes the lock is declared on
            | the step (`pacman_db`, as for `privileged`), not read from its
            | source id; a flatpak-only plan runs through a lock. A plan with
            | such a step is blocked whole, not trimmed: `space` already turns
            | pacman and the helper off. Every sentence stays under 75
-           | columns, because the TUI shows it on one 80-column border line
-           | and a cut-off `rm` is worse than none. Not gated, for now:
+           | columns, because the TUI keeps it on one 80-column border line
+           | while the lock lasts (the `rm` is seen before `u`, not after) and
+           | a cut-off `rm` is worse than none; the attention row is ≤21, hedge
+           | first, since a cut hedge reads as fact. Not gated, for now:
            | `paclens pacman <args>` (read-only ops take no lock; pacman
            | names the lock itself there), the TUI's removal step, and a
            | custom `DBPath` (`pacman-conf DBPath` would read it).

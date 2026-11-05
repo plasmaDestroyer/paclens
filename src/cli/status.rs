@@ -655,7 +655,7 @@ mod tests {
             confidence: Confidence::Inferred,
         };
         let out = render_status_since(&scan, None, &held, Some("sudo"), &ascii_styles());
-        assert!(out.contains("pacman (pid 4242) likely holds it"), "{out}");
+        assert!(out.contains("likely held by pacman (pid 4242)"), "{out}");
         let out = render_status_since(&scan, None, &DbLock::Stale, Some("doas"), &ascii_styles());
         assert!(out.contains("doas rm /var/lib/pacman/db.lck"), "{out}");
         let out = render_status(&scan, &ascii_styles());

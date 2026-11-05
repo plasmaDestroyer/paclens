@@ -303,22 +303,40 @@ fn read_running_kernel() -> Option<crate::analyzer::kernel::RunningKernel> {
 /// path is the default `DBPath`; a custom one goes unseen and pacman reports
 /// the lock itself, as before — read `pacman-conf DBPath` if that matters.
 pub fn probe_db_lock() -> crate::analyzer::dblock::DbLock {
-    use crate::analyzer::dblock::{DbLock, LOCK_PATH, LockProc, verdict};
-    let lock = Path::new(LOCK_PATH);
+    probe_db_lock_at(
+        Path::new(crate::analyzer::dblock::LOCK_PATH),
+        Path::new("/proc"),
+    )
+}
+
+/// [`probe_db_lock`] against any lock path and `/proc` tree: the seam the
+/// tests use. A read that fails for any reason but the process exiting
+/// counts as not seeing, never as "nothing there" — a failed look must not
+/// come out as "likely stale".
+fn probe_db_lock_at(lock: &Path, proc_root: &Path) -> crate::analyzer::dblock::DbLock {
+    use crate::analyzer::dblock::{DbLock, LockProc, verdict};
     if !lock.exists() {
         return DbLock::Free;
     }
     // hidepid hides other users' processes, pid 1 among them.
-    let visible = std::fs::read_to_string("/proc/1/comm").is_ok();
+    let mut visible = std::fs::read_to_string(proc_root.join("1/comm")).is_ok();
     let mut procs = Vec::new();
-    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+    let Ok(entries) = std::fs::read_dir(proc_root) else {
+        return verdict(lock.exists(), false, &procs);
+    };
+    for entry in entries.flatten() {
         let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
             continue;
         };
         let dir = entry.path();
-        // Gone between the listing and here.
-        let Ok(comm) = std::fs::read_to_string(dir.join("comm")) else {
-            continue;
+        let comm = match std::fs::read_to_string(dir.join("comm")) {
+            Ok(comm) => comm,
+            // Exited between the listing and here: nothing to see.
+            Err(_) if !dir.exists() => continue,
+            Err(_) => {
+                visible = false;
+                continue;
+            }
         };
         // An `(deleted)` target is an old lock, not this one.
         let holds = std::fs::read_dir(dir.join("fd")).is_ok_and(|fds| {
@@ -1294,6 +1312,113 @@ fn reconcile_flatpak_updates(updates: &mut [PendingUpdate], installed: &[Package
 
 #[cfg(test)]
 mod tests {
+    mod db_lock {
+        use super::super::probe_db_lock_at;
+        use crate::analyzer::dblock::DbLock;
+        use crate::model::Confidence;
+        use std::path::{Path, PathBuf};
+
+        /// A lock file and a fake `/proc` with the given (pid, comm) entries.
+        fn tree(tag: &str, procs: &[(u32, &str)]) -> (PathBuf, PathBuf) {
+            let root =
+                std::env::temp_dir().join(format!("paclens-dblock-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let proc_root = root.join("proc");
+            for (pid, comm) in procs {
+                let dir = proc_root.join(pid.to_string());
+                std::fs::create_dir_all(dir.join("fd")).unwrap();
+                std::fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
+            }
+            std::fs::create_dir_all(proc_root.join("self")).unwrap();
+            let lock = root.join("db.lck");
+            std::fs::write(&lock, "").unwrap();
+            (lock, proc_root)
+        }
+
+        fn hold(proc_root: &Path, pid: u32, target: &Path) {
+            let fd = proc_root.join(pid.to_string()).join("fd/3");
+            std::os::unix::fs::symlink(target, fd).unwrap();
+        }
+
+        #[test]
+        fn no_lock_file_is_free() {
+            let (lock, proc_root) = tree("free", &[(1, "systemd"), (7, "pacman")]);
+            std::fs::remove_file(&lock).unwrap();
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Free);
+        }
+
+        #[test]
+        fn an_fd_on_the_lock_names_the_holder() {
+            let (lock, proc_root) = tree("fd", &[(1, "systemd"), (42, "alpm-gui")]);
+            hold(&proc_root, 42, &lock);
+            assert_eq!(
+                probe_db_lock_at(&lock, &proc_root),
+                DbLock::Held {
+                    pid: 42,
+                    name: "alpm-gui".into(),
+                    confidence: Confidence::Confirmed
+                }
+            );
+        }
+
+        #[test]
+        fn an_fd_on_some_other_file_is_not_the_lock() {
+            let (lock, proc_root) = tree("other-fd", &[(1, "systemd"), (42, "vim")]);
+            hold(&proc_root, 42, &proc_root.join("1/comm"));
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Stale);
+        }
+
+        #[test]
+        fn a_running_pacman_is_found_by_name() {
+            let (lock, proc_root) = tree("name", &[(1, "systemd"), (4242, "pacman")]);
+            assert!(matches!(
+                probe_db_lock_at(&lock, &proc_root),
+                DbLock::Held {
+                    pid: 4242,
+                    confidence: Confidence::Inferred,
+                    ..
+                }
+            ));
+        }
+
+        #[test]
+        fn control_characters_in_a_name_are_dropped() {
+            let (lock, proc_root) = tree("ctl", &[(1, "systemd"), (9, "ev\u{1b}[2Jil")]);
+            hold(&proc_root, 9, &lock);
+            match probe_db_lock_at(&lock, &proc_root) {
+                DbLock::Held { name, .. } => assert_eq!(name, "ev[2Jil"),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn nothing_found_with_everything_visible_is_likely_stale() {
+            let (lock, proc_root) = tree("stale", &[(1, "systemd"), (2, "zsh")]);
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Stale);
+        }
+
+        #[test]
+        fn hidden_pid_1_makes_it_unknown() {
+            let (lock, proc_root) = tree("hidepid", &[(2000, "zsh")]);
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Unknown);
+        }
+
+        #[test]
+        fn an_unreadable_comm_is_not_seeing_not_absence() {
+            let (lock, proc_root) = tree("unreadable", &[(1, "systemd")]);
+            // A process dir whose comm cannot be read (a directory, here).
+            std::fs::create_dir_all(proc_root.join("77/comm")).unwrap();
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Unknown);
+        }
+
+        #[test]
+        fn an_unreadable_proc_is_unknown() {
+            let (lock, proc_root) = tree("noproc", &[]);
+            std::fs::remove_dir_all(&proc_root).unwrap();
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Unknown);
+        }
+    }
+
     use super::*;
     use crate::model::InstallReason;
     use crate::providers::aur::HelperChoice as HC;

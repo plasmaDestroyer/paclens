@@ -29,7 +29,13 @@ pub const LOCK_PATH: &str = "/var/lib/pacman/db.lck";
 /// Process names that take the libalpm lock on the system database. Not the
 /// AUR helpers: they build as the user and hold nothing until their own
 /// `pacman -U` child does, which this list names instead.
-const LOCKERS: &[&str] = &["pacman", "pacman-static", "pamac-daemon", "packagekitd"];
+///
+/// pacman exits when its transaction does, so a running one likely holds the
+/// lock.
+const RUNS: &[&str] = &["pacman", "pacman-static"];
+/// These stay up while idle, so one running says nothing about a stale lock:
+/// it *may* hold it. Named only when no pacman is running.
+const DAEMONS: &[&str] = &["pamac-daemon", "packagekitd"];
 
 /// One process, as far as it matters to the lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +61,8 @@ pub enum DbLock {
     },
     /// Likely nothing holds it.
     Stale,
-    /// Locked, and the processes that could hold it are hidden.
+    /// Locked, and what holds it could not be looked for: `hidepid`, or a
+    /// read of `/proc` that failed.
     Unknown,
 }
 
@@ -73,8 +80,10 @@ pub fn verdict(locked: bool, visible: bool, procs: &[LockProc]) -> DbLock {
     if let Some(p) = procs.iter().find(|p| p.holds) {
         return held(p, Confidence::Confirmed);
     }
-    if let Some(p) = procs.iter().find(|p| LOCKERS.contains(&p.comm.as_str())) {
-        return held(p, Confidence::Inferred);
+    for names in [RUNS, DAEMONS] {
+        if let Some(p) = procs.iter().find(|p| names.contains(&p.comm.as_str())) {
+            return held(p, Confidence::Inferred);
+        }
     }
     if visible {
         DbLock::Stale
@@ -98,14 +107,19 @@ impl DbLock {
     pub fn label(&self) -> Option<String> {
         Some(match self {
             DbLock::Free => return None,
+            // Hedge first, pid left to the sentence: at 80 columns the row
+            // keeps about 21 characters, and a cut hedge reads as fact.
             DbLock::Held {
-                pid,
                 name,
                 confidence: Confidence::Confirmed,
-            } => format!("held by {name} (pid {pid})"),
-            DbLock::Held { pid, name, .. } => format!("{name} (pid {pid}) running"),
+                ..
+            } => format!("held by {name}"),
+            DbLock::Held { name, .. } if DAEMONS.contains(&name.as_str()) => {
+                format!("{name} or stale")
+            }
+            DbLock::Held { name, .. } => format!("likely {name}"),
             DbLock::Stale => "likely stale".into(),
-            DbLock::Unknown => "holder hidden".into(),
+            DbLock::Unknown => "holder unknown".into(),
         })
     }
 
@@ -121,14 +135,17 @@ impl DbLock {
                 name,
                 confidence: Confidence::Confirmed,
             } => format!("pacman db locked by {name} (pid {pid}) — wait for it to finish"),
+            DbLock::Held { pid, name, .. } if DAEMONS.contains(&name.as_str()) => {
+                format!("pacman db locked; {name} (pid {pid}) may hold it, or it is stale")
+            }
             DbLock::Held { pid, name, .. } => {
-                format!("pacman db locked — {name} (pid {pid}) likely holds it; wait for it")
+                format!("pacman db likely held by {name} (pid {pid}) — wait for it")
             }
             DbLock::Unknown => {
-                "pacman db locked — holder unknown: other users' processes are hidden".into()
+                "pacman db locked — holder not identified; check running package tools".into()
             }
             DbLock::Stale => format!(
-                "no pacman running, db lock likely stale — {} rm {LOCK_PATH}",
+                "lock likely stale; if no package tools run: {} rm {LOCK_PATH}",
                 tool.unwrap_or("sudo")
             ),
         })
@@ -172,7 +189,7 @@ mod tests {
         let procs = [proc(7, "pacman", false), proc(42, "pamac-daemon", true)];
         let v = verdict(true, true, &procs);
         assert_eq!(v, held(42, "pamac-daemon", Confidence::Confirmed));
-        assert_eq!(v.label().as_deref(), Some("held by pamac-daemon (pid 42)"));
+        assert_eq!(v.label().as_deref(), Some("held by pamac-daemon"));
     }
 
     #[test]
@@ -186,7 +203,7 @@ mod tests {
         let procs = [proc(3, "bash", false), proc(4242, "pacman", false)];
         let v = verdict(true, true, &procs);
         assert_eq!(v, held(4242, "pacman", Confidence::Inferred));
-        assert_eq!(v.label().as_deref(), Some("pacman (pid 4242) running"));
+        assert_eq!(v.label().as_deref(), Some("likely pacman"));
     }
 
     #[test]
@@ -197,8 +214,42 @@ mod tests {
     }
 
     #[test]
+    fn a_running_pacman_outranks_an_idle_daemon() {
+        let procs = [proc(10, "packagekitd", false), proc(4242, "pacman", false)];
+        assert_eq!(
+            verdict(true, true, &procs),
+            held(4242, "pacman", Confidence::Inferred)
+        );
+    }
+
+    #[test]
+    fn a_daemon_alone_may_hold_it_and_the_lock_may_be_stale() {
+        // Daemons idle for hours: "wait for it" could mean waiting forever.
+        let v = verdict(true, true, &[proc(10, "packagekitd", false)]);
+        assert_eq!(v, held(10, "packagekitd", Confidence::Inferred));
+        assert_eq!(v.label().as_deref(), Some("packagekitd or stale"));
+        let text = v.explain(None).unwrap_or_default();
+        assert!(text.contains("may hold it, or it is stale"), "{text}");
+        assert!(!text.contains("wait for it"), "{text}");
+    }
+
+    #[test]
+    fn every_label_fits_the_80_column_row() {
+        for lock in [
+            held(1_234_567, "pamac-daemon", Confidence::Confirmed),
+            held(1_234_567, "pamac-daemon", Confidence::Inferred),
+            held(1_234_567, "pacman-static", Confidence::Inferred),
+            DbLock::Stale,
+            DbLock::Unknown,
+        ] {
+            let label = lock.label().unwrap_or_default();
+            assert!(label.chars().count() <= 21, "{label}");
+        }
+    }
+
+    #[test]
     fn each_known_locker_is_recognised() {
-        for name in LOCKERS {
+        for name in RUNS.iter().chain(DAEMONS) {
             let v = verdict(true, true, &[proc(1, name, false)]);
             assert!(matches!(v, DbLock::Held { .. }), "{name} not recognised");
         }
@@ -224,9 +275,9 @@ mod tests {
     fn nothing_found_with_processes_hidden_is_unknown_not_stale() {
         let v = verdict(true, false, &[proc(2000, "zsh", false)]);
         assert_eq!(v, DbLock::Unknown);
-        assert_eq!(v.label().as_deref(), Some("holder hidden"));
+        assert_eq!(v.label().as_deref(), Some("holder unknown"));
         let text = v.explain(Some("sudo")).unwrap_or_default();
-        assert!(text.contains("hidden"), "{text}");
+        assert!(text.contains("not identified"), "{text}");
         // Cannot tell, so no removal is suggested.
         assert!(!text.contains("rm "), "{text}");
     }
@@ -235,7 +286,10 @@ mod tests {
     fn the_stale_explanation_suggests_the_rm_as_text_under_the_tool() {
         let text = DbLock::Stale.explain(Some("doas")).unwrap_or_default();
         assert!(text.contains("likely stale"), "{text}");
-        assert!(text.contains("no pacman running"), "{text}");
+        assert!(
+            text.starts_with("lock likely stale; if no package tools run:"),
+            "{text}"
+        );
         assert!(text.ends_with("doas rm /var/lib/pacman/db.lck"), "{text}");
         let text = DbLock::Stale.explain(None).unwrap_or_default();
         assert!(text.ends_with("sudo rm /var/lib/pacman/db.lck"), "{text}");
@@ -259,6 +313,9 @@ mod tests {
         let all = [
             held(1_234_567, "pamac-daemon", Confidence::Confirmed),
             held(1_234_567, "pamac-daemon", Confidence::Inferred),
+            held(1_234_567, "pacman-static", Confidence::Inferred),
+            // comm is at most 15 bytes, so at most 15 columns.
+            held(4_194_304, "123456789012345", Confidence::Confirmed),
             DbLock::Stale,
             DbLock::Unknown,
         ];
@@ -281,7 +338,7 @@ mod tests {
             .explain(None)
             .unwrap_or_default();
         assert!(!sure.contains("likely"), "{sure}");
-        assert!(guess.contains("likely holds it"), "{guess}");
+        assert!(guess.contains("likely held by"), "{guess}");
     }
 
     fn step(pacman_db: bool) -> ActionStep {

@@ -318,8 +318,10 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     // A flash (post-update summary, scan failure) rides the bottom border so
-    // no layout shifts; the next key press clears it.
-    if let Some(flash) = app.flash() {
+    // no layout shifts; the next key press clears it. With none, a held lock
+    // keeps its sentence there, so the `rm` is visible before `u` (#5).
+    let lock_note = app.db_lock().explain(app.privilege_tool());
+    if let Some(flash) = app.flash().or(lock_note.as_deref()) {
         let hint = format!(" {flash} ");
         let w = (hint.chars().count() as u16).min(area.width.saturating_sub(4));
         let rect = Rect {
@@ -558,6 +560,9 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         kv("plan", "still checking".into(), theme.dim)
     } else if plan.is_empty() {
         kv("plan", "nothing to run".into(), theme.dim)
+    } else if app.db_lock().blocks(&plan) {
+        // `u` will refuse; the border says why (#5).
+        kv("plan", "blocked by pacman db".into(), theme.error)
     } else {
         let n = plan.source_count();
         kv(
@@ -3553,9 +3558,15 @@ mod tests {
             name: "pacman".into(),
             confidence: crate::model::Confidence::Inferred,
         });
-        let text = render(&app, 100, 24);
+        // 80 columns: the row's narrowest, where a cut hedge would read as fact.
+        let text = render(&app, 80, 24);
         let row = |needle: &str| text.lines().position(|l| l.contains(needle));
-        assert!(text.contains("pacman (pid 4242) running"), "{text}");
+        assert!(text.contains("likely pacman"), "{text}");
+        assert!(text.contains("blocked by pacman db"), "plan row:\n{text}");
+        assert!(
+            text.contains("likely held by pacman (pid 4242) — wait for it"),
+            "the whole sentence rides the border before `u`:\n{text}"
+        );
         assert!(
             row("pacman db") < row("reboot"),
             "the lock must lead the findings:\n{text}"

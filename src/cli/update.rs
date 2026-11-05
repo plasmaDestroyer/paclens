@@ -63,7 +63,7 @@ pub fn run(
     if dry_run || plan.is_empty() {
         print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
         if let Some(why) = blocked {
-            println!("{}", styles.error(&format!("\n{why}")));
+            println!("{}", styles.error(&format!("\nnothing would run: {why}")));
         }
         return Ok(());
     }
