@@ -205,6 +205,21 @@ mod tests {
     }
 
     #[test]
+    fn a_master_stamp_from_the_future_is_no_master() {
+        let ahead = chrono::Utc::now().timestamp() + 2 * 86_400;
+        let runner = MockRunner::new()
+            .with("pacman-conf --repo=core Server", SERVERS, 0)
+            .with(&format!("{CURL} {REFERENCE}"), &ahead.to_string(), 0)
+            .with(
+                &format!("{CURL} https://archlinux.cachyos.org/repo/lastsync"),
+                "1793900867\n",
+                0,
+            );
+        let c = check(&runner, 10).unwrap();
+        assert_eq!((c.reference, c.mirror), (None, None));
+    }
+
+    #[test]
     fn no_master_means_the_mirror_is_not_asked() {
         // The mirror would answer; it must not be asked.
         let runner = MockRunner::new()
