@@ -120,8 +120,8 @@ fn run_loop(
             .draw(|frame| draw::draw(frame, app))
             .context("failed to draw the terminal frame")?;
 
-        // A lock that went, or whose holder exited: "wait for it" must not
-        // outlive the pacman that held it (#5).
+        // A lock that appeared, went, or whose holder exited: "wait for it"
+        // must not outlive the pacman that held it (#5).
         if let Some(lock) = scanner::recheck_db_lock(app.db_lock()) {
             app.set_db_lock(lock);
         }

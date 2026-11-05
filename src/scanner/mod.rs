@@ -322,8 +322,12 @@ fn probe_db_lock_at(lock: &Path, proc_root: &Path) -> crate::analyzer::dblock::D
         Err(_) => return DbLock::Unknown,
         Ok(_) => {}
     }
-    // hidepid hides other users' processes, pid 1 among them.
-    let mut visible = std::fs::read_to_string(proc_root.join("1/comm")).is_ok();
+    // hidepid hides other users' processes, pid 1 among them. A container
+    // shows its own pid 1 and nothing outside: every process is seen only
+    // from the host's pid namespace, whose inode is fixed (PROC_PID_INIT_INO).
+    let mut visible = std::fs::read_to_string(proc_root.join("1/comm")).is_ok()
+        && std::fs::read_link(proc_root.join("self/ns/pid"))
+            .is_ok_and(|ns| ns == Path::new("pid:[4026531836]"));
     let mut procs = Vec::new();
     let Ok(entries) = std::fs::read_dir(proc_root) else {
         return verdict(!gone(lock), false, &procs);
@@ -365,10 +369,10 @@ fn gone(path: &Path) -> bool {
 }
 
 /// The TUI's per-tick check: what `prev` has become, or `None` when nothing
-/// worth a probe changed. One stat while the lock stands (two while a holder
-/// is named: the lock and its `/proc/<pid>`); a full probe only
-/// when the lock went or the process named as its holder exited — a crashed
-/// pacman must not leave "wait for it" on screen.
+/// worth a probe changed. One stat per tick (two while a holder is named: the
+/// lock and its `/proc/<pid>`); a full probe only when a lock appeared, or the
+/// process named as its holder exited — a crashed pacman must not leave "wait
+/// for it" on screen.
 pub fn recheck_db_lock(
     prev: &crate::analyzer::dblock::DbLock,
 ) -> Option<crate::analyzer::dblock::DbLock> {
@@ -385,8 +389,10 @@ fn recheck_db_lock_at(
     proc_root: &Path,
 ) -> Option<crate::analyzer::dblock::DbLock> {
     use crate::analyzer::dblock::DbLock;
+    // A lock taken after the last look (pacman started in another
+    // terminal) shows up on the next tick, not the next scan.
     if !prev.is_locked() {
-        return None;
+        return (!gone(lock)).then(|| probe_db_lock_at(lock, proc_root));
     }
     if gone(lock) {
         return Some(DbLock::Free);
@@ -1374,7 +1380,8 @@ mod tests {
                 std::fs::create_dir_all(dir.join("fd")).unwrap();
                 std::fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
             }
-            std::fs::create_dir_all(proc_root.join("self")).unwrap();
+            std::fs::create_dir_all(proc_root.join("self/ns")).unwrap();
+            std::os::unix::fs::symlink("pid:[4026531836]", proc_root.join("self/ns/pid")).unwrap();
             let lock = root.join("db.lck");
             std::fs::write(&lock, "").unwrap();
             (lock, proc_root)
@@ -1516,7 +1523,27 @@ mod tests {
                 confidence: Confidence::Inferred,
             };
             assert_eq!(recheck_db_lock_at(&live, &lock, &proc_root), None);
+            std::fs::remove_file(&lock).unwrap();
             assert_eq!(recheck_db_lock_at(&DbLock::Free, &lock, &proc_root), None);
+        }
+
+        #[test]
+        fn the_tick_sees_a_lock_taken_after_the_last_look() {
+            let (lock, proc_root) = tree("tick-new", &[(1, "systemd"), (4242, "pacman")]);
+            assert!(matches!(
+                recheck_db_lock_at(&DbLock::Free, &lock, &proc_root),
+                Some(DbLock::Held { pid: 4242, .. })
+            ));
+        }
+
+        #[test]
+        fn a_container_never_reads_as_stale() {
+            // Its own pid 1 is readable, but the host's processes are not seen.
+            let (lock, proc_root) = tree("container", &[(1, "init")]);
+            let ns = proc_root.join("self/ns/pid");
+            std::fs::remove_file(&ns).unwrap();
+            std::os::unix::fs::symlink("pid:[4026532201]", &ns).unwrap();
+            assert_eq!(probe_db_lock_at(&lock, &proc_root), DbLock::Unknown);
         }
 
         #[test]
