@@ -320,8 +320,14 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     // A flash (post-update summary, scan failure) rides the bottom border so
     // no layout shifts; the next key press clears it. With none, a held lock
     // keeps its sentence there, so the `rm` is visible before `u` (#5).
+    // The note in the error colour, a flash in the accent: a refused `u`
+    // repeats the sentence, and the colour change shows the key landed.
     let lock_note = app.db_lock().explain(app.privilege_tool());
-    if let Some(flash) = app.flash().or(lock_note.as_deref()) {
+    let border = match app.flash() {
+        Some(flash) => Some((flash, theme.accent)),
+        None => lock_note.as_deref().map(|n| (n, theme.error)),
+    };
+    if let Some((flash, style)) = border {
         let hint = format!(" {flash} ");
         let w = (hint.chars().count() as u16).min(area.width.saturating_sub(4));
         let rect = Rect {
@@ -330,10 +336,7 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
             width: w,
             height: 1,
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(hint, theme.accent))),
-            rect,
-        );
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(hint, style))), rect);
     }
 
     if inner.width < 56 || inner.height < 14 {
@@ -3571,6 +3574,36 @@ mod tests {
             row("pacman db") < row("reboot"),
             "the lock must lead the findings:\n{text}"
         );
+    }
+
+    #[test]
+    fn every_lock_sentence_survives_the_80_column_border_under_every_tool() {
+        use crate::analyzer::dblock::DbLock;
+        use crate::model::Confidence::{Confirmed, Inferred};
+        let held = |name: &str, confidence| DbLock::Held {
+            pid: 4_194_304,
+            name: name.into(),
+            confidence,
+        };
+        for tool in ["sudo", "doas", "pkexec"] {
+            for lock in [
+                held("pacman-static", Confirmed),
+                held("pacman-static", Inferred),
+                held("pamac-daemon", Inferred),
+                DbLock::Stale,
+                DbLock::Unknown,
+            ] {
+                let opts = AppOptions {
+                    privilege_tool: Some(tool),
+                    ..AppOptions::test()
+                };
+                let mut app = App::new(scan_with(Vec::new()), Theme::none(), opts);
+                let sentence = lock.explain(Some(tool)).unwrap_or_default();
+                app.set_db_lock(lock);
+                let text = render(&app, 80, 24);
+                assert!(text.contains(&sentence), "{tool}: cut:\n{text}");
+            }
+        }
     }
 
     #[test]

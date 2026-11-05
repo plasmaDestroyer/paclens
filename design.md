@@ -778,8 +778,8 @@ seconds, a cached scan up to an hour.
 | a readable fd on the lock (only when paclens runs as root) | held by *name* (pid) — `Confirmed` |
 | a running pacman / pacman-static | likely held by *name* (pid) — `Inferred` |
 | only pamac-daemon / packagekitd (they idle) | *name* may hold it, or it is stale — `Inferred` |
-| nothing found, every process seen | likely stale; the `rm` as text, behind "if no package tools run" |
-| `/proc` hidden (`hidepid`) or a read of it failed | holder not identified — no `rm` suggested |
+| nothing found, every process seen | likely stale; the `rm` as text, behind "none running?" |
+| `/proc` hidden (`hidepid`), a read of it failed, or the lock cannot be stat'ed | lock unclear, holder not identified — no `rm` suggested |
 
 paclens never removes the lock. `paclens pacman <args>` is not gated — pacman's
 read-only operations take no lock — so pacman reports a lock there itself. A

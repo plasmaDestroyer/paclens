@@ -119,7 +119,7 @@ impl DbLock {
             }
             DbLock::Held { name, .. } => format!("likely {name}"),
             DbLock::Stale => "likely stale".into(),
-            DbLock::Unknown => "holder unknown".into(),
+            DbLock::Unknown => "unclear".into(),
         })
     }
 
@@ -142,7 +142,7 @@ impl DbLock {
                 format!("pacman db likely held by {name} (pid {pid}) — wait for it")
             }
             DbLock::Unknown => {
-                "pacman db locked — holder not identified; check running package tools".into()
+                "pacman db lock unclear — holder not identified; check package tools".into()
             }
             DbLock::Stale => format!(
                 "pacman db likely stale; none running? {} rm {LOCK_PATH}",
@@ -275,7 +275,7 @@ mod tests {
     fn nothing_found_with_processes_hidden_is_unknown_not_stale() {
         let v = verdict(true, false, &[proc(2000, "zsh", false)]);
         assert_eq!(v, DbLock::Unknown);
-        assert_eq!(v.label().as_deref(), Some("holder unknown"));
+        assert_eq!(v.label().as_deref(), Some("unclear"));
         let text = v.explain(Some("sudo")).unwrap_or_default();
         assert!(text.contains("not identified"), "{text}");
         // Cannot tell, so no removal is suggested.

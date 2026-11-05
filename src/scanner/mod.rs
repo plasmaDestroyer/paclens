@@ -1416,6 +1416,17 @@ mod tests {
         }
 
         #[test]
+        fn a_lock_that_cannot_be_stated_is_unknown_not_free() {
+            // A path under a regular file: ENOTDIR, not ENOENT — a look that
+            // failed, which must not let an update start.
+            let (lock, proc_root) = tree("nostat", &[(1, "systemd")]);
+            assert_eq!(
+                probe_db_lock_at(&lock.join("db.lck"), &proc_root),
+                DbLock::Unknown
+            );
+        }
+
+        #[test]
         fn an_unreadable_proc_is_unknown() {
             let (lock, proc_root) = tree("noproc", &[]);
             std::fs::remove_dir_all(&proc_root).unwrap();

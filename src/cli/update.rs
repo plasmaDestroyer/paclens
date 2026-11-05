@@ -61,10 +61,12 @@ pub fn run(
     let lock = scanner::probe_db_lock();
     let blocked = lock.blocks(&plan).then(|| lock.explain(tool)).flatten();
     if dry_run || plan.is_empty() {
-        print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
-        if let Some(why) = blocked {
-            println!("{}", styles.error(&format!("\nnothing would run: {why}")));
+        // The block first: the list below is what runs once it clears.
+        if let Some(why) = &blocked {
+            println!("{}", styles.error(&format!("nothing would run: {why}")));
+            println!("{}\n", styles.dim("once the lock clears:"));
         }
+        print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
         return Ok(());
     }
     if let Some(why) = blocked {
