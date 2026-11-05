@@ -591,8 +591,19 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         };
         found.push(kv("news", format!("{}{more}", first.package), theme.accent));
     }
-    if let Some(label) = crate::analyzer::mirror::verdict(app.scan().mirror.as_ref()).label() {
-        found.push(kv("core mirror", label, theme.accent));
+    let mirror = crate::analyzer::mirror::verdict(app.scan().mirror.as_ref());
+    if let (Some(label), crate::analyzer::mirror::Verdict::Behind { host, .. }) =
+        (mirror.label(), &mirror)
+    {
+        // The host when the pane has room for all of it; never a cut one.
+        let long = format!("{label} · {host}");
+        let room = (inner.width as usize).saturating_sub(16);
+        let value = if long.chars().count() <= room {
+            long
+        } else {
+            label
+        };
+        found.push(kv("core mirror", value, theme.accent));
     }
     for (_, bins, runs) in crate::analyzer::shadows::groups(&app.scan().shadows) {
         found.push(kv(
@@ -3653,6 +3664,16 @@ mod tests {
         let text = render(&app, 80, 24);
         assert!(text.contains("core mirror"), "no mirror row:\n{text}");
         assert!(text.contains("2 days behind"), "{text}");
+        assert!(!text.contains("mirror.example"), "cut host at 80:\n{text}");
+        let wide = render(
+            &App::new(s.clone(), Theme::none(), AppOptions::test()),
+            200,
+            50,
+        );
+        assert!(
+            wide.contains("2 days behind · mirror.example.org"),
+            "{wide}"
+        );
 
         // Unknown stays in `status`; current is not furniture.
         for m in [None, Some(1_793_902_445 - 60)] {
