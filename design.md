@@ -818,7 +818,8 @@ paclens runs as the user. It only escalates privileges when executing a pacman u
 Every step runs in a real terminal — the CLI's own, or the TUI's pty
 console — so sudo, doas, pkexec, pacman and the AUR helper prompt exactly as
 in a shell. One `sudo -v` before the first step covers the run (§13,
-2026-09-21); paclens never sees the password.
+2026-09-21), the pacman step under the live view included (§13, 2026-11-05);
+paclens never sees the password.
 
 #### Flatpak
 
@@ -2078,6 +2079,35 @@ YYYY-MM-DD | no --noconfirm for pacman
            | holds, so the receipt is to do and good to know. `local is newer
            | than repo` is the one line re-laid in scrollback, as an aligned
            | row with every figure kept; pacman's words are in the transcript.
+
+2026-11-05 | `update`'s pacman step gets the view, and still one password (#82)
+           | sudo keys its timestamp on the controlling terminal and the
+           | session, not on stdin (read from sudo 1.9.17p2's source). So the
+           | pacman step's `sudo` runs with the view's pty as its stdin,
+           | stdout and stderr but stays in paclens's session, with the
+           | user's terminal as its own: the `sudo -v` at the start covers
+           | it, and pacman still draws on the pty. Nothing new runs as root
+           | and no password passes through paclens. The pty is nobody's
+           | terminal, so the view sends ^C to sudo as a signal and sudo
+           | passes it on (^Z is not sent: sudo would stop paclens with it).
+           | Right before the step, `sudo -n -v` checks the timestamp is
+           | still good; if it lapsed (or `timestamp_timeout=0`), the step
+           | falls back to its own session and asks inside the view: a
+           | second prompt, never worse than before. A shared sudo must
+           | never ask, because it would ask on the user's terminal while
+           | the raw view reads the keys, so it runs as `sudo -n`: if the
+           | timestamp goes between the check and the step, the step fails
+           | with sudo's own message rather than being retried. Known edges, all from
+           | sudo's default `use_pty`: pacman's real terminal is a hidden
+           | one sudo relays to the user's, so whatever under pacman opens
+           | `/dev/tty` (pinentry, a scriptlet's `stty`) talks to the user's
+           | terminal, not the view; sudo resizes that hidden terminal from
+           | the user's before the view resizes its pty, so pacman's width
+           | can lag a mid-run resize; sudoers I/O logging turns the logged
+           | streams into pipes. Rejected: `timestamp_type=global` (a sudoers
+           | change on the user's system) and handing sudo the password
+           | (§11). Every other step keeps the terminal and its current
+           | output.
 
 ```
 

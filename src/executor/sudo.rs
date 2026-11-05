@@ -81,17 +81,21 @@ impl Keepalive {
     /// The real thing: `sudo -n -v` refreshes the timestamp and never prompts,
     /// so a lost timestamp ends the loop instead of stealing the terminal.
     pub fn start(interval: Duration) -> Self {
-        Self::start_with(interval, || {
-            std::process::Command::new("sudo")
-                .args(["-n", "-v"])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        })
+        Self::start_with(interval, refresh)
     }
+}
+
+/// `sudo -n -v`: refresh this terminal's timestamp if it is still valid,
+/// never prompt. `false` means the next sudo here would ask.
+pub fn refresh() -> bool {
+    std::process::Command::new("sudo")
+        .args(["-n", "-v"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 impl Drop for Keepalive {

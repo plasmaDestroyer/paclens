@@ -7,9 +7,10 @@
 
 use crate::cli::style::Styles;
 use crate::config::Config;
-use crate::executor::{self, ExecutionReport, InteractiveRunner, StepStatus, UpdateLog};
+use crate::executor::{self, ExecutionReport, StepStatus, UpdateLog};
 use crate::model::ActionPlan;
 use crate::providers::SystemCommandRunner;
+use crate::update_view::live::ViewRunner;
 use crate::{planner, scanner};
 
 pub fn run(
@@ -59,16 +60,17 @@ pub fn run(
         print!("{}", render_plan(&plan, tool, parallel, dry_run, styles));
         return Ok(());
     }
-    execute_flow(&plan, parallel, config.update.loop_interval(), styles)
+    execute_flow(config, &plan, parallel, styles)
 }
 
 /// The execute half of a bare `paclens update`: one sudo prompt, run, report.
 fn execute_flow(
+    config: &Config,
     plan: &ActionPlan,
     parallel: bool,
-    sudo_loop: Option<std::time::Duration>,
     styles: &Styles,
 ) -> anyhow::Result<()> {
+    let sudo_loop = config.update.loop_interval();
     let tool = executor::sudo::detect();
 
     // Counted in commands, not packages: nothing was looked up, so there is no
@@ -88,11 +90,16 @@ fn execute_flow(
         .then(|| sudo_loop.map(executor::sudo::Keepalive::start))
         .flatten();
 
+    // The pacman step runs under the live view, on its own pty; every other
+    // step keeps the terminal as before (#82).
+    let runner = ViewRunner {
+        opts: crate::cli::pacman::view_options(config, styles, primed),
+    };
     let mut log = UpdateLog::open_default()?;
     let report = if parallel {
-        executor::execute_concurrent(plan, &InteractiveRunner, &mut log, tool)
+        executor::execute_concurrent(plan, &runner, &mut log, tool)
     } else {
-        executor::execute(plan, &InteractiveRunner, &mut log, tool)
+        executor::execute(plan, &runner, &mut log, tool)
     };
 
     println!();

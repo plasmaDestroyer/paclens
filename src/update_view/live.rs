@@ -21,8 +21,8 @@ use crossterm::terminal;
 use crate::cli::history::{TAIL_BYTES, read_tail};
 use crate::cli::style::Styles;
 use crate::config::{Layout, Motif};
-use crate::executor::pty::{exit_code, spawn};
-use crate::executor::sudo::CANDIDATES;
+use crate::executor::pty::{exit_code, signal, spawn, spawn_shared};
+use crate::executor::sudo::{self, CANDIDATES};
 use crate::executor::{InteractiveRunner, StepRunner};
 use crate::tui::input::encode_key;
 
@@ -67,6 +67,10 @@ pub struct ViewOptions {
     /// pacman.log.
     pub log: PathBuf,
     pub transcript_dir: Option<PathBuf>,
+    /// `sudo -v` was done on our terminal before the run (`update`): a
+    /// `sudo` step shares our session so it finds that timestamp, and the
+    /// run asks for one password, not two (#82).
+    pub primed: bool,
 }
 
 /// Runs pacman transactions under the live view, every other step as the
@@ -156,6 +160,12 @@ pub fn run(
         .map(|t| hook_medians(&t))
         .unwrap_or_default();
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    let shared = shares(opts.primed, argv, sudo::refresh);
+    let argv = &if shared {
+        never_ask(argv)
+    } else {
+        argv.to_vec()
+    };
     let command = argv.join(" ");
     let mut lost = None;
     let mut transcript = opts.transcript_dir.as_ref().and_then(|dir| {
@@ -181,7 +191,16 @@ pub fn run(
         candy: fs::read_to_string("/etc/pacman.conf").is_ok_and(|c| candy_enabled(&c)),
     };
 
-    let mut pty = spawn(argv, rows, cols)?;
+    let mut pty = if shared {
+        spawn_shared(argv, rows, cols)?
+    } else {
+        spawn(argv, rows, cols)?
+    };
+    let mut input = Input {
+        writer: pty.writer.take(),
+        pid: shared.then(|| pty.child.process_id()).flatten(),
+        done: false,
+    };
     let mut size = (cols, rows);
     let _raw = opts.keys.then(RawGuard::new).transpose()?;
     let mut reader = std::mem::replace(&mut pty.reader, Box::new(io::empty()));
@@ -225,15 +244,17 @@ pub fn run(
             while event::poll(Duration::ZERO)? {
                 if let Event::Key(k) = event::read()?
                     && k.kind != KeyEventKind::Release
-                    && let (Some(bytes), Some(w)) = (encode_key(k), pty.writer.as_mut())
+                    && let Some(bytes) = encode_key(k)
                 {
-                    w.write_all(&bytes)?;
-                    w.flush()?;
+                    input.send(&bytes)?;
                 }
             }
         }
         model.observe_screen(&settler.tail(40), now);
         let exited = pty.child.try_wait()?;
+        if exited.is_some() {
+            input.reaped();
+        }
         let idle =
             (may_be_question(&settler.partial()) && last_bytes.elapsed() >= IDLE).then(|| {
                 question_rows(
@@ -248,6 +269,9 @@ pub fn run(
         {
             size = (c, r);
             painter.resize(r, c);
+            // A shared sudo saw the resize on our terminal first and told
+            // pacman, which may read this pty's size before it changes: its
+            // width then catches up on the next resize (sudo 1.9.17p2).
             pty.resize(r, c);
             settler.resize(c);
         }
@@ -259,6 +283,7 @@ pub fn run(
         std::thread::sleep(TICK);
     };
 
+    drop(input);
     // The child is gone: close the pty so the reader sees EOF, take what it
     // still had, then the log to its end — pacman can write `transaction
     // started` and exit between two ticks.
@@ -296,6 +321,80 @@ pub fn run(
     let frames = closing_frames(&model, &view, cols, &transcript_path, &opts.styles);
     painter.close(out, &model, &lines, &frames)?;
     Ok(code)
+}
+
+/// Does this step share our session ([`spawn_shared`])? Only a `sudo` step
+/// after a `sudo -v` here, and only if `fresh` — checked now, not at priming:
+/// the timestamp may have lapsed since. Lapsed, the step gets its own session
+/// and sudo asks inside the view.
+fn shares(primed: bool, argv: &[String], fresh: impl FnOnce() -> bool) -> bool {
+    primed && argv.first().is_some_and(|p| p == "sudo") && fresh()
+}
+
+/// `sudo -n …`: a shared sudo that would still ask (the timestamp went
+/// between the check and the step, or the command's rule wants its own
+/// password) would ask on our terminal, where the raw view reads the keys.
+/// `-n` makes it fail instead, with sudo's own message on the pty.
+fn never_ask(argv: &[String]) -> Vec<String> {
+    let mut out = argv.to_vec();
+    out.insert(1.min(out.len()), "-n".to_string());
+    out
+}
+
+/// The keys' way into the child, and what an early return does with it.
+struct Input {
+    writer: Option<Box<dyn Write + Send>>,
+    /// A shared child, until it is reaped: keys that the pty cannot turn into
+    /// signals are sent to it as signals.
+    pid: Option<u32>,
+    done: bool,
+}
+
+impl Input {
+    fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if let Some(w) = self.writer.as_mut() {
+            w.write_all(bytes)?;
+            w.flush()?;
+        }
+        if let (Some(pid), Some(sig)) = (self.pid, signal_for(bytes)) {
+            signal(pid, sig);
+        }
+        Ok(())
+    }
+
+    /// The child is gone: its pid may be reused, and nothing is answered by
+    /// closing its input any more.
+    fn reaped(&mut self) {
+        self.pid = None;
+        self.done = true;
+    }
+}
+
+impl Drop for Input {
+    /// On an early return the child still runs. The writer must not drop
+    /// normally: portable-pty sends `\n` and EOF on drop, which answers a
+    /// waiting `[Y/n]` with yes. A shared child is hung up by signal; one in
+    /// its own session is hung up when the pty closes.
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        if let Some(pid) = self.pid {
+            signal(pid, libc::SIGHUP);
+        }
+        std::mem::forget(self.writer.take());
+    }
+}
+
+/// The signal a key stands for when the pty is nobody's terminal and the
+/// line discipline cannot raise it ([`spawn_shared`]). Not ^Z: it would stop
+/// sudo, and sudo stops our whole process group with it.
+fn signal_for(bytes: &[u8]) -> Option<i32> {
+    match bytes {
+        [0x03] => Some(libc::SIGINT),
+        [0x1c] => Some(libc::SIGQUIT),
+        _ => None,
+    }
 }
 
 /// pty output that arrived `at`: into the transcript, the screen, the model
@@ -413,6 +512,69 @@ mod tests {
     }
 
     #[test]
+    fn only_a_primed_sudo_step_with_a_fresh_timestamp_shares() {
+        let sudo = argv(["sudo", "pacman", "-Syu"]);
+        assert!(shares(true, &sudo, || true));
+        assert!(!shares(true, &sudo, || false), "lapsed: own session");
+        assert!(!shares(true, &argv(["doas", "pacman", "-Syu"]), || true));
+        assert!(!shares(true, &argv(["pacman", "-S", "x"]), || true));
+        assert!(
+            !shares(false, &sudo, || panic!("checked without a prime")),
+            "`paclens pacman` never asks sudo"
+        );
+    }
+
+    #[test]
+    fn a_shared_sudo_never_asks() {
+        assert_eq!(
+            never_ask(&argv(["sudo", "pacman", "-Syu"])),
+            argv(["sudo", "-n", "pacman", "-Syu"])
+        );
+    }
+
+    /// An early return must not answer for the user: portable-pty's writer
+    /// sends a newline on drop, and pacman would read it as yes.
+    #[test]
+    fn an_early_return_sends_nothing_to_the_child() {
+        struct Spy(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Spy {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                if let Ok(mut v) = self.0.lock() {
+                    v.extend_from_slice(b);
+                }
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Drop for Spy {
+            fn drop(&mut self) {
+                let _ = self.write(b"\n");
+            }
+        }
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let input = |done| Input {
+            writer: Some(Box::new(Spy(seen.clone()))),
+            pid: None,
+            done,
+        };
+        drop(input(false));
+        assert!(seen.lock().unwrap().is_empty(), "early: nothing written");
+        drop(input(true));
+        assert_eq!(*seen.lock().unwrap(), b"\n", "finished: a normal drop");
+    }
+
+    #[test]
+    fn only_ctrl_c_and_backslash_become_signals() {
+        assert_eq!(signal_for(&[0x03]), Some(libc::SIGINT));
+        assert_eq!(signal_for(&[0x1c]), Some(libc::SIGQUIT));
+        assert_eq!(signal_for(&[0x1a]), None, "^Z would stop paclens too");
+        assert_eq!(signal_for(b"y"), None);
+        assert_eq!(signal_for(&[0x03, 0x03]), None);
+    }
+
+    #[test]
     fn detects_pacman_steps() {
         assert!(is_pacman_transaction(&argv(["sudo", "pacman", "-Syu"])));
         assert!(is_pacman_transaction(&argv(["pacman", "-S", "foo"])));
@@ -523,6 +685,7 @@ mod tests {
             installed: HashMap::new(),
             log,
             transcript_dir: Some(dir.clone()),
+            primed: false,
         };
         (o, dir)
     }

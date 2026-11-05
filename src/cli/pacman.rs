@@ -42,7 +42,21 @@ pub fn run(
             interactive: true,
         }],
     };
-    let opts = ViewOptions {
+    let report = executor::execute(
+        &plan,
+        &ViewRunner {
+            opts: view_options(config, styles, false),
+        },
+        &mut UpdateLog::open_default()?,
+        executor::sudo::detect(),
+    );
+    outcome(report.steps.first().map(|s| &s.status))
+}
+
+/// How the view runs here and in `update`. `primed`: a `sudo -v` on this
+/// terminal came first (see [`ViewOptions::primed`]).
+pub(crate) fn view_options(config: &Config, styles: &Styles, primed: bool) -> ViewOptions {
+    ViewOptions {
         layout: config.update.layout(),
         motif: config.update.motif(),
         styles: styles.clone(),
@@ -51,14 +65,8 @@ pub fn run(
         installed: installed(),
         log: PathBuf::from(PACMAN_LOG),
         transcript_dir: cache_dir().ok(),
-    };
-    let report = executor::execute(
-        &plan,
-        &ViewRunner { opts },
-        &mut UpdateLog::open_default()?,
-        executor::sudo::detect(),
-    );
-    outcome(report.steps.first().map(|s| &s.status))
+        primed,
+    }
 }
 
 /// The step's end as this command's result.
