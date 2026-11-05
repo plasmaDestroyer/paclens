@@ -540,8 +540,8 @@ mod tests {
         );
     }
 
-    /// An early return hangs the child up and reaps it (that its input
-    /// closes without an answer is `pty`'s a_muted_writer test).
+    /// An early return hangs the child up, reaps it, and closes its input
+    /// without an answer.
     #[test]
     fn an_early_return_hangs_up_and_reaps() -> anyhow::Result<()> {
         let dir = temp_dir("early");
@@ -560,6 +560,13 @@ mod tests {
             shared: false,
         });
         assert_eq!(fs::read_to_string(&seen)?.trim(), "hup");
+        // The hangup wins the race to the child either way: what proves no
+        // answer went is the muted EOF the writer's drop checks.
+        // SAFETY: termios is plain data, filled by tcgetattr.
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        let fd = pty.master_fd().unwrap_or(-1);
+        assert_eq!(unsafe { libc::tcgetattr(fd, &mut t) }, 0);
+        assert_eq!(t.c_cc[libc::VEOF], 0, "the writer dropped unmuted");
         let raw = pid.and_then(|p| i32::try_from(p).ok()).unwrap_or(-1);
         // SAFETY: waitpid writes only to `status`.
         let again = unsafe { libc::waitpid(raw, &mut 0, libc::WNOHANG) };
