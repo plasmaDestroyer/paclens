@@ -577,7 +577,7 @@ Parse: first whitespace-separated field is bytes.
 **Error handling:**
 - `pacman` not on PATH → `Source.available = false`, skip
 - non-zero exit from scan commands → capture stderr, surface as provider error
-- db lock (`/var/lib/pacman/db.lck` exists) → detect and show specific error: "pacman database is locked. Another pacman process may be running."
+- db lock (`/var/lib/pacman/db.lck` exists) → name what holds it before the update runs (see "pacman db lock detection" below)
 
 #### Flatpak provider
 

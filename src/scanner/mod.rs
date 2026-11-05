@@ -315,8 +315,12 @@ pub fn probe_db_lock() -> crate::analyzer::dblock::DbLock {
 /// come out as "likely stale".
 fn probe_db_lock_at(lock: &Path, proc_root: &Path) -> crate::analyzer::dblock::DbLock {
     use crate::analyzer::dblock::{DbLock, LockProc, verdict};
-    if !lock.exists() {
-        return DbLock::Free;
+    // Only "no such file" is free: a failed stat is a look that did not
+    // happen, and must not let an update start.
+    match std::fs::symlink_metadata(lock) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DbLock::Free,
+        Err(_) => return DbLock::Unknown,
+        Ok(_) => {}
     }
     // hidepid hides other users' processes, pid 1 among them.
     let mut visible = std::fs::read_to_string(proc_root.join("1/comm")).is_ok();

@@ -145,7 +145,7 @@ impl DbLock {
                 "pacman db locked — holder not identified; check running package tools".into()
             }
             DbLock::Stale => format!(
-                "lock likely stale; if no package tools run: {} rm {LOCK_PATH}",
+                "pacman db likely stale; none running? {} rm {LOCK_PATH}",
                 tool.unwrap_or("sudo")
             ),
         })
@@ -287,7 +287,7 @@ mod tests {
         let text = DbLock::Stale.explain(Some("doas")).unwrap_or_default();
         assert!(text.contains("likely stale"), "{text}");
         assert!(
-            text.starts_with("lock likely stale; if no package tools run:"),
+            text.starts_with("pacman db likely stale; none running?"),
             "{text}"
         );
         assert!(text.ends_with("doas rm /var/lib/pacman/db.lck"), "{text}");
@@ -319,8 +319,11 @@ mod tests {
             DbLock::Stale,
             DbLock::Unknown,
         ];
-        for lock in all {
-            let text = lock.explain(Some("sudo")).unwrap_or_default();
+        for (lock, tool) in all
+            .iter()
+            .flat_map(|l| ["sudo", "doas", "pkexec"].map(|t| (l, t)))
+        {
+            let text = lock.explain(Some(tool)).unwrap_or_default();
             assert!(
                 text.chars().count() <= 74,
                 "{} > 74: {text}",

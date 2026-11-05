@@ -120,6 +120,11 @@ fn run_loop(
             .draw(|frame| draw::draw(frame, app))
             .context("failed to draw the terminal frame")?;
 
+        // A lock seen earlier and gone now: one stat, so "wait for it" does
+        // not outlive the pacman that held it (#5).
+        if app.db_lock().is_locked() && !Path::new(crate::analyzer::dblock::LOCK_PATH).exists() {
+            app.set_db_lock(crate::analyzer::dblock::DbLock::Free);
+        }
         // Land a finished background scan, if any.
         if let Some(active) = &job {
             match active.0.try_recv() {
