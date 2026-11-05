@@ -2155,30 +2155,38 @@ YYYY-MM-DD | no --noconfirm for pacman
            | custom `DBPath` (`pacman-conf DBPath` would read it).
 
 2026-11-05 | a core mirror behind Arch is named, not called a partial upgrade (#6)
-           | Two `lastupdate` markers, read with curl in the scan like the
-           | news: the first `core` server's (`pacman-conf --repo=core
-           | Server`, root = the URL minus `core/os/<arch>`; any other layout
-           | is not guessed) and the master's at rsync.archlinux.org — not
-           | geo.mirror.pkgbuild.com, a tier 1 mirror with its own lag. A gap
-           | of a day or more (Arch asks tier 2 mirrors to sync at least
-           | daily) reads `core mirror <host> is N days behind Arch`, whole
-           | days rounded down. The issue said "partial-upgrade risk"; that
-           | is dropped from every surface. A full upgrade from a coherent
-           | older mirror leaves a coherent older system, and claiming a
-           | breakage the evidence cannot show is a number that lies (§3).
-           | The marker also moves for image uploads and any tree change, so
-           | "behind" is the claim and nothing more. Only the first server:
-           | pacman falls back per file on failure, so the sentence names the
-           | host it checked. Offline (the master unreachable) is silent;
-           | the master answering and the mirror not is `unknown` in
-           | `status` only — a mirror without the file would otherwise hold
-           | a dashboard row for ever. The fix is text that writes nothing:
+           | Two markers, both on the master's clock, read with curl in the
+           | scan beside the news: the first `core` server's `lastsync`
+           | (`pacman-conf --repo=core Server`, root = the URL minus
+           | `core/os/<arch>`; any other layout is not guessed) — the master
+           | time its copy was taken — and the master's own `lastupdate` at
+           | rsync.archlinux.org, the time of its newest change (the master
+           | serves no `lastsync`; geo.mirror.pkgbuild.com is a tier 1 with
+           | its own lag). Rejected: mirror `lastupdate` against master
+           | `lastupdate` — after a quiet spell on the master it counts days
+           | the mirror lacked nothing. This gap never overstates: a mirror
+           | holding the master's newest change reads under a day. A day or
+           | more (Arch asks tier 2 mirrors to sync at least daily) reads
+           | `core mirror <host> is N days behind Arch`, whole days rounded
+           | down; checked against archweb on 2026-11-05 (rackspace 11 vs
+           | its 10-day mean delay). A marker more than a day past the local
+           | clock is no marker — the clock only rejects, never measures.
+           | The issue said "partial-upgrade risk"; that is dropped from
+           | every surface. A full upgrade from a coherent older mirror
+           | leaves a coherent older system, and claiming a breakage the
+           | evidence cannot show is a number that lies (§3). Only the first
+           | server: pacman falls back per file on failure, so the sentence
+           | names the host it checked (without any `user:pass@`). Offline
+           | (the master unreachable) is silent; the master answering and the
+           | mirror not is `core mirror <host>: staleness unknown` in `status`
+           | only — a mirror without the file would otherwise hold a
+           | dashboard row for ever. The row carries the host when the pane
+           | fits all of it. The fix is text that writes nothing:
            | `reflector --latest 20 --sort rate` prints a list. A changed
            | pacman.conf or mirrorlist invalidates the cache. Not in `update`
            | or at `u`: the dashboard already shows it, and `update` does
            | not scan (2026-09-17). Third-party repos (CachyOS, chaotic,
            | ALHP) are not checked; each needs its own reference.
-
 ```
 
 ---

@@ -66,10 +66,10 @@ pub struct Scan {
     /// the most expensive thing a scan does.
     pub stale_services: bool,
     /// Fetch the Arch news feed and show posts that name an installed package
-    /// (#1). One of the two network requests paclens itself makes.
+    /// (#1). One curl to archlinux.org.
     pub arch_news: bool,
-    /// Compare the first `core` mirror's `lastupdate` with Arch's own (#6):
-    /// two small HTTPS reads, the other network request paclens makes.
+    /// Compare the first `core` mirror's `lastsync` with the master's
+    /// `lastupdate` (#6): two small curls, alongside the news.
     pub mirror_check: bool,
 }
 
