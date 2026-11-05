@@ -40,6 +40,7 @@ pub fn run(
             label: "pacman".into(),
             privileged: true,
             interactive: true,
+            pacman_db: true,
         }],
     };
     let report = executor::execute(

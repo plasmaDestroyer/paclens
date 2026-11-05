@@ -20,6 +20,7 @@ struct Built {
     command: Vec<String>,
     privileged: bool,
     interactive: bool,
+    pacman_db: bool,
     targets: Vec<String>,
     label: String,
 }
@@ -67,6 +68,7 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                 // `--noconfirm` is banned (design §3), so the step owns the
                 // terminal.
                 interactive: true,
+                pacman_db: true,
                 targets,
                 label: source.id.to_string(),
             }],
@@ -87,6 +89,8 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                     // and prompts for the password of the install step it
                     // elevates for itself. It owns the terminal too.
                     interactive: true,
+                    // Its install step is a `pacman -U`.
+                    pacman_db: true,
                     targets,
                     label: source.id.to_string(),
                 }],
@@ -102,6 +106,7 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                 // `cargo install-update -a` asks nothing; it prints what it
                 // rebuilds and exits.
                 interactive: false,
+                pacman_db: false,
                 targets,
                 label: source.id.to_string(),
             }],
@@ -156,6 +161,7 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                                 // flatpak answers its own prompts, so nothing
                                 // is lost by taking its output away.
                                 interactive: false,
+                                pacman_db: false,
                                 targets: scoped,
                                 label: format!("{} · {}", source.id, scope.label()),
                             }
@@ -171,6 +177,7 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                     command: update(),
                     privileged: false,
                     interactive: false,
+                    pacman_db: false,
                     targets,
                     label: source.id.to_string(),
                 }],
@@ -186,6 +193,7 @@ pub fn plan_full_upgrade(scan: &ScanResult, is_enabled: impl Fn(&SourceId) -> bo
                 label: b.label,
                 privileged: b.privileged,
                 interactive: b.interactive,
+                pacman_db: b.pacman_db,
             });
         }
     }
@@ -242,6 +250,7 @@ pub fn plan_migration(
         privileged: false,
         // `mkdir -p` and `cp -aT` ask nothing.
         interactive: false,
+        pacman_db: false,
     };
     let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
 
@@ -350,6 +359,8 @@ pub fn plan_removal(report: &MigrationReport, candidate: &OverlapCandidate) -> O
             // `pacman -Rns` and `flatpak uninstall` both ask first — neither
             // command carries a "yes to everything" flag, deliberately.
             interactive: true,
+            // pacman removes the native side; flatpak's uninstall takes no lock.
+            pacman_db: report.direction == Direction::ToFlatpak,
         }],
     })
 }
@@ -600,6 +611,17 @@ mod tests {
             plan.steps.iter().any(|s| s.privileged),
             "the plan-level flag must agree with its steps"
         );
+    }
+
+    #[test]
+    fn only_pacman_and_the_helper_take_the_db_lock() {
+        // Declared like privilege (#5): the helper's install is a pacman -U.
+        let plan = plan_full_upgrade(&scan(), enable_all);
+        for step in &plan.steps {
+            let expected = matches!(step.source_id.as_str(), "pacman" | "aur");
+            assert_eq!(step.pacman_db, expected, "{}", step.label);
+        }
+        assert!(plan.steps.iter().any(|s| s.pacman_db));
     }
 
     #[test]
@@ -1010,6 +1032,7 @@ mod tests {
             command: vec!["cp".to_string()],
             privileged: false,
             interactive: false,
+            pacman_db: false,
         };
         assert!(!step.privileged);
         assert_eq!(crate::executor::skip_reason(&step, None), None);

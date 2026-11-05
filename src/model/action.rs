@@ -48,6 +48,14 @@ pub struct ActionStep {
     /// harmless direction, since that is what every step did before
     /// `--parallel` existed.
     pub interactive: bool,
+    /// Does this step take pacman's database lock (`db.lck`)?
+    ///
+    /// Declared like `privileged` and `interactive` (design §13, 2026-09-07):
+    /// pacman and an AUR helper's install step take it; flatpak, cargo and the
+    /// rest never touch it. A held lock blocks a plan with such a step before
+    /// it runs, rather than letting pacman fail on it (#5). Forgetting it
+    /// means pacman reports the lock itself — the old behaviour.
+    pub pacman_db: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

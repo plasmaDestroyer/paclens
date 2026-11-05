@@ -322,6 +322,7 @@ mod tests {
                 command: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
                 privileged: false,
                 interactive: true,
+                pacman_db: false,
             }],
         }
     }

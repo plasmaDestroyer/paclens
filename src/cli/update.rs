@@ -286,6 +286,7 @@ mod tests {
             command: vec![label.to_string()],
             privileged,
             interactive,
+            pacman_db: false,
         }
     }
 

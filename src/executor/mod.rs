@@ -514,6 +514,7 @@ mod tests {
             privileged,
             // The pacman-shaped default: asks questions, keeps the terminal.
             interactive: true,
+            pacman_db: false,
         }
     }
 
