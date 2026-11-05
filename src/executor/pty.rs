@@ -31,6 +31,11 @@ impl Pty {
         });
     }
 
+    /// The pty master, for [`mute_eof`].
+    pub fn master_fd(&self) -> Option<std::os::fd::RawFd> {
+        self.master.as_raw_fd()
+    }
+
     pub fn close(self) -> Box<dyn Child + Send + Sync> {
         drop(self.writer);
         drop(self.master);
@@ -115,10 +120,34 @@ fn finish(
     })
 }
 
+/// Clear the pty's EOF character. portable-pty's writer writes `\n` and EOF
+/// to the child when dropped, unless EOF is unset: muted first, the writer
+/// closes without answering anything for the user.
+pub fn mute_eof(fd: std::os::fd::RawFd) {
+    // SAFETY: termios is plain data, filled by tcgetattr before use.
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut t) == 0 {
+            t.c_cc[libc::VEOF] = 0;
+            libc::tcsetattr(fd, libc::TCSANOW, &t);
+        }
+    }
+}
+
+/// Wait for `pid`, a child not yet reaped.
+pub fn reap(pid: u32) {
+    if let Ok(pid @ 1..) = i32::try_from(pid) {
+        let mut status = 0;
+        // SAFETY: waitpid writes only to `status`.
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+    }
+}
+
 /// Send `sig` to `pid`, a child not yet reaped. For a [`spawn_shared`] child
 /// that is sudo, which passes it on to the command it runs.
 pub fn signal(pid: u32, sig: i32) {
-    if let Ok(pid) = i32::try_from(pid) {
+    // Never 0: kill(0, …) is our own process group.
+    if let Ok(pid @ 1..) = i32::try_from(pid) {
         // SAFETY: kill(2) takes no pointers; the caller vouches for the pid.
         unsafe { libc::kill(pid, sig) };
     }
@@ -214,12 +243,32 @@ mod tests {
         Ok(())
     }
 
+    /// Dropping portable-pty's writer sends `\n` and EOF; muted, it sends
+    /// nothing and a child waiting for an answer is still waiting.
+    #[test]
+    fn a_muted_writer_closes_without_answering() -> anyhow::Result<()> {
+        let argv: Vec<String> = ["sh", "-c", "read -r a"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut pty = spawn(&argv, 5, 40)?;
+        if let Some(fd) = pty.master_fd() {
+            mute_eof(fd);
+        }
+        drop(pty.writer.take());
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(pty.child.try_wait()?.is_none(), "the child read an answer");
+        pty.child.kill()?;
+        Ok(())
+    }
+
     /// ^C typed into a shared pty raises nothing, so it is sent instead.
     #[test]
     fn a_signal_reaches_a_shared_child() -> anyhow::Result<()> {
         let argv: Vec<String> = ["sleep", "10"].iter().map(|s| s.to_string()).collect();
         let pty = spawn_shared(&argv, 5, 40)?;
-        signal(pty.child.process_id().unwrap_or(0), libc::SIGINT);
+        let pid = pty.child.process_id().ok_or_else(|| anyhow!("no pid"))?;
+        signal(pid, libc::SIGINT);
         let (status, _) = output(pty)?;
         assert_eq!(exit_code(&status), None, "ended by the signal");
         Ok(())

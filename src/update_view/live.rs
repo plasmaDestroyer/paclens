@@ -21,7 +21,7 @@ use crossterm::terminal;
 use crate::cli::history::{TAIL_BYTES, read_tail};
 use crate::cli::style::Styles;
 use crate::config::{Layout, Motif};
-use crate::executor::pty::{exit_code, signal, spawn, spawn_shared};
+use crate::executor::pty::{exit_code, mute_eof, reap, signal, spawn, spawn_shared};
 use crate::executor::sudo::{self, CANDIDATES};
 use crate::executor::{InteractiveRunner, StepRunner};
 use crate::tui::input::encode_key;
@@ -198,8 +198,9 @@ pub fn run(
     };
     let mut input = Input {
         writer: pty.writer.take(),
-        pid: shared.then(|| pty.child.process_id()).flatten(),
-        done: false,
+        pid: pty.child.process_id(),
+        master: pty.master_fd(),
+        shared,
     };
     let mut size = (cols, rows);
     let _raw = opts.keys.then(RawGuard::new).transpose()?;
@@ -337,17 +338,18 @@ fn shares(primed: bool, argv: &[String], fresh: impl FnOnce() -> bool) -> bool {
 /// `-n` makes it fail instead, with sudo's own message on the pty.
 fn never_ask(argv: &[String]) -> Vec<String> {
     let mut out = argv.to_vec();
-    out.insert(1.min(out.len()), "-n".to_string());
+    out.insert(1, "-n".to_string());
     out
 }
 
 /// The keys' way into the child, and what an early return does with it.
 struct Input {
     writer: Option<Box<dyn Write + Send>>,
-    /// A shared child, until it is reaped: keys that the pty cannot turn into
-    /// signals are sent to it as signals.
+    /// The child, until it is reaped: after that its pid may be reused.
     pid: Option<u32>,
-    done: bool,
+    master: Option<std::os::fd::RawFd>,
+    /// Keys the pty cannot turn into signals are sent as signals.
+    shared: bool,
 }
 
 impl Input {
@@ -356,33 +358,31 @@ impl Input {
             w.write_all(bytes)?;
             w.flush()?;
         }
-        if let (Some(pid), Some(sig)) = (self.pid, signal_for(bytes)) {
+        if let (true, Some(pid), Some(sig)) = (self.shared, self.pid, signal_for(bytes)) {
             signal(pid, sig);
         }
         Ok(())
     }
 
-    /// The child is gone: its pid may be reused, and nothing is answered by
-    /// closing its input any more.
     fn reaped(&mut self) {
         self.pid = None;
-        self.done = true;
     }
 }
 
 impl Drop for Input {
-    /// On an early return the child still runs. The writer must not drop
-    /// normally: portable-pty sends `\n` and EOF on drop, which answers a
-    /// waiting `[Y/n]` with yes. A shared child is hung up by signal; one in
-    /// its own session is hung up when the pty closes.
+    /// On an early return the child still runs. Its input closes without a
+    /// word (portable-pty would send `\n` and EOF, and a waiting `[Y/n]`
+    /// reads that as yes), it is hung up, and waited for: the next step must
+    /// not start while pacman still holds its lock.
     fn drop(&mut self) {
-        if self.done {
-            return;
-        }
         if let Some(pid) = self.pid {
+            if let Some(fd) = self.master {
+                mute_eof(fd);
+            }
+            drop(self.writer.take());
             signal(pid, libc::SIGHUP);
+            reap(pid);
         }
-        std::mem::forget(self.writer.take());
     }
 }
 
@@ -532,37 +532,31 @@ mod tests {
         );
     }
 
-    /// An early return must not answer for the user: portable-pty's writer
-    /// sends a newline on drop, and pacman would read it as yes.
+    /// An early return hangs the child up and reaps it (that its input
+    /// closes without an answer is `pty`'s a_muted_writer test).
     #[test]
-    fn an_early_return_sends_nothing_to_the_child() {
-        struct Spy(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl Write for Spy {
-            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-                if let Ok(mut v) = self.0.lock() {
-                    v.extend_from_slice(b);
-                }
-                Ok(b.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        impl Drop for Spy {
-            fn drop(&mut self) {
-                let _ = self.write(b"\n");
-            }
-        }
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let input = |done| Input {
-            writer: Some(Box::new(Spy(seen.clone()))),
-            pid: None,
-            done,
-        };
-        drop(input(false));
-        assert!(seen.lock().unwrap().is_empty(), "early: nothing written");
-        drop(input(true));
-        assert_eq!(*seen.lock().unwrap(), b"\n", "finished: a normal drop");
+    fn an_early_return_hangs_up_and_reaps() -> anyhow::Result<()> {
+        let dir = temp_dir("early");
+        let seen = dir.join("seen");
+        let script = format!(
+            "trap 'echo hup > {f}; exit 3' HUP; read -r a; echo \"got[$a]\" > {f}",
+            f = seen.display()
+        );
+        let mut pty = spawn(&sh(&script), 5, 40)?;
+        std::thread::sleep(Duration::from_millis(300)); // into `read`
+        let pid = pty.child.process_id();
+        drop(Input {
+            writer: pty.writer.take(),
+            pid,
+            master: pty.master_fd(),
+            shared: false,
+        });
+        assert_eq!(fs::read_to_string(&seen)?.trim(), "hup");
+        let raw = pid.and_then(|p| i32::try_from(p).ok()).unwrap_or(-1);
+        // SAFETY: waitpid writes only to `status`.
+        let again = unsafe { libc::waitpid(raw, &mut 0, libc::WNOHANG) };
+        assert_eq!(again, -1, "already reaped");
+        Ok(())
     }
 
     #[test]
