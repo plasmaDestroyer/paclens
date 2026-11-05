@@ -18,6 +18,7 @@ use crate::model::{SCHEMA_VERSION, ScanResult};
 const CACHE_FILENAME: &str = "scan.toml";
 const TMP_FILENAME: &str = "scan.toml.tmp";
 const PACMAN_DB_DIR: &str = "/var/lib/pacman/local/";
+const MIRROR_FILES: [&str; 2] = ["/etc/pacman.conf", "/etc/pacman.d/mirrorlist"];
 
 /// `~/.cache/paclens`, created (0700) if absent. Home of the scan cache and
 /// the last-run pacman transcript (#81).
@@ -95,6 +96,12 @@ pub fn staleness(
         config.general.cache_ttl,
         Utc::now(),
         mtime(Path::new(PACMAN_DB_DIR)),
+        // ponytail: the two files reflector / rate-mirrors write; a mirror
+        // list Included from elsewhere waits for the TTL.
+        MIRROR_FILES
+            .iter()
+            .filter_map(|p| mtime(Path::new(p)))
+            .max(),
         config_path.and_then(mtime),
         mtime(cache_path),
     )
@@ -107,6 +114,7 @@ fn staleness_with(
     ttl_secs: u64,
     now: DateTime<Utc>,
     pacman_db_mtime: Option<SystemTime>,
+    mirrors_mtime: Option<SystemTime>,
     config_mtime: Option<SystemTime>,
     cache_mtime: Option<SystemTime>,
 ) -> Option<&'static str> {
@@ -117,6 +125,12 @@ fn staleness_with(
         && DateTime::<Utc>::from(t) > scan.scanned_at
     {
         return Some("pacman database changed");
+    }
+    // The mirror check names a server; a new list makes that stale (#6).
+    if let Some(t) = mirrors_mtime
+        && DateTime::<Utc>::from(t) > scan.scanned_at
+    {
+        return Some("mirror list changed");
     }
     // `ttl_secs == 0` means "always re-scan" (config docs).
     let age = now.signed_duration_since(scan.scanned_at).num_seconds();
@@ -203,6 +217,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            mirror: None,
             shadows: Vec::new(),
         }
     }
@@ -220,7 +235,10 @@ mod tests {
     fn fresh_scan_is_not_stale() {
         let now = Utc::now();
         let scan = sample_scan(now, SCHEMA_VERSION);
-        assert_eq!(staleness_with(&scan, 3600, now, None, None, None), None);
+        assert_eq!(
+            staleness_with(&scan, 3600, now, None, None, None, None),
+            None
+        );
     }
 
     #[test]
@@ -228,7 +246,7 @@ mod tests {
         let now = Utc::now();
         let scan = sample_scan(now, SCHEMA_VERSION + 1);
         assert_eq!(
-            staleness_with(&scan, 3600, now, None, None, None),
+            staleness_with(&scan, 3600, now, None, None, None, None),
             Some("schema version changed")
         );
     }
@@ -238,7 +256,7 @@ mod tests {
         let scanned = Utc::now() - chrono::Duration::hours(2);
         let scan = sample_scan(scanned, SCHEMA_VERSION);
         assert_eq!(
-            staleness_with(&scan, 3600, Utc::now(), None, None, None),
+            staleness_with(&scan, 3600, Utc::now(), None, None, None, None),
             Some("cache TTL expired")
         );
     }
@@ -248,7 +266,7 @@ mod tests {
         let now = Utc::now();
         let scan = sample_scan(now, SCHEMA_VERSION);
         assert_eq!(
-            staleness_with(&scan, 0, now, None, None, None),
+            staleness_with(&scan, 0, now, None, None, None, None),
             Some("cache TTL expired")
         );
     }
@@ -259,8 +277,24 @@ mod tests {
         let scan = sample_scan(scanned, SCHEMA_VERSION);
         let db_touched = SystemTime::from(Utc::now()); // after scanned_at
         assert_eq!(
-            staleness_with(&scan, 3600, Utc::now(), Some(db_touched), None, None),
+            staleness_with(&scan, 3600, Utc::now(), Some(db_touched), None, None, None),
             Some("pacman database changed")
+        );
+    }
+
+    #[test]
+    fn a_mirror_list_changed_since_the_scan_is_stale() {
+        let scanned = Utc::now() - chrono::Duration::minutes(5);
+        let scan = sample_scan(scanned, SCHEMA_VERSION);
+        let edited = SystemTime::now();
+        assert_eq!(
+            staleness_with(&scan, 3600, Utc::now(), None, Some(edited), None, None),
+            Some("mirror list changed")
+        );
+        let before = SystemTime::from(scanned - chrono::Duration::minutes(1));
+        assert_eq!(
+            staleness_with(&scan, 3600, Utc::now(), None, Some(before), None, None),
+            None
         );
     }
 
@@ -275,6 +309,7 @@ mod tests {
                 &scan,
                 3600,
                 now,
+                None,
                 None,
                 Some(config_mtime),
                 Some(cache_mtime)

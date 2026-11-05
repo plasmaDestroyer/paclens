@@ -942,6 +942,9 @@ fn assemble(
     if config.scan.arch_news && lanes.pacman {
         scan.news = crate::providers::news::fetch(runner, config.scan.provider_timeout_secs);
     }
+    if config.scan.mirror_check && lanes.pacman {
+        scan.mirror = crate::providers::mirror::check(runner, config.scan.provider_timeout_secs);
+    }
     // What each repo serves, against what pacman accepts (#78): one local
     // `pacman -Si`, after the lanes, because it needs the repo list.
     if lanes.pacman
@@ -1195,6 +1198,7 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
         stale_processes: Vec::new(),
         repo_arch: Default::default(),
         news: Vec::new(),
+        mirror: None,
         shadows: Vec::new(),
     }
 }

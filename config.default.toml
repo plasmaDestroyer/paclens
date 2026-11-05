@@ -99,9 +99,15 @@ aur_devel = false
 stale_services = true
 
 # Fetch the Arch news feed (archlinux.org) and show posts that name a package
-# you have installed, newer than your last upgrade. The one network request
-# paclens makes itself; offline it shows nothing.
+# you have installed, newer than your last upgrade. One of the two network
+# requests paclens makes itself; offline it shows nothing.
 arch_news = true
+
+# Read the `lastupdate` marker from the first mirror pacman uses for [core]
+# and from Arch's master (rsync.archlinux.org), and say when the mirror is a
+# day or more behind. The other network request paclens makes itself; offline
+# it shows nothing. paclens never edits your mirrorlist.
+mirror_check = true
 
 
 [why]

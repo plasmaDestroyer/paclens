@@ -66,8 +66,11 @@ pub struct Scan {
     /// the most expensive thing a scan does.
     pub stale_services: bool,
     /// Fetch the Arch news feed and show posts that name an installed package
-    /// (#1). The one network request paclens itself makes.
+    /// (#1). One of the two network requests paclens itself makes.
     pub arch_news: bool,
+    /// Compare the first `core` mirror's `lastupdate` with Arch's own (#6):
+    /// two small HTTPS reads, the other network request paclens makes.
+    pub mirror_check: bool,
 }
 
 /// The update run itself (#24).
@@ -208,6 +211,7 @@ impl Default for Scan {
             aur_devel: false,
             stale_services: true,
             arch_news: true,
+            mirror_check: true,
         }
     }
 }

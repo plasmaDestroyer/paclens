@@ -480,6 +480,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            mirror: None,
             shadows: Vec::new(),
         }
     }
@@ -725,6 +726,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            mirror: None,
             shadows: Vec::new(),
         };
         let plan = plan_full_upgrade(&empty, enable_all);

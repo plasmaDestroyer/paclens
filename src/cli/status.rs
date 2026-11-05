@@ -173,6 +173,19 @@ fn render_status_since(
         out.push_str(&s.summary_updates(&format!("  news: {}", r.item.title)));
         out.push_str(&s.dim(&format!(" {}\n", r.item.link)));
     }
+    // Same verdict the dashboard row reads (#6).
+    let mirror = crate::analyzer::mirror::verdict(scan.mirror.as_ref());
+    if let Some(note) = mirror.note() {
+        let line = format!("  {note}");
+        out.push_str(&match mirror.hint() {
+            Some(_) => s.summary_updates(&line),
+            None => s.dim(&line),
+        });
+        out.push('\n');
+    }
+    if let Some(hint) = mirror.hint() {
+        out.push_str(&s.dim(&format!("    {hint}\n")));
+    }
     if let Some(note) = crate::analyzer::outranked::arch_summary(scan) {
         out.push_str(&s.error(&format!("  {note}")));
         out.push('\n');
@@ -346,6 +359,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            mirror: None,
             shadows: Vec::new(),
         }
     }
@@ -660,6 +674,36 @@ mod tests {
         assert!(out.contains("doas rm /var/lib/pacman/db.lck"), "{out}");
         let out = render_status(&scan, &ascii_styles());
         assert!(!out.contains("db.lck") && !out.contains("locked"), "{out}");
+    }
+
+    #[test]
+    fn a_stale_core_mirror_is_reported_with_a_command_that_writes_nothing() {
+        use crate::providers::mirror::MirrorCheck;
+        let mut scan = scan_with(Vec::new(), Vec::new(), true);
+        let check = |mirror| MirrorCheck {
+            server: "https://archlinux.cachyos.org/repo/core/os/x86_64".into(),
+            mirror,
+            reference: Some(1_793_902_445),
+        };
+        scan.mirror = Some(check(Some(1_793_902_445 - 3 * 86_400)));
+        let out = render_status(&scan, &ascii_styles());
+        assert!(
+            out.contains("core mirror archlinux.cachyos.org is 3 days behind Arch"),
+            "{out}"
+        );
+        assert!(out.contains("reflector --latest 20 --sort rate"), "{out}");
+        assert!(!out.contains("--save"), "{out}");
+
+        scan.mirror = Some(check(None));
+        let out = render_status(&scan, &ascii_styles());
+        assert!(out.contains("staleness unknown"), "{out}");
+        assert!(!out.contains("reflector"), "{out}");
+
+        // Current, or offline: no line at all.
+        scan.mirror = Some(check(Some(1_793_902_445 - 600)));
+        assert!(!render_status(&scan, &ascii_styles()).contains("mirror"));
+        scan.mirror = None;
+        assert!(!render_status(&scan, &ascii_styles()).contains("mirror"));
     }
 
     #[test]

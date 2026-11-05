@@ -591,6 +591,9 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         };
         found.push(kv("news", format!("{}{more}", first.package), theme.accent));
     }
+    if let Some(label) = crate::analyzer::mirror::verdict(app.scan().mirror.as_ref()).label() {
+        found.push(kv("core mirror", label, theme.accent));
+    }
     for (_, bins, runs) in crate::analyzer::shadows::groups(&app.scan().shadows) {
         found.push(kv(
             "duplicates",
@@ -2749,6 +2752,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            mirror: None,
             shadows: Vec::new(),
         }
     }
@@ -3633,6 +3637,30 @@ mod tests {
             !text.contains("reboot"),
             "furniture on a healthy system:\n{text}"
         );
+    }
+
+    #[test]
+    fn the_system_pane_reports_a_core_mirror_behind_arch_and_nothing_else() {
+        use crate::providers::mirror::MirrorCheck;
+        let mut s = scan_with(Vec::new());
+        let check = |mirror| MirrorCheck {
+            server: "https://mirror.example.org/arch/core/os/x86_64".into(),
+            mirror,
+            reference: Some(1_793_902_445),
+        };
+        s.mirror = Some(check(Some(1_793_902_445 - 2 * 86_400)));
+        let app = App::new(s.clone(), Theme::none(), AppOptions::test());
+        let text = render(&app, 80, 24);
+        assert!(text.contains("core mirror"), "no mirror row:\n{text}");
+        assert!(text.contains("2 days behind"), "{text}");
+
+        // Unknown stays in `status`; current is not furniture.
+        for m in [None, Some(1_793_902_445 - 60)] {
+            s.mirror = Some(check(m));
+            let app = App::new(s.clone(), Theme::none(), AppOptions::test());
+            let text = render(&app, 80, 24);
+            assert!(!text.contains("mirror"), "furniture:\n{text}");
+        }
     }
 
     #[test]

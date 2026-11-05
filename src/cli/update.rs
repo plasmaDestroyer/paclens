@@ -377,6 +377,7 @@ mod tests {
             stale_processes: Vec::new(),
             repo_arch: Default::default(),
             news: Vec::new(),
+            mirror: None,
             shadows: Vec::new(),
         }
     }

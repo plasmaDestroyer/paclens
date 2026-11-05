@@ -10,6 +10,7 @@ pub mod cargo;
 pub mod flatpak;
 pub mod fwupd;
 pub mod gobin;
+pub mod mirror;
 pub mod news;
 pub mod npm;
 pub mod pacman;

@@ -8,6 +8,7 @@ mod graph;
 pub mod history;
 pub mod kernel;
 pub mod migrate;
+pub mod mirror;
 pub mod news;
 pub mod outranked;
 mod overlap;
