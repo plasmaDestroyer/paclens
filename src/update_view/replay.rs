@@ -135,7 +135,7 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
     let mut run = Run::new(&command, medians, HashMap::new());
     let mut settler = Settler::new(cols);
     let mut painter = Painter::new(p.live, p.height, p.width);
-    let _cursor = p.live.then_some(CursorGuard);
+    let _cursor = p.live.then(|| CursorGuard);
     let mut log = p.log.iter().peekable();
     let mut now = Duration::ZERO;
     let end = p.log.last().map_or(Duration::ZERO, |(at, _)| *at);

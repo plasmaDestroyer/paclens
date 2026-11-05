@@ -157,11 +157,24 @@ pub fn run(
         .unwrap_or_default();
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
     let command = argv.join(" ");
+    let mut lost = None;
     let mut transcript = opts.transcript_dir.as_ref().and_then(|dir| {
         Transcript::create(dir, &command, cols)
-            .map_err(|err| tracing::warn!(error = %err, "no transcript"))
+            .map_err(|err| {
+                tracing::warn!(error = %err, "no transcript");
+                lost = Some(err);
+            })
             .ok()
     });
+    // Folded is not hidden only if it can be read back (design §13,
+    // 2026-10-16): with no transcript, pacman's lines stay as printed.
+    let live = opts.live && transcript.is_some();
+    if let Some(err) = &lost {
+        writeln!(
+            out,
+            "paclens: no transcript ({err}); pacman's output stays as printed"
+        )?;
+    }
     let view = View {
         layout: opts.layout,
         motif: opts.motif,
@@ -186,9 +199,10 @@ pub fn run(
     let mut last_bytes = start;
     let mut settler = Settler::new(cols);
     let mut model = Run::new(&command, medians, opts.installed.clone());
-    let mut painter = Painter::new(opts.live, rows, cols);
+    let mut painter = Painter::new(live, rows, cols);
     // The painter hides the cursor; this shows it again on any way out.
-    let _cursor = opts.live.then_some(CursorGuard);
+    // Lazy: an eager guard would drop at once and write to stdout in plain mode.
+    let _cursor = live.then(|| CursorGuard);
     if opts.keys {
         painter = painter.raw();
     }
@@ -235,6 +249,7 @@ pub fn run(
             size = (c, r);
             painter.resize(r, c);
             pty.resize(r, c);
+            settler.resize(c);
         }
         painter.tick(out, &model, &view, now, idle.as_deref(), &opts.styles)?;
         if idle.is_some() {
@@ -276,6 +291,7 @@ pub fn run(
     let transcript_path = opts
         .transcript_dir
         .as_ref()
+        .filter(|_| transcript.is_some())
         .map(|d| d.join(TRANSCRIPT).display().to_string())
         .unwrap_or_default();
     let lines = closing(&model, &view, cols, &transcript_path, &opts.styles);
@@ -592,6 +608,22 @@ mod tests {
                 "live {live}: {text:?}"
             );
         }
+    }
+
+    #[test]
+    fn no_transcript_keeps_output_as_printed() {
+        let (mut o, dir) = opts("no-transcript");
+        o.live = true;
+        o.transcript_dir = Some(dir.join("missing"));
+        let mut out = Vec::new();
+        assert_eq!(
+            run(&sh("printf 'odd line\\n'"), &o, &mut out).unwrap(),
+            Some(0)
+        );
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("paclens: no transcript ("), "{text:?}");
+        assert!(text.contains("odd line\n"), "{text:?}");
+        assert!(!text.contains(TRANSCRIPT), "{text:?}");
     }
 
     #[test]

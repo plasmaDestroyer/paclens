@@ -21,6 +21,13 @@ impl Settler {
         }
     }
 
+    /// Follow the pty's new width, so cursor-relative redraws land where
+    /// pacman meant them.
+    pub fn resize(&mut self, cols: u16) {
+        self.parser.screen_mut().set_size(ROWS, cols);
+        self.cols = cols;
+    }
+
     /// Lines completed by a `\n` in `bytes`, trailing whitespace trimmed.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
         self.feed_styled(bytes)
@@ -253,6 +260,17 @@ mod tests {
         let mut s = Settler::new(20);
         let long = "error: ".to_string() + &"x".repeat(1000);
         assert_eq!(s.feed(format!("{long}\r\n").as_bytes()), vec![long]);
+    }
+
+    #[test]
+    fn resize_follows_the_new_width() {
+        let mut s = Settler::new(20);
+        s.resize(40);
+        let a = "A".repeat(35);
+        assert_eq!(
+            s.feed(format!("{a}\r\x1b[2Kdone\r\n").as_bytes()),
+            vec!["done"]
+        );
     }
 
     #[test]
