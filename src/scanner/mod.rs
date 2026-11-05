@@ -365,7 +365,8 @@ fn gone(path: &Path) -> bool {
 }
 
 /// The TUI's per-tick check: what `prev` has become, or `None` when nothing
-/// worth a probe changed. One stat while the lock stands; a full probe only
+/// worth a probe changed. One stat while the lock stands (two while a holder
+/// is named: the lock and its `/proc/<pid>`); a full probe only
 /// when the lock went or the process named as its holder exited — a crashed
 /// pacman must not leave "wait for it" on screen.
 pub fn recheck_db_lock(

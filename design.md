@@ -770,9 +770,10 @@ its `sudo -v`, and the TUI's `u` — paclens checks `/var/lib/pacman/db.lck` liv
 holds it. A step declares that it takes the lock (`ActionStep::pacman_db`:
 pacman, and the AUR helper for its `pacman -U`); a plan without one runs.
 `status` shows the same sentence; the dashboard keeps it on its bottom border
-and reads `plan  blocked by pacman db`. Each tick, one stat: the row clears when the
-lock goes, and re-probes when the process named as holder exits. Only ENOENT
-means gone; any other failed stat stays a look that did not happen. It is never part of a scan: a lock lasts
+and reads `plan  blocked by pacman db`. Each tick costs one stat (two while a
+holder is named): the row clears when the lock goes, and re-probes when the
+named holder exits. Only ENOENT means gone; any other failed stat stays a look
+that did not happen. It is never part of a scan: a lock lasts
 seconds, a cached scan up to an hour.
 
 | evidence | answer |
