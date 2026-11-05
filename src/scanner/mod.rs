@@ -336,7 +336,7 @@ fn probe_db_lock_at(lock: &Path, proc_root: &Path) -> crate::analyzer::dblock::D
         let comm = match std::fs::read_to_string(dir.join("comm")) {
             Ok(comm) => comm,
             // Exited between the listing and here: nothing to see.
-            Err(_) if !dir.exists() => continue,
+            Err(_) if gone(&dir) => continue,
             Err(_) => {
                 visible = false;
                 continue;
