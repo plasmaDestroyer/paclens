@@ -196,14 +196,7 @@ pub fn run(
     } else {
         spawn(argv, rows, cols)?
     };
-    let mut input = Input {
-        writer: pty.writer.take(),
-        pid: pty.child.process_id(),
-        master: pty.master_fd(),
-        shared,
-    };
     let mut size = (cols, rows);
-    let _raw = opts.keys.then(RawGuard::new).transpose()?;
     let mut reader = std::mem::replace(&mut pty.reader, Box::new(io::empty()));
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
@@ -214,6 +207,18 @@ pub fn run(
             }
         }
     });
+
+    // After the reader and its channel, so it drops before them: an early
+    // return waits for the child while its output is still drained (a child
+    // blocked on a full pty would never exit), and before `pty`, whose
+    // master fd it borrows.
+    let mut input = Input {
+        writer: pty.writer.take(),
+        pid: pty.child.process_id(),
+        master: pty.master_fd(),
+        shared,
+    };
+    let _raw = opts.keys.then(RawGuard::new).transpose()?;
 
     let start = Instant::now();
     let mut last_bytes = start;
@@ -376,10 +381,13 @@ impl Drop for Input {
     /// not start while pacman still holds its lock.
     fn drop(&mut self) {
         if let Some(pid) = self.pid {
-            if let Some(fd) = self.master {
-                mute_eof(fd);
+            let writer = self.writer.take();
+            if self.master.is_some_and(mute_eof) {
+                drop(writer);
+            } else {
+                // Unmuted it would answer: keep the fd open instead.
+                std::mem::forget(writer);
             }
-            drop(self.writer.take());
             signal(pid, libc::SIGHUP);
             reap(pid);
         }

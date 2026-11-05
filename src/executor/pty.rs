@@ -3,7 +3,7 @@
 //! A pty means sudo, doas, pkexec and pacman all see a real terminal: their
 //! own prompts, echo control, colors and progress bars work untouched.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::anyhow;
@@ -19,8 +19,6 @@ pub struct Pty {
 }
 
 impl Pty {
-    /// Drop the writer and the master — closes the pty, which unblocks a
-    /// reader on EOF/EIO. Hands back the child for whoever still needs it.
     /// pacman's terminal follows ours when the pane is resized.
     pub fn resize(&self, rows: u16, cols: u16) {
         let _ = self.master.resize(portable_pty::PtySize {
@@ -36,6 +34,8 @@ impl Pty {
         self.master.as_raw_fd()
     }
 
+    /// Drop the writer and the master — closes the pty, which unblocks a
+    /// reader on EOF/EIO. Hands back the child for whoever still needs it.
     pub fn close(self) -> Box<dyn Child + Send + Sync> {
         drop(self.writer);
         drop(self.master);
@@ -122,15 +122,16 @@ fn finish(
 
 /// Clear the pty's EOF character. portable-pty's writer writes `\n` and EOF
 /// to the child when dropped, unless EOF is unset: muted first, the writer
-/// closes without answering anything for the user.
-pub fn mute_eof(fd: std::os::fd::RawFd) {
+/// closes without answering anything for the user. `false`: not muted.
+pub fn mute_eof(fd: std::os::fd::RawFd) -> bool {
     // SAFETY: termios is plain data, filled by tcgetattr before use.
     unsafe {
         let mut t: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut t) == 0 {
-            t.c_cc[libc::VEOF] = 0;
-            libc::tcsetattr(fd, libc::TCSANOW, &t);
+        if libc::tcgetattr(fd, &mut t) != 0 {
+            return false;
         }
+        t.c_cc[libc::VEOF] = 0;
+        libc::tcsetattr(fd, libc::TCSANOW, &t) == 0
     }
 }
 
@@ -139,7 +140,9 @@ pub fn reap(pid: u32) {
     if let Ok(pid @ 1..) = i32::try_from(pid) {
         let mut status = 0;
         // SAFETY: waitpid writes only to `status`.
-        unsafe { libc::waitpid(pid, &mut status, 0) };
+        while unsafe { libc::waitpid(pid, &mut status, 0) } == -1
+            && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+        {}
     }
 }
 
@@ -252,13 +255,12 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let mut pty = spawn(&argv, 5, 40)?;
-        if let Some(fd) = pty.master_fd() {
-            mute_eof(fd);
-        }
+        assert!(pty.master_fd().is_some_and(mute_eof));
         drop(pty.writer.take());
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(pty.child.try_wait()?.is_none(), "the child read an answer");
         pty.child.kill()?;
+        pty.child.wait()?;
         Ok(())
     }
 
