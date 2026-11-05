@@ -329,6 +329,12 @@ pub fn run(
     let lines = closing(&model, &view, cols, &transcript_path, &opts.styles);
     let frames = closing_frames(&model, &view, cols, &transcript_path, &opts.styles);
     painter.close(out, &model, &lines, &frames)?;
+    // Folded is not hidden only if it can be read back (design §13,
+    // 2026-10-16): a transcript that stopped short says so.
+    drop(_raw);
+    if let Some(err) = transcript.as_ref().and_then(|t| t.lost.as_ref()) {
+        writeln!(out, "paclens: the transcript is incomplete ({err})")?;
+    }
     Ok(code)
 }
 
@@ -441,12 +447,14 @@ fn read_log(log: &mut LogTail, model: &mut Run, transcript: &mut Option<Transcri
 }
 
 /// The last-run transcript. Writes after [`Transcript::create`] are best
-/// effort: a failure is logged and dropped, never allowed to stop the run.
+/// effort: a failure never stops the run, but the first one is kept in
+/// `lost` so the end can say the transcript is incomplete.
 pub struct Transcript {
     out: File,
     timing: File,
     log: File,
     last: Duration,
+    lost: Option<io::Error>,
 }
 
 impl Transcript {
@@ -466,6 +474,7 @@ impl Transcript {
             timing,
             log,
             last: Duration::ZERO,
+            lost: None,
         })
     }
 
@@ -479,6 +488,7 @@ impl Transcript {
             .and_then(|()| writeln!(self.timing, "{:.6} {}", delta.as_secs_f64(), bytes.len()));
         if let Err(err) = result {
             tracing::warn!(error = %err, "transcript write failed");
+            self.lost.get_or_insert(err);
         }
     }
 
@@ -486,6 +496,7 @@ impl Transcript {
     pub fn log_line(&mut self, line: &str) {
         if let Err(err) = writeln!(self.log, "{line}") {
             tracing::warn!(error = %err, "transcript log write failed");
+            self.lost.get_or_insert(err);
         }
     }
 }
@@ -781,6 +792,19 @@ mod tests {
                 "live {live}: {text:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_failed_transcript_write_is_kept_for_the_end() {
+        let dir = temp_dir("lost");
+        let mut t = Transcript::create(&dir, "pacman -Syu", 80).unwrap();
+        t.record(Duration::ZERO, b"ok\n");
+        assert!(t.lost.is_none());
+        // A read-only handle stands in for a full disk.
+        t.out = File::open(dir.join(TRANSCRIPT)).unwrap();
+        t.record(Duration::ZERO, b"lost\n");
+        assert!(t.lost.is_some());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
