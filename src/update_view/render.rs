@@ -922,6 +922,10 @@ fn children(
                     // pacman's own percent for the one it is on, in the run's
                     // percent column, under the phase's own.
                     if let Some(p) = pct {
+                        // Where it is in the whole: pacman's own `(i/n)`.
+                        if let Some(at) = run.live_at.map(position) {
+                            row.push(seg(Paint::Dim, at));
+                        }
                         let mut used: usize = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
                         // Narrow: the live row gives up its old version so
                         // its bar still starts in the bar column.
@@ -933,6 +937,9 @@ fn children(
                             row.truncate(3);
                             row.push(seg(Paint::Dim, format!("{} ", s.arrow())));
                             row.push(seg(Paint::Ok, new.to_string()));
+                            if let Some(at) = run.live_at.map(position) {
+                                row.push(seg(Paint::Dim, at));
+                            }
                             used = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
                         }
                         // Its own bar in the run's bar column, when the row
@@ -1143,6 +1150,11 @@ fn children(
         ]);
     }
     rows
+}
+
+/// `  41/79`: the live package's place in the transaction.
+fn position((i, n): (usize, usize)) -> String {
+    format!("  {i}/{n}")
 }
 
 /// A done hook's time against its usual one: `· 6s under usual` (green) or
@@ -4638,5 +4650,29 @@ mod tests {
         assert_eq!(t(20, 26).as_deref(), Some(" · 6s under usual"));
         assert_eq!(t(30, 26).as_deref(), Some(" · 4s over usual"));
         assert_eq!(t(26, 26), None);
+    }
+
+    #[test]
+    fn live_package_row_carries_its_position() {
+        assert_eq!(position((41, 79)), "  41/79");
+        let mut r = empty();
+        for l in fixture_lines() {
+            r.apply_line(&l, Z);
+            if r.current() == Some(PhaseKind::Packages) {
+                break;
+            }
+        }
+        r.observe_screen(
+            &["( 3/38) upgrading nss                      [------C o o]  40%".to_string()],
+            Z,
+        );
+        assert_eq!(r.live_at, Some((3, 38)));
+        let ga = gauge(&r, 120);
+        let rows: Vec<String> = children(&r, &ga, 120, 10, Z, &plain())
+            .iter()
+            .map(|k| text(k))
+            .collect();
+        let live = rows.iter().find(|t| t.contains("40%"));
+        assert!(live.is_some_and(|t| t.contains("3/38")), "{rows:?}");
     }
 }

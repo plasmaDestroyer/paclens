@@ -201,6 +201,8 @@ pub struct Run {
     /// The package pacman is working on now (verb, name, percent), read
     /// from its live row: settled lines only say which ones are done.
     pub live_package: Option<(String, String, u8)>,
+    /// pacman's `(i/n)` on the live package row.
+    pub live_at: Option<(usize, usize)>,
     /// The check pacman is drawing now, with its percent.
     pub live_check: Option<(String, u8)>,
     /// pacman's answer choices (`[Y/n]`) while its question waits, unanswered,
@@ -308,6 +310,7 @@ impl Run {
             totals_seen: Default::default(),
             started_files: Vec::new(),
             live_package: None,
+            live_at: None,
             eaten: Vec::new(),
             live_check: None,
             left: Vec::new(),
@@ -493,16 +496,22 @@ impl Run {
         }
         // The package pacman is on now: its row is drawn, not yet settled.
         self.live_package = None;
+        self.live_at = None;
         if self.current() == Some(PhaseKind::Packages) {
-            self.live_package = rows
+            let live = rows
                 .iter()
                 .rev()
                 .find_map(|r| match classify_screen(r, false) {
                     ScreenEvent::Package {
-                        verb, name, pct, ..
-                    } if pct < 100 => Some((verb, name, pct)),
+                        index,
+                        total,
+                        verb,
+                        name,
+                        pct,
+                    } if pct < 100 => Some(((verb, name, pct), (index, total))),
                     _ => None,
                 });
+            (self.live_package, self.live_at) = live.unzip();
         }
         if self.current() != Some(PhaseKind::Download) {
             self.in_flight.clear();
