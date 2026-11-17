@@ -2198,15 +2198,20 @@ YYYY-MM-DD | no --noconfirm for pacman
            | once), so more dbs than that arrive later; the header counts
            | dbs done. No waiting-db rows for the same reason: a name on
            | screen has started. Checks: `step N` and the running step's
-           | name and bar on the checks row, no total — which steps run
+           | name and bar on the checks row (a long name pushes the bar
+           | right and shortens it), no total — which steps run
            | depends on the build and config (keyring only with GPGME, disk
            | space only with CheckSpace, none of the last two with
-           | --dbonly). Plan: `resolving`, then `waiting [Y/n]` with no
-           | spinner while the question sits unanswered. Download: the
+           | --dbonly). Plan: `resolving`, with no bar (the table pacman
+           | prints is its answer, not progress), then `? plan · waiting
+           | [Y/n]` while the question sits unanswered. Download: the
            | done-names row is gone (the header has `7/79`); the queue reads
            | `52 queued  a · b · …` and counts every file that waits (plan
-           | total − done − moving), so no package is on no row. Hooks: `· 6s under usual` / `over
-           | usual`; the guess bar's label is `est 30%`, not `~30%`; a
+           | total − done − moving), so no package is on no row; time left
+           | at zero speed is `--:--`, not pacman's `00:00`. Hooks: `· 6s under usual` / `over
+           | usual`, from the whole seconds on screen and only for a real
+           | second or more; the guess bar's label is `est 30%` (from the
+           | seconds shown), not `~30%`; a
            | running hook's name is never cut (it can lose what it does).
            | The live package row carries pacman's `(i/n)` and keeps both
            | versions, the old one cut before it is dropped. The header
