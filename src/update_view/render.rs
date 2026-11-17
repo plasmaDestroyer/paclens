@@ -239,7 +239,8 @@ fn phase_row(p: &Phase, asking: Option<&str>, now: Duration, s: &Styles) -> Vec<
     let waits = state.is_some() && asking.is_some();
     let (mark_paint, mark) = match p.state {
         // Nothing runs while pacman waits for the answer: no spinner.
-        PhaseState::Running if waits => (Paint::Warn, g(s, "·", ".")),
+        // `?`: pacman's question sits unanswered.
+        PhaseState::Running if waits => (Paint::Warn, "?"),
         PhaseState::Done => (Paint::Ok, s.check()),
         // The running mark in its phase's colour, turning while paclens
         // watches: it says alive, never how far.
@@ -697,7 +698,7 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
         let eta = if p.pct.unwrap_or(0) >= 100 {
             String::new()
         } else {
-            eta
+            known_eta(&r, eta)
         };
         (size_pair(&got, total), rate(&r), eta)
     });
@@ -803,15 +804,15 @@ fn children(
                     .iter()
                     .filter(|f| !f.queued && f.done_at.is_none())
                     .count();
-                p.total
-                    .unwrap_or(0)
-                    .saturating_sub(p.done + active)
-                    .max(queued.len())
+                p.total.unwrap_or(0).saturating_sub(p.done + active)
             });
+            // Never more names than wait: done, moving and queued add up
+            // to the total on every frame.
+            let listed = &queued[..queued.len().min(waits)];
             if waits > 0 {
                 rows.push(vec![seg(
                     Paint::Dim,
-                    queued_row(&queued, waits, w.saturating_sub(5), s),
+                    queued_row(listed, waits, w.saturating_sub(5), s),
                 )]);
             }
             rows
@@ -1221,16 +1222,30 @@ fn check_now(run: &Run, p: &Phase, ga: &Gauge, label: &[Seg], s: &Styles) -> Vec
     };
     let mut segs = vec![seg(Paint::Bold, format!("  {n}"))];
     let used = label.iter().map(|(_, t)| t.width()).sum::<usize>() + 2 + n.width();
-    let at = ga.left + numbers_w(ga);
+    // In the run's bar column; a name that passes it pushes the bar right
+    // and shortens it, so the right end stays where every bar's does.
+    let col = ga.left + numbers_w(ga);
+    let at = col.max(used + 2);
+    let cells = (col + ga.cells).saturating_sub(at);
     if let Some((_, pct)) = run.live_check.as_ref().filter(|(c, _)| c == n)
         && ga.cells >= 6
-        && used + 2 <= at
+        && cells >= 6
     {
         segs.push(seg(Paint::Plain, " ".repeat(at - used)));
-        segs.push(seg(Paint::Plain, track(*pct, ga.cells, Mouth::Chew, s)));
+        segs.push(seg(Paint::Plain, track(*pct, cells, Mouth::Chew, s)));
         segs.push(seg(Paint::Plain, format!(" {:>4}", format!("{pct}%"))));
     }
     segs
+}
+
+/// pacman's time left, or `--:--` while nothing moves: at zero speed its
+/// `00:00` would read "done now".
+fn known_eta(rate: &str, eta: String) -> String {
+    if bytes(rate) == Some(0.0) {
+        "--:--".to_string()
+    } else {
+        eta
+    }
 }
 
 /// Dbs pacman drew at 100% (or `is up to date`).
@@ -1490,6 +1505,7 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
                 .unwrap_or(0)
                 >= 100;
             if !done {
+                let eta = known_eta(&r, eta);
                 head.push(seg(Paint::Dim, format!(" {b} {} {b} {eta} left", rate(&r))));
             }
         }
@@ -4613,7 +4629,7 @@ mod tests {
         let row = phase_row(&p, Some("[Y/n]"), secs(1), &s);
         let r = text(&row);
         assert!(
-            r.starts_with("· plan") && r.contains("· waiting [Y/n]"),
+            r.starts_with("? plan") && r.contains("· waiting [Y/n]"),
             "{r}"
         );
         assert!(!r.contains("79"), "{r}");
@@ -4855,5 +4871,26 @@ mod tests {
             "{live}"
         );
         assert!(live.contains("17/79") && live.width() <= 100, "{live}");
+    }
+
+    #[test]
+    fn eta_is_unknown_while_nothing_moves() {
+        assert_eq!(known_eta("0.00 B/s", "00:00".into()), "--:--");
+        assert_eq!(known_eta("2.3 MiB/s", "00:12".into()), "00:12");
+    }
+
+    #[test]
+    fn narrow_check_bar_starts_after_its_name() {
+        let s = plain();
+        let mut p = running(PhaseKind::Checks, 2);
+        p.detail = Some("checking package integrity".into());
+        let mut r = empty();
+        r.live_check = Some(("checking package integrity".into(), 51));
+        let ga = gauge(&r, 100);
+        let row = phase_row(&p, None, secs(2), &s);
+        let mut all = row.clone();
+        all.extend(check_now(&r, &p, &ga, &row, &s));
+        let t = text(&all);
+        assert!(t.trim_end().ends_with("51%") && t.width() <= 100, "{t}");
     }
 }
