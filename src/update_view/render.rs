@@ -223,8 +223,25 @@ fn header(run: &Run, view: &View, now: Duration, s: &Styles) -> Vec<Seg> {
     segs
 }
 
-fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
+/// What the running plan does while it has no count: `resolving`, or
+/// `waiting [Y/n]` while pacman's question is on screen unanswered.
+fn plan_state(asking: Option<&str>, done: usize) -> Option<String> {
+    match asking {
+        Some(q) => Some(format!("waiting {q}")),
+        None if done == 0 => Some("resolving".to_string()),
+        None => None,
+    }
+}
+
+/// `asking`: pacman's unanswered answer choices, if any (see [`plan_state`]).
+fn phase_row(p: &Phase, asking: Option<&str>, now: Duration, s: &Styles) -> Vec<Seg> {
+    let state = (p.kind == PhaseKind::Plan && p.state == PhaseState::Running)
+        .then(|| plan_state(asking, p.done))
+        .flatten();
+    let waits = state.is_some() && asking.is_some();
     let (mark_paint, mark) = match p.state {
+        // Nothing runs while pacman waits for the answer: no spinner.
+        PhaseState::Running if waits => (Paint::Warn, g(s, "·", ".")),
         PhaseState::Done => (Paint::Ok, s.check()),
         // The running mark in its phase's colour, turning while paclens
         // watches: it says alive, never how far.
@@ -257,12 +274,24 @@ fn phase_row(p: &Phase, now: Duration, s: &Styles) -> Vec<Seg> {
         text_paint
     };
     let rest = format!(" {noun:<5}  {time}");
-    vec![
+    let mut row = vec![
         seg(mark_paint, mark),
         seg(text_paint, format!(" {:<10} ", name(p.kind))),
-        seg(count_paint, format!("{n:>7}")),
-        seg(text_paint, rest.trim_end().to_string()),
-    ]
+    ];
+    match state {
+        Some(word) => {
+            let word = format!("{} {word}", s.bullet());
+            row.push(seg(
+                text_paint,
+                format!("{word:<13}  {time}").trim_end().to_string(),
+            ));
+        }
+        None => {
+            row.push(seg(count_paint, format!("{n:>7}")));
+            row.push(seg(text_paint, rest.trim_end().to_string()));
+        }
+    }
+    row
 }
 
 /// A braille spinner turning ten steps a second; `>` without colour.
@@ -622,8 +651,10 @@ fn split_detail(d: &str) -> (String, String, String) {
 /// The running phase's own row: its label, then — when there is a measure —
 /// the bar, in the same columns as its children's.
 fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Vec<Seg> {
-    let mut row = phase_row(p, now, s);
+    let mut row = phase_row(p, run.asking.as_deref(), now, s);
     let pct = match p.kind {
+        // Waiting for the answer: nothing to measure.
+        PhaseKind::Plan if run.asking.is_some() => None,
         // Each check fills its own bar in a blink; its name says more.
         PhaseKind::Checks => None,
         // The count says how many hooks are done; the one bar is the
@@ -1250,7 +1281,7 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
         .iter()
         .filter(|p| p.state == PhaseState::Done)
         .map(|p| {
-            let mut row = phase_row(p, now, s);
+            let mut row = phase_row(p, None, now, s);
             // The download keeps what it moved, and how fast on average,
             // in the columns those figures had while it ran.
             if p.kind == PhaseKind::Download
@@ -1415,7 +1446,7 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
         Layout::Receipt => {
             let one = match run.current().and_then(|k| phase(run, k)) {
                 Some(p) => {
-                    let mut segs = phase_row(p, now, s);
+                    let mut segs = phase_row(p, run.asking.as_deref(), now, s);
                     if let Some(it) = item(run, now, s) {
                         segs.push(seg(Paint::Plain, "  "));
                         segs.extend(it);
@@ -4451,5 +4482,46 @@ mod tests {
         assert!(r.ends_with('…') && r.width() <= 33, "{r}");
         // Not even one name fits: still the count, and the mark.
         assert_eq!(queued_row(&n, 12, &s), "4 queued  …");
+    }
+
+    fn text(segs: &[Seg]) -> String {
+        segs.iter().map(|(_, t)| t.as_str()).collect()
+    }
+
+    fn running(k: PhaseKind, done: usize) -> Phase {
+        let mut r = empty();
+        let mut p = r
+            .phases
+            .remove(r.phases.iter().position(|p| p.kind == k).unwrap_or(0));
+        p.state = PhaseState::Running;
+        p.started = Some(Z);
+        p.done = done;
+        p
+    }
+
+    #[test]
+    fn plan_says_resolving_then_waiting() {
+        assert_eq!(plan_state(None, 0).as_deref(), Some("resolving"));
+        assert_eq!(
+            plan_state(Some("[Y/n]"), 79).as_deref(),
+            Some("waiting [Y/n]")
+        );
+        // The list itself is being read: its count says it.
+        assert_eq!(plan_state(None, 12), None);
+        let s = uni();
+        let p = running(PhaseKind::Plan, 0);
+        let r = text(&phase_row(&p, None, secs(1), &s));
+        assert!(
+            r.contains("plan") && r.contains("· resolving") && r.ends_with("1s"),
+            "{r}"
+        );
+        let p = running(PhaseKind::Plan, 79);
+        let row = phase_row(&p, Some("[Y/n]"), secs(1), &s);
+        let r = text(&row);
+        assert!(
+            r.starts_with("· plan") && r.contains("· waiting [Y/n]"),
+            "{r}"
+        );
+        assert!(!r.contains("79"), "{r}");
     }
 }

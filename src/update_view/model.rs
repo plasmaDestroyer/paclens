@@ -203,6 +203,9 @@ pub struct Run {
     pub live_package: Option<(String, String, u8)>,
     /// The check pacman is drawing now, with its percent.
     pub live_check: Option<(String, u8)>,
+    /// pacman's answer choices (`[Y/n]`) while its question waits, unanswered,
+    /// on the last screen row.
+    pub asking: Option<String>,
     /// Files pacman counted finished, newest last.
     pub eaten: Vec<String>,
     /// Started files pacman stopped listing, not yet counted finished.
@@ -237,6 +240,13 @@ pub struct Run {
     saw_package: bool,
 }
 
+/// `[Y/n]` when `row` ends in pacman's question with no answer typed yet.
+fn unanswered(row: &str) -> Option<&str> {
+    ["[Y/n]", "[y/N]"]
+        .into_iter()
+        .find(|q| row.trim_end().ends_with(q))
+}
+
 impl Run {
     pub fn new(
         command: &str,
@@ -267,6 +277,7 @@ impl Run {
             notes: Vec::new(),
             totals: Vec::new(),
             prompt: None,
+            asking: None,
             lines: Vec::new(),
             styled: Vec::new(),
             in_flight: Vec::new(),
@@ -419,6 +430,7 @@ impl Run {
         // pacman saying checks began: the phase starts on it, not only once
         // a check line settles.
         self.live_check = None;
+        self.asking = rows.last().and_then(|r| unanswered(r)).map(str::to_string);
         let checking = rows
             .iter()
             .rev()
@@ -1784,5 +1796,25 @@ mod tests {
         r.observe_screen(&[a.into(), t1.into()], ms(100));
         assert_eq!(r.eaten, ["bbb"]);
         assert_eq!(r.in_flight.iter().filter(|f| f.name == "aaa").count(), 1);
+    }
+
+    #[test]
+    fn asking_is_only_an_unanswered_question_on_the_last_row() {
+        let mut r = Run::new("pacman -Syu", HashMap::new(), HashMap::new());
+        r.observe_screen(
+            &[":: Proceed with installation? [Y/n]".into()],
+            Duration::ZERO,
+        );
+        assert_eq!(r.asking.as_deref(), Some("[Y/n]"));
+        r.observe_screen(
+            &[":: Proceed with installation? [Y/n] y".into()],
+            Duration::ZERO,
+        );
+        assert_eq!(r.asking, None);
+        r.observe_screen(
+            &[":: Proceed? [Y/n]".into(), "(1/79) checking keys".into()],
+            Duration::ZERO,
+        );
+        assert_eq!(r.asking, None);
     }
 }
