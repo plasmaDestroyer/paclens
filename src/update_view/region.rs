@@ -43,6 +43,13 @@ impl Drop for CursorGuard {
 #[derive(Default)]
 pub struct Region {
     height: u16,
+    /// The lines the last region put on screen, and the width now: a
+    /// terminal that narrows re-wraps them onto more rows (a wider one onto
+    /// fewer), so the way back up is counted again at the new width.
+    // ponytail: assumes the terminal reflows (kitty, foot, vte, xterm.js,
+    // tmux do); one that cuts lines instead would be moved up too far.
+    drawn: Vec<String>,
+    cols: u16,
 }
 
 impl Region {
@@ -64,6 +71,7 @@ impl Region {
         // One synchronized update (mode 2026): a terminal that knows it
         // shows the whole frame at once, never half drawn; others ignore it.
         write!(out, "\x1b[?2026h{HIDE}")?;
+        self.cols = cols;
         self.erase(out)?;
         for l in &frame.above {
             put(out, l)?;
@@ -87,6 +95,7 @@ impl Region {
             used += h;
             skip -= 1;
         }
+        self.drawn = region[skip..].to_vec();
         for l in &region[skip..] {
             put(out, l)?;
         }
@@ -99,6 +108,7 @@ impl Region {
             let end = tail_fit(whole, room, cols);
             used = rows_of(&end, cols);
             put(out, &end)?;
+            self.drawn = vec![end];
         }
         // Rows the last frame had and this one has not.
         queue!(out, Clear(ClearType::FromCursorDown))?;
@@ -120,12 +130,23 @@ impl Region {
         }
         queue!(out, Clear(ClearType::FromCursorDown))?;
         self.height = 0;
+        self.drawn.clear();
         write!(out, "{SHOW}")?;
         out.flush()
     }
 
+    /// The terminal's width now, for the next erase.
+    pub fn resize(&mut self, cols: u16) {
+        self.cols = cols;
+    }
+
     fn erase(&mut self, out: &mut impl Write) -> io::Result<()> {
-        let up = self.height;
+        let up = if self.cols == 0 || self.drawn.is_empty() {
+            self.height
+        } else {
+            let n: usize = self.drawn.iter().map(|l| rows_of(l, self.cols)).sum();
+            u16::try_from(n).unwrap_or(u16::MAX)
+        };
         if up > 0 {
             queue!(out, MoveUp(up))?;
         }
@@ -218,6 +239,7 @@ impl Painter {
     /// The terminal's size now: a pane resized mid-run is drawn for and
     /// erased at its new size, not the one it had at the start.
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.region.resize(cols);
         self.rows = rows;
         self.cols = cols;
     }
@@ -397,6 +419,30 @@ mod tests {
         // Only the short line fits under a 3-row terminal.
         r.draw(&mut out, &f, 3, 10).unwrap();
         assert_eq!(r.height, 1);
+    }
+
+    #[test]
+    fn a_narrower_terminal_erases_the_rows_its_lines_rewrapped_onto() {
+        // Two 100-column lines drawn at 120 wide take two rows; at 50 wide
+        // the terminal re-wraps each onto two, so the way up is four.
+        let mut r = Region::new();
+        let wide = "x".repeat(100);
+        let f = Frame {
+            above: Vec::new(),
+            region: vec![wide.clone(), wide],
+            cursor: false,
+        };
+        let mut out = Vec::new();
+        r.draw(&mut out, &f, 40, 120).unwrap();
+        r.resize(50);
+        let mut out = Vec::new();
+        r.draw(&mut out, &f, 40, 50).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("\x1b[4A"), "{s:?}");
+        // Same width again: two rows each, four up.
+        let mut out = Vec::new();
+        r.draw(&mut out, &f, 40, 50).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("\x1b[4A"));
     }
 
     #[test]

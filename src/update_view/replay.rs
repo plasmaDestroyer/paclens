@@ -135,6 +135,7 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
     let mut run = Run::new(&command, medians, HashMap::new());
     let mut settler = Settler::new(cols);
     let mut painter = Painter::new(p.live, p.height, p.width);
+    let mut size = (p.width, p.height);
     let _cursor = p.live.then(|| CursorGuard);
     let mut log = p.log.iter().peekable();
     let mut now = Duration::ZERO;
@@ -159,6 +160,15 @@ pub fn play(out: &mut impl Write, p: &Play) -> io::Result<()> {
             waited += step;
             catch_up(&mut log, &mut run, now + waited);
             run.observe_screen(&settler.tail(40), now + waited);
+            // The view follows the pane, as live does; the recording keeps
+            // the width pacman drew it at.
+            if p.live
+                && let Ok((c, r)) = crossterm::terminal::size()
+                && (c, r) != size
+            {
+                size = (c, r);
+                painter.resize(r, c);
+            }
             let idle = (waiting && waited >= IDLE).then(|| idle_rows(&settler));
             painter.tick(out, &run, &p.view, now + waited, idle.as_deref(), &p.styles)?;
             painter.prompt(out, &settler.partial(), idle.is_some())?;
