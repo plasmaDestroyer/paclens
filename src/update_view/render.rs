@@ -1210,9 +1210,12 @@ fn vs_usual(took: Duration, usual: Duration, s: &Styles) -> Option<Seg> {
     let under = u.saturating_sub(t);
     let over = t.saturating_sub(u);
     let d = |n| duration(Duration::from_secs(n));
-    if under >= 1 {
+    // Said only when the real difference is a second or more: a hook
+    // 0.1s under its usual time is not `1s under`.
+    let one = Duration::from_secs(1);
+    if under >= 1 && usual.saturating_sub(took) >= one {
         Some(seg(Paint::Ok, format!(" {b} {} under usual", d(under))))
-    } else if over >= 1 {
+    } else if over >= 1 && took.saturating_sub(usual) >= one {
         Some(seg(Paint::Dim, format!(" {b} {} over usual", d(over))))
     } else {
         None
@@ -4703,6 +4706,9 @@ mod tests {
         // Whole seconds on screen: 20.9s under 30s is `20s`, so 10s under.
         let d = vs_usual(Duration::from_millis(20_900), secs(30), &s).map(|x| x.1);
         assert_eq!(d.as_deref(), Some(" · 10s under usual"));
+        // 0.9s against 1s: a tenth, not a second.
+        let d = vs_usual(Duration::from_millis(900), secs(1), &s);
+        assert!(d.is_none());
         assert_eq!(t(30, 26).as_deref(), Some(" · 4s over usual"));
         assert_eq!(t(26, 26), None);
     }
