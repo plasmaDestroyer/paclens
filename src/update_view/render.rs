@@ -413,6 +413,7 @@ fn item(run: &Run, now: Duration, s: &Styles) -> Option<Vec<Seg>> {
             Some(segs)
         }
         PhaseKind::Sync => Some(vec![seg(Paint::Plain, run.dbs.last()?.clone())]),
+        PhaseKind::Checks => Some(vec![seg(Paint::Plain, ph.detail.clone()?)]),
         _ => None,
     }
 }
