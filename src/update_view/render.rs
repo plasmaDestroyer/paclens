@@ -798,7 +798,13 @@ fn children(
             // row here is the queue, and it says so.
             // Every file not done and not moving waits, listed by pacman or
             // not yet: the count is the plan's, the names the ones on screen.
+            // Until pacman prints its own Total row, the total is the plan's,
+            // and cached packages never wait: count only names on screen.
+            // pacman skips that row when a single file downloads.
             let waits = phase(run, k).map_or(0, |p| {
+                if p.pct.is_none() {
+                    return queued.len();
+                }
                 let active = run
                     .in_flight
                     .iter()
@@ -1548,6 +1554,11 @@ fn tree(run: &Run, view: &View, w: usize, max: usize, now: Duration, s: &Styles)
 }
 
 fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styles) -> Vec<String> {
+    // Nothing of pacman's has started (sudo may be about to ask for the
+    // password): draw nothing, so its prompt comes up alone.
+    if !run.finished && run.phases.iter().all(|p| p.started.is_none()) {
+        return Vec::new();
+    }
     let fit = |segs: &Vec<Seg>| line(segs, w, s);
     let room = height.saturating_sub(1).max(1);
     match view.layout {
@@ -4100,6 +4111,29 @@ mod tests {
     }
 
     #[test]
+    fn cached_packages_are_not_counted_as_queued() {
+        // 78 of 79 cached, one file downloading: pacman prints no Total
+        // row, so the plan's total must not turn into `78 queued`.
+        let mut r = partial(120);
+        let d = r
+            .phases
+            .iter_mut()
+            .find(|p| p.kind == PhaseKind::Download)
+            .unwrap();
+        d.pct = None;
+        d.done = 0;
+        d.total = Some(79);
+        r.in_flight.retain(|f| !f.queued);
+        r.in_flight.truncate(1);
+        let f = draw(&r, &view(Layout::Inline, Motif::Subtle), 40, &plain());
+        assert!(
+            !f.region.iter().any(|l| strip(l).contains("queued")),
+            "{:?}",
+            f.region
+        );
+    }
+
+    #[test]
     fn transaction_warning_shows_live_before_the_end() {
         let lines = fixture_lines();
         let mut r = partial(60);
@@ -4910,5 +4944,19 @@ mod tests {
         all.extend(check_now(&r, &p, &ga, &row, &s));
         let t = text(&all);
         assert!(t.trim_end().ends_with("51%") && t.width() <= 100, "{t}");
+    }
+
+    #[test]
+    fn nothing_is_drawn_before_pacmans_first_phase() {
+        let mut r = empty();
+        for v in all_views() {
+            assert!(draw(&r, &v, 40, &plain()).region.is_empty());
+        }
+        r.apply_line(":: Synchronizing package databases...", secs(1));
+        assert!(
+            !draw(&r, &view(Layout::Inline, Motif::Subtle), 40, &plain())
+                .region
+                .is_empty()
+        );
     }
 }
