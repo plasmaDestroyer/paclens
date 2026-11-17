@@ -206,6 +206,10 @@ pub struct Run {
     /// pacman's answer choices (`[Y/n]`) while its question waits, unanswered,
     /// on the last screen row.
     pub asking: Option<String>,
+    /// Each db's last drawn state during sync: pacman's percent and its
+    /// words (`15.6 KiB 0.00 B/s --:--`). A db is on screen only once its
+    /// transfer has started (pacman prints the name then).
+    pub db_live: HashMap<String, (u8, String)>,
     /// Files pacman counted finished, newest last.
     pub eaten: Vec<String>,
     /// Started files pacman stopped listing, not yet counted finished.
@@ -238,6 +242,25 @@ pub struct Run {
     /// Between a `Packages (N)` name list and the plan totals.
     in_names: bool,
     saw_package: bool,
+}
+
+/// A db's row during sync: its name, percent and words. `is up to date`
+/// is done, with no words.
+fn db_row(row: &str) -> Option<(String, u8, String)> {
+    let ScreenEvent::Db(db) = classify_screen(row, true) else {
+        return None;
+    };
+    let rest = row.trim().strip_prefix(db.as_str())?.trim();
+    if rest == "is up to date" {
+        return Some((db, 100, String::new()));
+    }
+    let pct = bar_pct(rest)?;
+    let words = rest.split('[').next().unwrap_or_default();
+    Some((
+        db,
+        pct,
+        words.split_whitespace().collect::<Vec<_>>().join(" "),
+    ))
 }
 
 /// `[Y/n]` when `row` ends in pacman's question with no answer typed yet.
@@ -278,6 +301,7 @@ impl Run {
             totals: Vec::new(),
             prompt: None,
             asking: None,
+            db_live: HashMap::new(),
             lines: Vec::new(),
             styled: Vec::new(),
             in_flight: Vec::new(),
@@ -318,6 +342,11 @@ impl Run {
         self.styled.push(styled.to_string());
         self.lines.push(line.to_string());
         let ev = classify_screen(line, self.current() == Some(PhaseKind::Sync));
+        if matches!(ev, ScreenEvent::Db(_))
+            && let Some((db, pct, detail)) = db_row(line)
+        {
+            self.db_live.insert(db, (pct, detail));
+        }
         self.apply_screen(ev, at);
     }
 
@@ -457,6 +486,11 @@ impl Run {
     }
 
     fn observe(&mut self, rows: &[String], at: Duration) {
+        if self.current() == Some(PhaseKind::Sync) {
+            for (db, pct, detail) in rows.iter().filter_map(|r| db_row(r)) {
+                self.db_live.insert(db, (pct, detail));
+            }
+        }
         // The package pacman is on now: its row is drawn, not yet settled.
         self.live_package = None;
         if self.current() == Some(PhaseKind::Packages) {
@@ -1816,5 +1850,35 @@ mod tests {
             Duration::ZERO,
         );
         assert_eq!(r.asking, None);
+    }
+
+    #[test]
+    fn db_row_reads_name_percent_and_words() {
+        let r = db_row(" core      15.6 KiB  0.00   B/s --:-- [-------Co  o  o ]  12%");
+        assert_eq!(
+            r,
+            Some(("core".into(), 12, "15.6 KiB 0.00 B/s --:--".into()))
+        );
+        assert_eq!(
+            db_row(" extra is up to date"),
+            Some(("extra".into(), 100, String::new()))
+        );
+        // Just named: started, nothing drawn yet.
+        assert_eq!(db_row(" multilib"), None);
+        assert_eq!(db_row(":: Synchronizing package databases..."), None);
+    }
+
+    #[test]
+    fn sync_keeps_each_dbs_last_state() {
+        let mut r = Run::new("pacman -Syu", HashMap::new(), HashMap::new());
+        r.apply_line(":: Synchronizing package databases...", Duration::ZERO);
+        r.apply_line(" core", Duration::ZERO);
+        let rows = [
+            " core   128.6 KiB   143 KiB/s 00:01 [------] 100%".to_string(),
+            " extra    4.1 MiB  4.71 MiB/s 00:00 [--Co  ]  48%".to_string(),
+        ];
+        r.observe_screen(&rows, Duration::ZERO);
+        assert_eq!(r.db_live["core"].0, 100);
+        assert_eq!(r.db_live["extra"], (48, "4.1 MiB 4.71 MiB/s 00:00".into()));
     }
 }

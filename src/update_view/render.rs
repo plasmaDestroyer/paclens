@@ -157,9 +157,9 @@ fn name(k: PhaseKind) -> &'static str {
 fn count(p: &Phase) -> String {
     match (p.state, p.total) {
         (PhaseState::Pending, _) => String::new(),
-        // Steps are known only as each starts: the count waits for the end.
-        // Steps are known only as each starts: the one it is on.
-        (PhaseState::Running, _) if p.kind == PhaseKind::Checks => p.done.to_string(),
+        // No total: which steps run depends on pacman's build and config
+        // (keyring, CheckSpace), so the count is the step it is on.
+        (PhaseState::Running, _) if p.kind == PhaseKind::Checks => format!("step {}", p.done),
         (PhaseState::Running, None) if p.done == 0 => String::new(),
         (PhaseState::Running, Some(t)) => format!("{}/{t}", p.done),
         _ => p.done.to_string(),
@@ -254,6 +254,7 @@ fn phase_row(p: &Phase, asking: Option<&str>, now: Duration, s: &Styles) -> Vec<
     let n = count(p);
     let noun = match (p.kind, n.is_empty()) {
         (_, true) => "",
+        (PhaseKind::Checks, _) if p.state == PhaseState::Running => "",
         (PhaseKind::Checks, _) => "steps",
         (PhaseKind::Sync, _) => "dbs",
         (PhaseKind::PreHooks | PhaseKind::PostHooks, _) => "hooks",
@@ -651,6 +652,17 @@ fn split_detail(d: &str) -> (String, String, String) {
 /// The running phase's own row: its label, then — when there is a measure —
 /// the bar, in the same columns as its children's.
 fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Vec<Seg> {
+    // Sync counts the dbs done; how many there are is not on screen until
+    // each starts (pacman prints a name as its transfer begins), so no total.
+    let synced;
+    let p = if p.kind == PhaseKind::Sync {
+        let mut q = p.clone();
+        q.done = dbs_done(run);
+        synced = q;
+        &synced
+    } else {
+        p
+    };
     let mut row = phase_row(p, run.asking.as_deref(), now, s);
     let pct = match p.kind {
         // Waiting for the answer: nothing to measure.
@@ -662,9 +674,12 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
         PhaseKind::PreHooks | PhaseKind::PostHooks => None,
         _ => run.progress(now),
     };
+    if p.kind == PhaseKind::Checks {
+        row.extend(check_now(run, p, g, &row, s));
+        return row;
+    }
     let Some(pct) = pct else {
-        // Checks list their own steps as children.
-        if let Some(d) = p.detail.as_ref().filter(|_| p.kind != PhaseKind::Checks) {
+        if let Some(d) = &p.detail {
             row.push(seg(Paint::Dim, format!("  {d}")));
         }
         return row;
@@ -1120,39 +1135,15 @@ fn children(
                     names.push(name);
                 }
             }
+            // The one it is on is named on the checks row itself.
             let now_on = phase(run, k).and_then(|p| p.detail.clone());
-            let mut rows: Vec<Vec<Seg>> = names
+            names
                 .iter()
                 .filter(|n| Some(*n) != now_on.as_ref())
                 .map(|n| vec![seg(Paint::Ok, s.check()), seg(Paint::Dim, format!(" {n}"))])
-                .collect();
-            // The one it is on: its name, and pacman's own percent as a
-            // bar in the run's bar column when pacman draws one.
-            if let Some((n, p)) = run
-                .live_check
-                .clone()
-                .filter(|(n, _)| now_on.as_ref() == Some(n))
-            {
-                let mut row = vec![
-                    seg(Paint::Warn, g(s, "▸", ">")),
-                    seg(Paint::Bold, format!(" {n}")),
-                ];
-                let used = 5 + 2 + n.width();
-                let at = ga.left + numbers_w(ga);
-                if ga.cells >= 6 && used + 2 <= at {
-                    row.push(seg(Paint::Plain, " ".repeat(at - used)));
-                    row.push(seg(Paint::Plain, track(p, ga.cells, Mouth::Chew, s)));
-                    row.push(seg(Paint::Plain, format!(" {:>4}", format!("{p}%"))));
-                }
-                rows.push(row);
-            } else if let Some(n) = now_on {
-                rows.push(vec![
-                    seg(Paint::Warn, g(s, "▸", ">")),
-                    seg(Paint::Bold, format!(" {n}")),
-                ]);
-            }
-            rows
+                .collect()
         }
+        PhaseKind::Sync => sync_rows(run, ga, now, s),
         _ => item(run, now, s).into_iter().collect(),
     };
     // After the answer: the transaction's own output (hooks, scriptlets),
@@ -1168,6 +1159,70 @@ fn children(
         ]);
     }
     rows
+}
+
+/// The check pacman is on, after the checks row's label: its name, and
+/// pacman's own percent as a bar in the run's bar column when it draws one.
+fn check_now(run: &Run, p: &Phase, ga: &Gauge, label: &[Seg], s: &Styles) -> Vec<Seg> {
+    let Some(n) = &p.detail else {
+        return Vec::new();
+    };
+    let mut segs = vec![seg(Paint::Bold, format!("  {n}"))];
+    let used = label.iter().map(|(_, t)| t.width()).sum::<usize>() + 2 + n.width();
+    let at = ga.left + numbers_w(ga);
+    if let Some((_, pct)) = run.live_check.as_ref().filter(|(c, _)| c == n)
+        && ga.cells >= 6
+        && used + 2 <= at
+    {
+        segs.push(seg(Paint::Plain, " ".repeat(at - used)));
+        segs.push(seg(Paint::Plain, track(*pct, ga.cells, Mouth::Chew, s)));
+        segs.push(seg(Paint::Plain, format!(" {:>4}", format!("{pct}%"))));
+    }
+    segs
+}
+
+/// Dbs pacman drew at 100% (or `is up to date`).
+fn dbs_done(run: &Run) -> usize {
+    run.dbs
+        .iter()
+        .filter(|d| run.db_live.get(*d).is_some_and(|l| l.0 >= 100))
+        .count()
+}
+
+/// One row per db pacman has started: `✓ core` done, the spinner and its
+/// bar while it downloads. No row for a db not yet started: its name is
+/// not on screen until then.
+fn sync_rows(run: &Run, ga: &Gauge, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
+    let name_w = ga.left.saturating_sub(5 + 2 + 1);
+    run.dbs
+        .iter()
+        .map(|d| match run.db_live.get(d) {
+            Some((pct, _)) if *pct >= 100 => {
+                vec![seg(Paint::Ok, s.check()), seg(Paint::Dim, format!(" {d}"))]
+            }
+            live => {
+                let mut row = vec![
+                    seg(Paint::Warn, spinner(now, s)),
+                    seg(Paint::Bold, format!(" {}", cut_plain(d, name_w))),
+                ];
+                if let Some((pct, words)) = live {
+                    let pad = name_w.saturating_sub(d.width()) + 1;
+                    row.push(seg(Paint::Plain, " ".repeat(pad)));
+                    let (got, r, eta) = split_detail(words);
+                    row.extend(gauge_tail(
+                        ga,
+                        *pct,
+                        false,
+                        false,
+                        None,
+                        Some((size_pair(&got, None), rate(&r), eta)),
+                        s,
+                    ));
+                }
+                row
+            }
+        })
+        .collect()
 }
 
 /// `52 queued  fwupd · obsidian · php · …`: the count first, then the names
@@ -4523,5 +4578,56 @@ mod tests {
             "{r}"
         );
         assert!(!r.contains("79"), "{r}");
+    }
+
+    #[test]
+    fn sync_has_one_row_per_started_db() {
+        let mut r = empty();
+        r.dbs = vec!["core".into(), "extra".into(), "multilib".into()];
+        r.db_live.insert("core".into(), (100, String::new()));
+        r.db_live
+            .insert("extra".into(), (48, "4.1 MiB 4.71 MiB/s 00:00".into()));
+        assert_eq!(dbs_done(&r), 1);
+        let s = plain();
+        let ga = gauge(&r, 120);
+        let rows: Vec<String> = sync_rows(&r, &ga, Z, &s).iter().map(|k| text(k)).collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], "x core");
+        assert!(
+            rows[1].starts_with("> extra") && rows[1].contains("4.1 MiB"),
+            "{}",
+            rows[1]
+        );
+        assert!(rows[1].trim_end().ends_with("48%"), "{}", rows[1]);
+        // Started, nothing drawn yet: a name and the mark, no bar.
+        assert_eq!(rows[2].trim_end(), "> multilib");
+    }
+
+    #[test]
+    fn checks_row_names_the_step_it_is_on_without_a_total() {
+        let s = plain();
+        let mut p = running(PhaseKind::Checks, 2);
+        p.detail = Some("loading package files".into());
+        let mut r = empty();
+        r.live_check = Some(("loading package files".into(), 40));
+        let ga = gauge(&r, 120);
+        let mut row = phase_row(&p, None, secs(1), &s);
+        assert!(
+            text(&row).contains("step 2") && !text(&row).contains("steps"),
+            "{}",
+            text(&row)
+        );
+        let label = row.clone();
+        row.extend(check_now(&r, &p, &ga, &label, &s));
+        let t = text(&row);
+        assert!(
+            t.contains("step 2 ") && t.contains("1s  loading package files"),
+            "{t}"
+        );
+        assert!(t.trim_end().ends_with("40%"), "{t}");
+        // Done: the steps it took.
+        p.state = PhaseState::Done;
+        p.ended = Some(secs(2));
+        assert!(text(&phase_row(&p, None, secs(3), &s)).contains("2 steps"));
     }
 }
