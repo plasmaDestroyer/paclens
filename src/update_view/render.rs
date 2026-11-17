@@ -256,6 +256,7 @@ fn phase_row(p: &Phase, asking: Option<&str>, now: Duration, s: &Styles) -> Vec<
         (_, true) => "",
         (PhaseKind::Checks, _) if p.state == PhaseState::Running => "",
         (PhaseKind::Checks, _) => "steps",
+        (PhaseKind::Sync, _) if p.state == PhaseState::Running => "done",
         (PhaseKind::Sync, _) => "dbs",
         (PhaseKind::PreHooks | PhaseKind::PostHooks, _) => "hooks",
         _ => "pkgs",
@@ -796,10 +797,23 @@ fn children(
                 .collect();
             // Done files are counted on the phase row (`7/79`); the one grey
             // row here is the queue, and it says so.
-            if !queued.is_empty() {
+            // Every file not done and not moving waits, listed by pacman or
+            // not yet: the count is the plan's, the names the ones on screen.
+            let waits = phase(run, k).map_or(0, |p| {
+                let active = run
+                    .in_flight
+                    .iter()
+                    .filter(|f| !f.queued && f.done_at.is_none())
+                    .count();
+                p.total
+                    .unwrap_or(0)
+                    .saturating_sub(p.done + active)
+                    .max(queued.len())
+            });
+            if waits > 0 {
                 rows.push(vec![seg(
                     Paint::Dim,
-                    queued_row(&queued, w.saturating_sub(5), s),
+                    queued_row(&queued, waits, w.saturating_sub(5), s),
                 )]);
             }
             rows
@@ -931,8 +945,10 @@ fn children(
                         // Narrow: the live row gives up its old version so
                         // its bar still starts in the bar column.
                         let at = ga.left + numbers_w(ga);
+                        // A shorter bar first; the old version goes only when
+                        // even that would not fit.
                         if ga.cells >= 6
-                            && used + 2 > at
+                            && (at + ga.cells).saturating_sub(used + 2) < 8
                             && let Some(new) = pkg.and_then(|p| p.new.as_deref())
                         {
                             row.truncate(3);
@@ -1051,7 +1067,9 @@ fn children(
                 // whole name (to the screen's edge), its time just after.
                 // The running one too long for the row is cut, so its bar
                 // stays on its own row on a narrow screen.
-                let cut_running = running && median.is_some() && !one_row && room >= 12;
+                // The running one keeps its whole name too: cut, it can lose
+                // what it does (`Checking which packages…`).
+                let cut_running = false;
                 let one_row = one_row || cut_running;
                 let shown = if cut_running {
                     cut_words(&desc, room)
@@ -1113,6 +1131,11 @@ fn children(
                     under.extend(tail);
                     rows.push(under);
                 }
+            }
+            // A running name too long for its row put its times under it:
+            // the done hook above gives up its row, so the tree keeps its height.
+            if rows.len() > shown.len() && shown.len() > 1 {
+                rows.remove(0);
             }
             rows
         }
@@ -1240,9 +1263,12 @@ fn sync_rows(run: &Run, ga: &Gauge, now: Duration, s: &Styles) -> Vec<Vec<Seg>> 
 
 /// `52 queued  fwupd · obsidian · php · …`: the count first, then the names
 /// that fit in `w` columns, `…` when some do not.
-fn queued_row(names: &[&str], w: usize, s: &Styles) -> String {
+fn queued_row(names: &[&str], n: usize, w: usize, s: &Styles) -> String {
     let sep = format!(" {} ", s.bullet());
-    let mut text = format!("{} queued  ", names.len());
+    let mut text = format!("{n} queued  ");
+    if names.is_empty() {
+        return text + "…";
+    }
     let tail = format!("{sep}…");
     for (i, q) in names.iter().enumerate() {
         let add = if i == 0 {
@@ -1250,7 +1276,8 @@ fn queued_row(names: &[&str], w: usize, s: &Styles) -> String {
         } else {
             format!("{sep}{q}")
         };
-        let last = i + 1 == names.len();
+        // Names past the ones listed still wait: `…` closes the row.
+        let last = i + 1 == names.len() && n == names.len();
         // Room for this name, and for `· …` after it unless it is the last.
         let need = add.width() + if last { 0 } else { tail.width() };
         if text.width() + need > w {
@@ -1258,6 +1285,9 @@ fn queued_row(names: &[&str], w: usize, s: &Styles) -> String {
             return text;
         }
         text += &add;
+    }
+    if n > names.len() {
+        text += &tail;
     }
     text
 }
@@ -4518,15 +4548,18 @@ mod tests {
         let s = plain();
         let n = ["fwupd", "obsidian", "php", "loupe"];
         assert_eq!(
-            queued_row(&n, 80, &s),
+            queued_row(&n, 4, 80, &s),
             "4 queued  fwupd - obsidian - php - loupe"
         );
+        // More wait than pacman lists yet: the plan's count, and `…`.
+        assert_eq!(queued_row(&n[..1], 9, 80, &s), "9 queued  fwupd - …");
+        assert_eq!(queued_row(&[], 9, 80, &s), "9 queued  …");
         // Room for two names and the `- ...` mark, not three.
-        let r = queued_row(&n, 33, &s);
+        let r = queued_row(&n, 4, 33, &s);
         assert!(r.starts_with("4 queued  fwupd - obsidian"), "{r}");
         assert!(r.ends_with('…') && r.width() <= 33, "{r}");
         // Not even one name fits: still the count, and the mark.
-        assert_eq!(queued_row(&n, 12, &s), "4 queued  …");
+        assert_eq!(queued_row(&n, 4, 12, &s), "4 queued  …");
     }
 
     fn text(segs: &[Seg]) -> String {
@@ -4669,5 +4702,87 @@ mod tests {
             // A blank row between the two blocks.
             assert!(c[know.unwrap_or_default() - 1].is_empty(), "{c:#?}");
         }
+    }
+
+    #[test]
+    fn running_sync_counts_dbs_done() {
+        let r = text(&phase_row(
+            &running(PhaseKind::Sync, 4),
+            None,
+            secs(1),
+            &uni(),
+        ));
+        assert!(r.contains("4 done"), "{r}");
+    }
+
+    #[test]
+    fn narrow_running_hook_keeps_its_whole_name_and_height() {
+        use crate::update_view::medians::Median;
+        let medians = HashMap::from([("60-x.hook".to_string(), Median { secs: 23, runs: 51 })]);
+        let mut r = Run::new("pacman -Syu", medians, HashMap::new());
+        for l in [
+            "[2026-10-16T11:37:21+0530] [ALPM] transaction completed",
+            "[2026-10-16T11:37:21+0530] [ALPM] running '50-a.hook'...",
+            "[2026-10-16T11:37:22+0530] [ALPM] running '60-x.hook'...",
+        ] {
+            if let Some((_, ev)) = crate::update_view::log_line::classify_log(l) {
+                r.apply_log(ev, secs(1));
+            }
+        }
+        r.apply_line(":: Running post-transaction hooks...", secs(1));
+        r.apply_line("(1/2) Arming ConditionNeedsUpdate...", secs(1));
+        r.apply_line(
+            "(2/2) Checking which packages need to be rebuilt...",
+            secs(2),
+        );
+        let ga = gauge(&r, 70);
+        let rows: Vec<String> = children(&r, &ga, 70, 10, secs(9), &uni())
+            .iter()
+            .map(|k| text(k))
+            .collect();
+        assert!(
+            rows.iter()
+                .any(|t| t.contains("Checking which packages need to be rebuilt")),
+            "{rows:?}"
+        );
+        // Two rows for the running hook; the done one above gave its row up.
+        assert_eq!(rows.len(), 2, "{rows:?}");
+    }
+
+    #[test]
+    fn live_package_keeps_its_old_version_while_a_shorter_bar_fits() {
+        let mut r = empty();
+        for l in fixture_lines() {
+            r.apply_line(&l, Z);
+            if r.current() == Some(PhaseKind::Packages) {
+                break;
+            }
+        }
+        let name = r
+            .packages
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        r.observe_screen(
+            &[format!(
+                "( 3/38) upgrading {name}                      [------C o o]  40%"
+            )],
+            Z,
+        );
+        if let Some(p) = r.packages.first_mut() {
+            p.old = Some("3.117.0-1.1".into());
+            p.new = Some("3.118.0-1.1".into());
+        }
+        let old = Some("3.117.0-1.1".to_string());
+        let ga = gauge(&r, 100);
+        let rows: Vec<String> = children(&r, &ga, 100, 10, Z, &plain())
+            .iter()
+            .map(|k| text(k))
+            .collect();
+        let live = rows.iter().find(|t| t.contains("40%"));
+        assert!(
+            live.is_some_and(|t| old.as_ref().is_some_and(|o| t.contains(o.as_str()))),
+            "{rows:?}"
+        );
     }
 }
