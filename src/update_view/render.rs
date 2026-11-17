@@ -1060,29 +1060,9 @@ fn children(
                 let Some(Median { secs, .. }) = median else {
                     let gap = if one_row { pad(used) } else { "  ".to_string() };
                     row.push(seg(Paint::Dim, format!("{gap}{times}")));
-                    // Done a second or more under its usual time: a win,
-                    // measured against past runs.
-                    let usual = h.median.map(|m| Duration::from_secs(m.secs));
-                    // The exact saving, rounded down.
-                    let gain = usual.map_or(0, |u| u.saturating_sub(took).as_secs());
-                    if !running && gain >= 1 {
-                        row.push(seg(
-                            Paint::Ok,
-                            format!(
-                                "  {}{}",
-                                g(s, "−", "-"),
-                                duration(Duration::from_secs(gain))
-                            ),
-                        ));
-                    }
-                    // Over its usual time: said too, dim, no hold. Losses
-                    // are kept as honestly as wins.
-                    let over = usual.map_or(0, |u| took.saturating_sub(u).as_secs());
-                    if !running && over >= 1 {
-                        row.push(seg(
-                            Paint::Dim,
-                            format!("  +{}", duration(Duration::from_secs(over))),
-                        ));
+                    // Done: its time against the usual one, in words.
+                    if let Some(u) = h.median.filter(|_| !running) {
+                        row.extend(vs_usual(took, Duration::from_secs(u.secs), s));
                     }
                     rows.push(row);
                     continue;
@@ -1093,22 +1073,26 @@ fn children(
                 // Pac-Man waits dim at its end, and the overrun counts up.
                 let typical = Duration::from_secs(secs);
                 let over = took.saturating_sub(typical);
+                // The worded label (`est 52%`, `4s over`) takes four more
+                // columns than a percent: the bar gives them up, so the row
+                // still ends where every other row does.
+                let rail_w = ga.cells.saturating_sub(4);
                 let (rail, label) = if over.as_secs() == 0 {
                     let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
                         .unwrap_or(99)
                         .min(99);
-                    (track(pct, ga.cells, Mouth::Guess, s), format!("~{pct}%"))
+                    (track(pct, rail_w, Mouth::Guess, s), format!("est {pct}%"))
                 } else {
                     (
-                        track(100, ga.cells, Mouth::Over, s),
-                        format!("+{}", duration(over)),
+                        track(100, rail_w, Mouth::Over, s),
+                        format!("{} over", duration(over)),
                     )
                 };
                 let mut tail = Vec::new();
                 if ga.cells >= 6 {
                     tail.push(seg(Paint::Plain, format!("  {rail}")));
                 }
-                tail.push(seg(Paint::Plain, format!(" {label:>4}")));
+                tail.push(seg(Paint::Plain, format!(" {label:>8}")));
                 if one_row {
                     row.push(seg(Paint::Dim, format!("{}{times}", pad(used))));
                     row.extend(tail);
@@ -1159,6 +1143,22 @@ fn children(
         ]);
     }
     rows
+}
+
+/// A done hook's time against its usual one: `· 6s under usual` (green) or
+/// `· 6s over usual` (dim). Within a second: nothing.
+fn vs_usual(took: Duration, usual: Duration, s: &Styles) -> Option<Seg> {
+    let b = s.bullet();
+    let under = usual.saturating_sub(took).as_secs();
+    let over = took.saturating_sub(usual).as_secs();
+    let d = |n| duration(Duration::from_secs(n));
+    if under >= 1 {
+        Some(seg(Paint::Ok, format!(" {b} {} under usual", d(under))))
+    } else if over >= 1 {
+        Some(seg(Paint::Dim, format!(" {b} {} over usual", d(over))))
+    } else {
+        None
+    }
 }
 
 /// The check pacman is on, after the checks row's label: its name, and
@@ -3514,7 +3514,7 @@ mod tests {
         assert!(
             f.region
                 .iter()
-                .any(|l| l.contains("12s · usually 23s") && l.ends_with("~52%")),
+                .any(|l| l.contains("12s · usually 23s") && l.ends_with("est 52%")),
             "{:?}",
             f.region
         );
@@ -3555,7 +3555,7 @@ mod tests {
         )
         .0;
         let t = f.region.join("\n");
-        assert!(t.contains("+4s") && !t.contains("~99%"), "{t}");
+        assert!(t.contains("4s over") && !t.contains("est 99%"), "{t}");
     }
 
     #[test]
@@ -4629,5 +4629,14 @@ mod tests {
         p.state = PhaseState::Done;
         p.ended = Some(secs(2));
         assert!(text(&phase_row(&p, None, secs(3), &s)).contains("2 steps"));
+    }
+
+    #[test]
+    fn done_hook_says_under_or_over_its_usual_time() {
+        let s = uni();
+        let t = |a, b| vs_usual(secs(a), secs(b), &s).map(|x| x.1);
+        assert_eq!(t(20, 26).as_deref(), Some(" · 6s under usual"));
+        assert_eq!(t(30, 26).as_deref(), Some(" · 4s over usual"));
+        assert_eq!(t(26, 26), None);
     }
 }
