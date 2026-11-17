@@ -2189,6 +2189,26 @@ YYYY-MM-DD | no --noconfirm for pacman
            | or at `u`: the dashboard already shows it, and `update` does
            | not scan (2026-09-17). Third-party repos (CachyOS, chaotic,
            | ALHP) are not checked; each needs its own reference.
+
+2026-11-18 | pacman view: each row says what it is (clarity pass, after #81)
+           | One frame of each phase must say what runs, what is done and
+           | what waits. Sync: one row per db, `✓` done, the running one
+           | with its bar. No `/total`: pacman prints a db's name only when
+           | its transfer starts (dload.c, at most ParallelDownloads at
+           | once), so more dbs than that arrive later; the header counts
+           | dbs done. No waiting-db rows for the same reason: a name on
+           | screen has started. Checks: `step N` and the running step's
+           | name and bar on the checks row, no total — which steps run
+           | depends on the build and config (keyring only with GPGME, disk
+           | space only with CheckSpace, none of the last two with
+           | --dbonly). Plan: `resolving`, then `waiting [Y/n]` with no
+           | spinner while the question sits unanswered. Download: the
+           | done-names row is gone (the header has `7/79`); the queue reads
+           | `52 queued  a · b · …`. Hooks: `· 6s under usual` / `over
+           | usual`; the guess bar's label is `est 30%`, not `~30%`. The
+           | live package row carries pacman's `(i/n)`. The receipt is one
+           | column at every width, `to do` above `good to know`: a second
+           | column sat far from the eye and could leave a wide screen.
 ```
 
 ---
