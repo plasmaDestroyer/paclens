@@ -190,12 +190,10 @@ fn download_size(run: &Run, s: &Styles) -> String {
 /// Time since pacman's first phase began: the password prompt before it
 /// is not pacman's time.
 fn elapsed(run: &Run, now: Duration) -> Duration {
-    let t0 = run
-        .phases
-        .iter()
-        .filter_map(|p| p.started)
-        .min()
-        .unwrap_or_default();
+    // Before the first phase: nothing of pacman's has run yet.
+    let Some(t0) = run.phases.iter().filter_map(|p| p.started).min() else {
+        return Duration::ZERO;
+    };
     run.ended.unwrap_or(now).saturating_sub(t0)
 }
 
@@ -4784,5 +4782,13 @@ mod tests {
             live.is_some_and(|t| old.as_ref().is_some_and(|o| t.contains(o.as_str()))),
             "{rows:?}"
         );
+    }
+
+    #[test]
+    fn clock_waits_for_pacmans_first_phase() {
+        let mut r = empty();
+        assert_eq!(elapsed(&r, secs(4)), Duration::ZERO);
+        r.apply_line(":: Synchronizing package databases...", secs(4));
+        assert_eq!(elapsed(&r, secs(6)), secs(2));
     }
 }
