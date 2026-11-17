@@ -2204,9 +2204,14 @@ YYYY-MM-DD | no --noconfirm for pacman
            | --dbonly). Plan: `resolving`, then `waiting [Y/n]` with no
            | spinner while the question sits unanswered. Download: the
            | done-names row is gone (the header has `7/79`); the queue reads
-           | `52 queued  a · b · …`. Hooks: `· 6s under usual` / `over
-           | usual`; the guess bar's label is `est 30%`, not `~30%`. The
-           | live package row carries pacman's `(i/n)`. The receipt is one
+           | `52 queued  a · b · …` and counts every file that waits (plan
+           | total − done − moving), so no package is on no row. Hooks: `· 6s under usual` / `over
+           | usual`; the guess bar's label is `est 30%`, not `~30%`; a
+           | running hook's name is never cut (it can lose what it does).
+           | The live package row carries pacman's `(i/n)` and keeps both
+           | versions, the old one cut before it is dropped. The header
+           | clock starts with pacman's first phase, not at the password
+           | prompt. The receipt is one
            | column at every width, `to do` above `good to know`: a second
            | column sat far from the eye and could leave a wide screen.
 ```
