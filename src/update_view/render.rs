@@ -223,18 +223,18 @@ fn header(run: &Run, view: &View, now: Duration, s: &Styles) -> Vec<Seg> {
 
 /// What the running plan does while it has no count: `resolving`, or
 /// `waiting [Y/n]` while pacman's question is on screen unanswered.
-fn plan_state(asking: Option<&str>, done: usize) -> Option<String> {
+fn plan_state(asking: Option<&str>) -> Option<String> {
     match asking {
         Some(q) => Some(format!("waiting {q}")),
-        None if done == 0 => Some("resolving".to_string()),
-        None => None,
+        // The table pacman prints is its answer, not progress: still one word.
+        None => Some("resolving".to_string()),
     }
 }
 
 /// `asking`: pacman's unanswered answer choices, if any (see [`plan_state`]).
 fn phase_row(p: &Phase, asking: Option<&str>, now: Duration, s: &Styles) -> Vec<Seg> {
     let state = (p.kind == PhaseKind::Plan && p.state == PhaseState::Running)
-        .then(|| plan_state(asking, p.done))
+        .then(|| plan_state(asking))
         .flatten();
     let waits = state.is_some() && asking.is_some();
     let (mark_paint, mark) = match p.state {
@@ -666,8 +666,8 @@ fn running_row(run: &Run, p: &Phase, g: &Gauge, now: Duration, s: &Styles) -> Ve
     };
     let mut row = phase_row(p, run.asking.as_deref(), now, s);
     let pct = match p.kind {
-        // Waiting for the answer: nothing to measure.
-        PhaseKind::Plan if run.asking.is_some() => None,
+        // Resolving has no measure; waiting for the answer, nothing runs.
+        PhaseKind::Plan => None,
         // Each check fills its own bar in a blink; its name says more.
         PhaseKind::Checks => None,
         // The count says how many hooks are done; the one bar is the
@@ -1121,7 +1121,9 @@ fn children(
                 // still ends where every other row does.
                 let rail_w = ga.cells.saturating_sub(4);
                 let (rail, label) = if over.as_secs() == 0 {
-                    let pct = u8::try_from(took.as_millis() * 100 / typical.as_millis().max(1))
+                    // From the seconds shown beside it, so `0s` never sits
+                    // next to `est 40%`.
+                    let pct = u8::try_from(took.as_secs() * 100 / typical.as_secs().max(1))
                         .unwrap_or(99)
                         .min(99);
                     (track(pct, rail_w, Mouth::Guess, s), format!("est {pct}%"))
@@ -1202,8 +1204,11 @@ fn position((i, n): (usize, usize)) -> String {
 /// `· 6s over usual` (dim). Within a second: nothing.
 fn vs_usual(took: Duration, usual: Duration, s: &Styles) -> Option<Seg> {
     let b = s.bullet();
-    let under = usual.saturating_sub(took).as_secs();
-    let over = took.saturating_sub(usual).as_secs();
+    // From the whole seconds on screen, so `20s · 10s under usual` adds up
+    // to the `usually 30s` the running row showed.
+    let (t, u) = (took.as_secs(), usual.as_secs());
+    let under = u.saturating_sub(t);
+    let over = t.saturating_sub(u);
     let d = |n| duration(Duration::from_secs(n));
     if under >= 1 {
         Some(seg(Paint::Ok, format!(" {b} {} under usual", d(under))))
@@ -4611,13 +4616,17 @@ mod tests {
 
     #[test]
     fn plan_says_resolving_then_waiting() {
-        assert_eq!(plan_state(None, 0).as_deref(), Some("resolving"));
-        assert_eq!(
-            plan_state(Some("[Y/n]"), 79).as_deref(),
-            Some("waiting [Y/n]")
-        );
+        assert_eq!(plan_state(None).as_deref(), Some("resolving"));
+        assert_eq!(plan_state(Some("[Y/n]")).as_deref(), Some("waiting [Y/n]"));
         // The list itself is being read: its count says it.
-        assert_eq!(plan_state(None, 12), None);
+        // The table pacman prints is not progress: still resolving.
+        let r = text(&phase_row(
+            &running(PhaseKind::Plan, 36),
+            None,
+            secs(3),
+            &uni(),
+        ));
+        assert!(r.contains("· resolving") && !r.contains("36"), "{r}");
         let s = uni();
         let p = running(PhaseKind::Plan, 0);
         let r = text(&phase_row(&p, None, secs(1), &s));
@@ -4691,6 +4700,9 @@ mod tests {
         let s = uni();
         let t = |a, b| vs_usual(secs(a), secs(b), &s).map(|x| x.1);
         assert_eq!(t(20, 26).as_deref(), Some(" · 6s under usual"));
+        // Whole seconds on screen: 20.9s under 30s is `20s`, so 10s under.
+        let d = vs_usual(Duration::from_millis(20_900), secs(30), &s).map(|x| x.1);
+        assert_eq!(d.as_deref(), Some(" · 10s under usual"));
         assert_eq!(t(30, 26).as_deref(), Some(" · 4s over usual"));
         assert_eq!(t(26, 26), None);
     }
