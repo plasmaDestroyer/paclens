@@ -747,91 +747,13 @@ fn children(
                 .filter(|f| f.queued)
                 .map(|f| f.name.as_str())
                 .collect();
+            // Done files are counted on the phase row (`7/79`); the one grey
+            // row here is the queue, and it says so.
             if !queued.is_empty() {
-                let sep = format!(" {} ", s.bullet());
-                let mut text = String::from("queued  ");
-                let mut n = 0;
-                for q in &queued {
-                    let more = format!("{sep}+{}", queued.len() - n);
-                    let add = if n == 0 {
-                        q.to_string()
-                    } else {
-                        format!("{sep}{q}")
-                    };
-                    if 5 + text.width() + add.width() + more.width() > w {
-                        break;
-                    }
-                    text += &add;
-                    n += 1;
-                }
-                if n < queued.len() {
-                    if n > 0 {
-                        text += &sep;
-                    }
-                    text += &format!("+{}", queued.len() - n);
-                }
-                rows.push(vec![seg(Paint::Dim, text)]);
-            }
-            // What pacman counted finished, collected on one row, newest
-            // first and green: the pile grows as the queue shrinks.
-            if !run.eaten.is_empty() {
-                let sep = format!(" {} ", s.bullet());
-                // The count is pacman's; the names are the ones seen go.
-                // With the bytes those files came to, from the plan's sizes.
-                let by: f64 = run
-                    .eaten
-                    .iter()
-                    .filter_map(|e| run.packages.iter().find(|p| &p.name == e))
-                    .filter_map(|p| p.download.as_deref().and_then(bytes))
-                    .sum();
-                let n = phase(run, k).map_or(0, |p| p.done).max(run.eaten.len());
-                let size = if by > 0.0 {
-                    let b = size_pair(&format!("{by} B"), None);
-                    format!(" {} {}", s.bullet(), tidy_size(b.trim()))
-                } else {
-                    String::new()
-                };
-                let head = format!("eaten  {n:>2}{size}  ");
-                // The count and bytes light when pacman's count rises; the
-                // newest name lights once its own finish row has gone.
-                let fresh = phase(run, k)
-                    .and_then(|p| p.bumped)
-                    .is_some_and(|t| now.saturating_sub(t) < BEAT);
-                let newest_landed = run
-                    .eaten
-                    .last()
-                    .is_some_and(|e| !run.in_flight.iter().any(|f| &f.name == e));
-                let mut segs = vec![seg(
-                    if fresh { Paint::Ok } else { Paint::Dim },
-                    head.clone(),
-                )];
-                let mut used = 5 + head.width();
-                let gone = run
-                    .eaten
-                    .iter()
-                    .rev()
-                    .filter(|e| !run.in_flight.iter().any(|f| &f.name == *e));
-                for (k, e) in gone.enumerate() {
-                    let add = if k == 0 {
-                        e.clone()
-                    } else {
-                        format!("{sep}{e}")
-                    };
-                    if used + add.width() + 4 > w {
-                        segs.push(seg(Paint::Dim, format!("{sep}…")));
-                        break;
-                    }
-                    used += add.width();
-                    segs.push(seg(
-                        if k == 0 && newest_landed {
-                            Paint::Ok
-                        } else {
-                            Paint::Dim
-                        },
-                        add,
-                    ));
-                }
-                rows.push(segs);
+                rows.push(vec![seg(
+                    Paint::Dim,
+                    queued_row(&queued, w.saturating_sub(5), s),
+                )]);
             }
             rows
         }
@@ -1215,6 +1137,30 @@ fn children(
         ]);
     }
     rows
+}
+
+/// `52 queued  fwupd · obsidian · php · …`: the count first, then the names
+/// that fit in `w` columns, `…` when some do not.
+fn queued_row(names: &[&str], w: usize, s: &Styles) -> String {
+    let sep = format!(" {} ", s.bullet());
+    let mut text = format!("{} queued  ", names.len());
+    let tail = format!("{sep}…");
+    for (i, q) in names.iter().enumerate() {
+        let add = if i == 0 {
+            q.to_string()
+        } else {
+            format!("{sep}{q}")
+        };
+        let last = i + 1 == names.len();
+        // Room for this name, and for `· …` after it unless it is the last.
+        let need = add.width() + if last { 0 } else { tail.width() };
+        if text.width() + need > w {
+            text += if i == 0 { "…" } else { &tail };
+            return text;
+        }
+        text += &add;
+    }
+    text
 }
 
 /// Marks a child row that hangs under the one before it (output of the
@@ -4489,5 +4435,21 @@ mod tests {
         assert!(closing_frames(&r, &v, 120, "/t", &plain()).is_empty());
         // No time ribbon in the receipt.
         assert!(!f.last().is_some_and(|c| c.iter().any(|l| l.contains('━'))));
+    }
+
+    #[test]
+    fn queued_row_says_count_first_and_cuts_with_an_ellipsis() {
+        let s = plain();
+        let n = ["fwupd", "obsidian", "php", "loupe"];
+        assert_eq!(
+            queued_row(&n, 80, &s),
+            "4 queued  fwupd - obsidian - php - loupe"
+        );
+        // Room for two names and the `- ...` mark, not three.
+        let r = queued_row(&n, 33, &s);
+        assert!(r.starts_with("4 queued  fwupd - obsidian"), "{r}");
+        assert!(r.ends_with('…') && r.width() <= 33, "{r}");
+        // Not even one name fits: still the count, and the mark.
+        assert_eq!(queued_row(&n, 12, &s), "4 queued  …");
     }
 }
