@@ -4834,6 +4834,10 @@ mod tests {
             p.old = Some("155.0.8059.84-1".into());
             p.new = Some("156.0.8078.47-1".into());
         }
+        // run1's longest name sets a wide name column, as on the owner's run.
+        let mut long = r.packages[0].clone();
+        long.name = "lib32-vulkan-mesa-implicit-layers".into();
+        r.packages.push(long);
         let ga = gauge(&r, 100);
         let rows: Vec<String> = children(&r, &ga, 100, 10, Z, &plain())
             .iter()
