@@ -13,6 +13,9 @@ use super::medians::Median;
 use super::model::{BEAT, Hook, Note, NoteKind, Outcome, Phase, PhaseKind, PhaseState, Run};
 use super::screen_line::{ScreenEvent, classify_screen, is_prompt};
 
+#[path = "lands.rs"]
+mod lands;
+
 pub struct View {
     pub layout: Layout,
     pub motif: Motif,
@@ -1562,6 +1565,7 @@ fn live(run: &Run, view: &View, w: usize, height: usize, now: Duration, s: &Styl
     let fit = |segs: &Vec<Seg>| line(segs, w, s);
     let room = height.saturating_sub(1).max(1);
     match view.layout {
+        Layout::Lands => lands::live(run, w, height, now, s),
         Layout::Inline => {
             // All but two rows: every download in flight gets a row, and
             // a line of what came before stays in view.
@@ -2596,6 +2600,9 @@ pub fn frame(
         Some(rows) => {
             let prompt = rows.last().cloned().unwrap_or_default();
             match plan {
+                Some((_, _, None)) if is_prompt(&prompt) && view.layout == Layout::Lands => {
+                    lands::plan_rows(run, &prompt, w, height, now, s)
+                }
                 // The plan, grouped by repo; it lives in the region only, so
                 // answering wipes it.
                 Some((_, _, None)) if is_prompt(&prompt) => {
@@ -2615,6 +2622,7 @@ pub fn frame(
                 _ => rows.to_vec(),
             }
         }
+        None if view.layout == Layout::Lands => lands::live(run, w, height, now, s),
         None => live(run, view, w, height, now, s),
     };
     let cursor = idle_prompt.is_some();
@@ -2643,6 +2651,9 @@ fn phase_done(run: &Run, p: &Phase, w: usize, s: &Styles) -> String {
 
 /// The receipt on exit 0; the failure block otherwise.
 pub fn closing(run: &Run, view: &View, width: u16, transcript: &str, s: &Styles) -> Vec<String> {
+    if view.layout == Layout::Lands {
+        return lands::closing(run, usize::from(width), transcript, s);
+    }
     closing_at(run, view, width, transcript, s, None)
 }
 
@@ -2657,7 +2668,8 @@ pub fn closing_frames(
     transcript: &str,
     s: &Styles,
 ) -> Vec<Vec<String>> {
-    if !s.colored() || run.outcome() != Outcome::Succeeded {
+    // `lands` folds straight to its receipt: no extra beat on success.
+    if !s.colored() || run.outcome() != Outcome::Succeeded || view.layout == Layout::Lands {
         return Vec::new();
     }
     // First the finished tree, the last phase lit (its latch), two beats.
@@ -3342,6 +3354,11 @@ mod tests {
             let f = draw(&r, &v, 40, &plain());
             assert!(!f.region.is_empty(), "{:?}/{:?}", v.layout, v.motif);
             let c = closing(&r, &v, 120, "/t", &plain());
+            if v.layout == Layout::Lands {
+                // Its own receipt: covered by its own tests.
+                assert!(c[0].contains("38 upgraded"), "{c:?}");
+                continue;
+            }
             // A blank row and the command set the receipt apart.
             assert_eq!(c[..2], ["", "pacman -Syu"], "{c:?}");
             assert!(c[2].contains("38 eaten"), "{c:?}");

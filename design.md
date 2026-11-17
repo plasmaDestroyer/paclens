@@ -2219,6 +2219,23 @@ YYYY-MM-DD | no --noconfirm for pacman
            | prompt. The receipt is one
            | column at every width, `to do` above `good to know`: a second
            | column sat far from the eye and could leave a wide screen.
+
+2026-11-18 | pacman view: `lands`, rebuilt from a stat budget (new default)
+           | The judge loops each asked what was missing, so the view grew
+           | (ghosts, lane, receipt tiers, est bars, deltas). A design study
+           | from the owner's inspirations (GraalVM, nh, nom, Nix, zig, uv,
+           | moss, ILoveCandy) set a budget instead: one home per stat.
+           | `lands` (src/update_view/lands.rs) draws only that: finished
+           | phases one line each (count + time); the running phase opens;
+           | download facts once on its row (files, bytes, rate, left), each
+           | file its bytes, Pac-Man bar and percent, in first-start order,
+           | never re-sorted; checks `step N · name`, its bar, the step
+           | before; packages the one before and the one running with
+           | `(i/n)`; a hook its file name, `elapsed · usual`, what it does
+           | and its last 3 lines, no estimate bar. Receipt: `ᗧ done ·
+           | 79 upgraded · 3m17s` (pacman's verbs, not `eaten`), then each
+           | step the run asked for with its source, reboot last. No eat-in
+           | beat. Old layouts stay selectable; `lands` is the default.
 ```
 
 ---

@@ -250,7 +250,9 @@ mod tests {
             for motif in Motif::ALL {
                 let s = play_fixture(layout, motif, Some(0), true);
                 assert!(s.contains("38"), "{layout:?} {motif:?}");
-                if motif == Motif::Subtle {
+                if motif == Motif::Subtle && layout == Layout::Lands {
+                    assert!(s.contains("38 upgraded"), "{layout:?}");
+                } else if motif == Motif::Subtle {
                     assert!(s.contains("38 eaten in "), "{layout:?}");
                 }
                 assert!(!s.contains("\x1b[?1049h"), "{layout:?} {motif:?}");

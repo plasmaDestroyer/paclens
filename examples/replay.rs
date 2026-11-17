@@ -1,7 +1,7 @@
 //! Play a `script` recording of a pacman run through the live view (#81):
 //!
 //! cargo run --example replay -- <typescript> --timing <file> [--log <file>]
-//!     [--layout inline|inline-grow|nom|receipt] [--motif subtle|arcade]
+//!     [--layout lands|inline|inline-grow|nom|receipt] [--motif subtle|arcade]
 //!     [--speed F] [--exit N] [--width W]
 
 use std::io::IsTerminal;
@@ -15,7 +15,7 @@ use paclens::update_view::replay::{Play, log_schedule, parse_recording, play, sc
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let (mut typescript, mut timing, mut log) = (None, None, None);
-    let (mut layout, mut motif) = (Layout::Inline, Motif::Subtle);
+    let (mut layout, mut motif) = (Layout::default(), Motif::Subtle);
     let (mut speed, mut exit, mut width) = (1.0, Some(0), None);
     while let Some(a) = args.next() {
         let mut value = || args.next().with_context(|| format!("{a} needs a value"));

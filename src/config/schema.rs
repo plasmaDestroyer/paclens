@@ -115,7 +115,7 @@ impl Default for Update {
         Self {
             sudo_loop: false,
             sudo_loop_interval: 240,
-            layout: "inline".to_string(),
+            layout: "lands".to_string(),
             motif: "subtle".to_string(),
         }
     }
@@ -287,10 +287,12 @@ impl ColorTheme {
     }
 }
 
-/// Layout of the live pacman view (#81). Chosen by trial; defaults to `Inline`.
+/// Layout of the live pacman view (#81). Defaults to `Lands`, the
+/// 2026-11-18 rebuild; the trial layouts stay available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Layout {
     #[default]
+    Lands,
     Inline,
     InlineGrow,
     Nom,
@@ -298,10 +300,17 @@ pub enum Layout {
 }
 
 impl Layout {
-    pub const ALL: [Self; 4] = [Self::Inline, Self::InlineGrow, Self::Nom, Self::Receipt];
+    pub const ALL: [Self; 5] = [
+        Self::Lands,
+        Self::Inline,
+        Self::InlineGrow,
+        Self::Nom,
+        Self::Receipt,
+    ];
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
+            "lands" => Some(Self::Lands),
             "inline" => Some(Self::Inline),
             "inline-grow" => Some(Self::InlineGrow),
             "nom" => Some(Self::Nom),

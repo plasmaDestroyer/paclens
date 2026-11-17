@@ -169,15 +169,16 @@ mod tests {
     }
 
     #[test]
-    fn layout_and_motif_default_to_inline_subtle() {
+    fn layout_and_motif_default_to_lands_subtle() {
         let update = parse_config("").unwrap().config.update;
-        assert_eq!(update.layout(), Layout::Inline);
+        assert_eq!(update.layout(), Layout::Lands);
         assert_eq!(update.motif(), Motif::Subtle);
     }
 
     #[test]
     fn layout_accepts_each_trial_value() {
         for (raw, want) in [
+            ("lands", Layout::Lands),
             ("inline", Layout::Inline),
             ("inline-grow", Layout::InlineGrow),
             ("nom", Layout::Nom),
@@ -188,7 +189,7 @@ mod tests {
             assert_eq!(loaded.config.update.layout(), want, "{raw}");
             assert!(loaded.config.validation_warnings().is_empty(), "{raw}");
         }
-        assert_eq!(Layout::ALL.len(), 4);
+        assert_eq!(Layout::ALL.len(), 5);
     }
 
     #[test]
@@ -201,7 +202,7 @@ mod tests {
     #[test]
     fn invalid_layout_produces_validation_warning() {
         let loaded = parse_config("[update]\nlayout = \"sideways\"\n").unwrap();
-        assert_eq!(loaded.config.update.layout(), Layout::Inline);
+        assert_eq!(loaded.config.update.layout(), Layout::Lands);
         let warnings = loaded.config.validation_warnings();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("update.layout"));
