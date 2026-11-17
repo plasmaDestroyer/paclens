@@ -2791,24 +2791,11 @@ fn closing_at(
     } else {
         s.warn(g(s, "▲", "!"))
     };
-    // Wide screens: to do on the left, the notes and counts beside it.
-    // Only when both sides fit uncut: a second column that cuts what one
-    // column shows whole is worse than stacking.
-    let need_left = {
-        let cw = todo.iter().map(|t| t.0.width()).max().unwrap_or(0).min(28);
-        let nw = todo.len().to_string().len();
-        let why = todo.iter().map(|t| t.1.width()).max().unwrap_or(0);
-        let src = todo.iter().map(|t| t.2.width() + 4).max().unwrap_or(0);
-        4 + nw + 1 + cw + 2 + why + src
-    };
-    let need_right = {
-        let kw = know.iter().map(|k| k.0.width()).max().unwrap_or(0).min(24);
-        know.iter().map(|k| 8 + kw + k.1.width()).max().unwrap_or(0)
-    };
-    let two = !todo.is_empty() && !know.is_empty() && need_left + 4 + need_right <= w;
+    // One column at every width: `to do` first (it asks for action), `good
+    // to know` under it. A second column sat far from the eye on a wide
+    // screen and could leave it.
     let tw = w;
     let mut left: Vec<String> = Vec::new();
-    let mut right: Vec<String> = Vec::new();
     if !todo.is_empty() || !know.is_empty() {
         out.push(String::new());
     }
@@ -2872,15 +2859,14 @@ fn closing_at(
             }
         }
     }
-    // The right block starts four columns after the left one's widest row.
-    let at = left.iter().map(|l| visible_width(l)).max().unwrap_or(0) + 4;
-    let nw_ = if two { w.saturating_sub(at) } else { w };
-    let side = if two { &mut right } else { &mut left };
+    if !todo.is_empty() && !know.is_empty() {
+        left.push(String::new());
+    }
     if !know.is_empty() {
-        side.push(format!("  {} {}", s.dim(s.bullet()), s.dim("good to know")));
+        left.push(format!("  {} {}", s.dim(s.bullet()), s.dim("good to know")));
         let kw = know.iter().map(|k| k.0.width()).max().unwrap_or(0).min(24);
         for (k, t) in &know {
-            let t = preview(t, nw_.saturating_sub(8 + kw));
+            let t = preview(t, w.saturating_sub(8 + kw));
             // A path in the note reads plain: the part to act on.
             let path = t
                 .split_whitespace()
@@ -2890,19 +2876,10 @@ fn closing_at(
                 Some((a, p, z)) => format!("{}{p}{}", s.dim(a), s.dim(z)),
                 None => s.dim(&t),
             };
-            side.push(format!("      {k:<kw$}  {t}"));
+            left.push(format!("      {k:<kw$}  {t}"));
         }
     }
-    if two {
-        for i in 0..left.len().max(right.len()) {
-            let l = left.get(i).cloned().unwrap_or_default();
-            let pad = at.saturating_sub(visible_width(&l));
-            let r = right.get(i).cloned().unwrap_or_default();
-            out.push(format!("{l}{}{r}", " ".repeat(pad)).trim_end().to_string());
-        }
-    } else {
-        out.extend(left);
-    }
+    out.extend(left);
     out
 }
 
@@ -4674,5 +4651,22 @@ mod tests {
             .collect();
         let live = rows.iter().find(|t| t.contains("40%"));
         assert!(live.is_some_and(|t| t.contains("3/38")), "{rows:?}");
+    }
+
+    #[test]
+    fn receipt_is_one_column_at_any_width() {
+        let r = fixture_run();
+        for w in [100u16, 220] {
+            let c = closing(&r, &view(Layout::Nom, Motif::Subtle), w, "/t", &plain());
+            let at = |t: &str| c.iter().position(|l| l.contains(t));
+            let (todo, know) = (at("to do"), at("good to know"));
+            assert!(todo.is_some() && know.is_some(), "{c:#?}");
+            assert!(todo < know, "{c:#?}");
+            // Under it, not beside it: the heading starts the row.
+            let k = &c[know.unwrap_or_default()];
+            assert!(k.starts_with("  - good to know"), "{k}");
+            // A blank row between the two blocks.
+            assert!(c[know.unwrap_or_default() - 1].is_empty(), "{c:#?}");
+        }
     }
 }
