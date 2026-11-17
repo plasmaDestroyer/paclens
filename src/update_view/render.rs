@@ -949,11 +949,29 @@ fn children(
                             && (at + ga.cells).saturating_sub(used + 2) < 8
                             && let Some(new) = pkg.and_then(|p| p.new.as_deref())
                         {
+                            // The name's padding goes, then the old version is
+                            // cut where it agrees with the new: both sides of
+                            // the change stay in view.
                             row.truncate(3);
-                            row.push(seg(Paint::Dim, format!("{} ", s.arrow())));
+                            row[2].1 = format!("{}  ", row[2].1.trim_end());
+                            let pos = run.live_at.map(position).unwrap_or_default();
+                            let arrow = format!(" {} ", s.arrow());
+                            let fixed = 5
+                                + row.iter().map(|(_, t)| t.width()).sum::<usize>()
+                                + arrow.width()
+                                + new.width()
+                                + pos.width();
+                            let room = (at + ga.cells).saturating_sub(8 + 2 + fixed);
+                            match pkg.and_then(|p| p.old.as_deref()) {
+                                Some(old) if room >= 6 => {
+                                    row.push(seg(Paint::Dim, cut_version(old, Some(new), room)));
+                                    row.push(seg(Paint::Dim, arrow));
+                                }
+                                _ => row.push(seg(Paint::Dim, format!("{} ", s.arrow()))),
+                            }
                             row.push(seg(Paint::Ok, new.to_string()));
-                            if let Some(at) = run.live_at.map(position) {
-                                row.push(seg(Paint::Dim, at));
+                            if !pos.is_empty() {
+                                row.push(seg(Paint::Dim, pos));
                             }
                             used = 5 + row.iter().map(|(_, t)| t.width()).sum::<usize>();
                         }
@@ -1265,7 +1283,7 @@ fn queued_row(names: &[&str], n: usize, w: usize, s: &Styles) -> String {
     let sep = format!(" {} ", s.bullet());
     let mut text = format!("{n} queued  ");
     if names.is_empty() {
-        return text + "…";
+        return text.trim_end().to_string();
     }
     let tail = format!("{sep}…");
     for (i, q) in names.iter().enumerate() {
@@ -4551,7 +4569,7 @@ mod tests {
         );
         // More wait than pacman lists yet: the plan's count, and `…`.
         assert_eq!(queued_row(&n[..1], 9, 80, &s), "9 queued  fwupd - …");
-        assert_eq!(queued_row(&[], 9, 80, &s), "9 queued  …");
+        assert_eq!(queued_row(&[], 9, 80, &s), "9 queued");
         // Room for two names and the `- ...` mark, not three.
         let r = queued_row(&n, 4, 33, &s);
         assert!(r.starts_with("4 queued  fwupd - obsidian"), "{r}");
@@ -4790,5 +4808,48 @@ mod tests {
         assert_eq!(elapsed(&r, secs(4)), Duration::ZERO);
         r.apply_line(":: Synchronizing package databases...", secs(4));
         assert_eq!(elapsed(&r, secs(6)), secs(2));
+    }
+
+    #[test]
+    fn narrow_live_package_cuts_its_old_version_rather_than_drop_it() {
+        let mut r = empty();
+        for l in fixture_lines() {
+            r.apply_line(&l, Z);
+            if r.current() == Some(PhaseKind::Packages) {
+                break;
+            }
+        }
+        let name = r
+            .packages
+            .first()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        r.observe_screen(
+            &[format!(
+                "(17/79) upgrading {name}                      [------C o o]   0%"
+            )],
+            Z,
+        );
+        if let Some(p) = r.packages.first_mut() {
+            p.old = Some("155.0.8059.84-1".into());
+            p.new = Some("156.0.8078.47-1".into());
+        }
+        let ga = gauge(&r, 100);
+        let rows: Vec<String> = children(&r, &ga, 100, 10, Z, &plain())
+            .iter()
+            .map(|k| text(k))
+            .collect();
+        let live = rows
+            .iter()
+            .find(|t| t.contains("0%"))
+            .cloned()
+            .unwrap_or_default();
+        // Something of the old version before the arrow, the new one whole.
+        let (before, after) = live.split_once("->").unwrap_or_default();
+        assert!(
+            before.contains("-1") && after.contains("156.0.8078.47-1"),
+            "{live}"
+        );
+        assert!(live.contains("17/79") && live.width() <= 100, "{live}");
     }
 }
