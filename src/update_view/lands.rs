@@ -20,6 +20,8 @@ const BAR_MIN: usize = 12;
 const BAR_MAX: usize = 36;
 /// Hook output lines shown under the running hook.
 const TAIL: usize = 3;
+/// Finished packages or hooks kept above the running one, room allowing.
+const DONE_MAX: usize = 6;
 
 /// `8 packages`, `1 package`.
 fn n_of(n: usize, one: &str, many: &str) -> String {
@@ -265,8 +267,8 @@ fn kids(
             }
             r
         }
-        PhaseKind::Packages => package_kids(run, c, w, s),
-        PhaseKind::PreHooks | PhaseKind::PostHooks => hook_kids(run, p, w, now, s),
+        PhaseKind::Packages => package_kids(run, c, room, s),
+        PhaseKind::PreHooks | PhaseKind::PostHooks => hook_kids(run, p, w, room, now, s),
         PhaseKind::Plan => Vec::new(),
     }
 }
@@ -381,23 +383,34 @@ fn versions(run: &Run, name: &str, s: &Styles) -> String {
 
 /// The package finished last, then the one pacman is on, with its (i/n)
 /// and its own percent.
-fn package_kids(run: &Run, c: &Cols, w: usize, s: &Styles) -> Vec<Vec<Seg>> {
+fn package_kids(run: &Run, c: &Cols, room: usize, s: &Styles) -> Vec<Vec<Seg>> {
     let live = run.live_package.as_ref();
-    let prev = run
-        .lines
+    // The last few finished, oldest first; the running one takes two rows.
+    let keep = room
+        .saturating_sub(if live.is_some() { 2 } else { 0 })
+        .min(DONE_MAX);
+    let mut done: Vec<String> = Vec::new();
+    for l in run.lines.iter().rev() {
+        if done.len() >= keep {
+            break;
+        }
+        if let ScreenEvent::Package { name, .. } = classify_screen(l, false)
+            && live.is_none_or(|x| x.1 != name)
+            && !done.contains(&name)
+        {
+            done.push(name);
+        }
+    }
+    let mut rows: Vec<Vec<Seg>> = done
         .iter()
         .rev()
-        .find_map(|l| match classify_screen(l, false) {
-            ScreenEvent::Package { name, .. } if live.is_none_or(|x| x.1 != name) => Some(name),
-            _ => None,
-        });
-    let mut rows = Vec::new();
-    if let Some(n) = prev {
-        rows.push(vec![
-            seg(Paint::Ok, s.check()),
-            seg(Paint::Dim, format!(" {n}  {}", versions(run, &n, s))),
-        ]);
-    }
+        .map(|n| {
+            vec![
+                seg(Paint::Ok, s.check()),
+                seg(Paint::Dim, format!(" {n}  {}", versions(run, n, s))),
+            ]
+        })
+        .collect();
     let mut bar = None;
     if let Some((verb, n, pct)) = live {
         let at = run
@@ -422,13 +435,19 @@ fn package_kids(run: &Run, c: &Cols, w: usize, s: &Styles) -> Vec<Vec<Seg>> {
         let t = track(pct, c.cells, Mouth::Chew, s);
         rows.push(vec![seg(Paint::Plain, format!("       {t} {pct:>3}%"))]);
     }
-    let _ = w;
     rows
 }
 
 /// The running hook: its file name, time against its usual time, its
 /// description, the last few lines it printed.
-fn hook_kids(run: &Run, p: &Phase, w: usize, now: Duration, s: &Styles) -> Vec<Vec<Seg>> {
+fn hook_kids(
+    run: &Run,
+    p: &Phase,
+    w: usize,
+    room: usize,
+    now: Duration,
+    s: &Styles,
+) -> Vec<Vec<Seg>> {
     let hooks = if p.kind == PhaseKind::PreHooks {
         &run.pre_hooks
     } else {
@@ -456,12 +475,39 @@ fn hook_kids(run: &Run, p: &Phase, w: usize, now: Duration, s: &Styles) -> Vec<V
         time.push(format!("usual {}", duration(Duration::from_secs(m.secs))));
     }
     let time = time.join(&format!(" {} ", s.bullet()));
-    let mut rows = vec![vec![
+    let (mid, _, _, _) = s.tree_glyphs();
+    // The last few finished, oldest first, room left by the running one.
+    let live_rows = 1 + usize::from(h.file.is_some() && h.desc.is_some()) + TAIL;
+    let keep = room.saturating_sub(live_rows).min(DONE_MAX);
+    let done: Vec<_> = hooks
+        .iter()
+        .filter(|d| d.ended.is_some() && !std::ptr::eq(*d, h))
+        .collect();
+    let mut rows: Vec<Vec<Seg>> = done[done.len().saturating_sub(keep)..]
+        .iter()
+        .map(|d| {
+            let name = d
+                .file
+                .clone()
+                .or_else(|| d.desc.clone())
+                .unwrap_or_default();
+            let t = took(d.started, d.ended, now)
+                .filter(|t| t.as_secs() >= 1)
+                .map(|t| format!("  {}", duration(t)))
+                .unwrap_or_default();
+            vec![
+                seg(Paint::Dim, format!("  {} ", mid.trim_end())),
+                seg(Paint::Ok, s.check()),
+                seg(Paint::Dim, format!(" {name}{t}")),
+            ]
+        })
+        .collect();
+    rows.push(vec![
         seg(Paint::Dim, format!("  {} ", end.trim_end())),
         seg(Paint::Warn, "▸"),
         seg(Paint::Bold, format!(" {label}")),
         seg(Paint::Dim, format!("  {time}")),
-    ]];
+    ]);
     if h.file.is_some()
         && let Some(d) = &h.desc
     {
