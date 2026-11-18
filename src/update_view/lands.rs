@@ -413,10 +413,6 @@ fn package_kids(run: &Run, c: &Cols, room: usize, s: &Styles) -> Vec<Vec<Seg>> {
         .collect();
     let mut bar = None;
     if let Some((verb, n, pct)) = live {
-        let at = run
-            .live_at
-            .map(|(i, t)| format!("  ({i}/{t})"))
-            .unwrap_or_default();
         let verb = if verb == "upgrading" {
             String::new()
         } else {
@@ -426,7 +422,6 @@ fn package_kids(run: &Run, c: &Cols, room: usize, s: &Styles) -> Vec<Vec<Seg>> {
             seg(Paint::Warn, "▸"),
             seg(Paint::Bold, format!(" {verb}{n}")),
             seg(Paint::Plain, format!("  {}", versions(run, n, s))),
-            seg(Paint::Dim, at),
         ]);
         bar = Some(*pct);
     }
