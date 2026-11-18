@@ -523,8 +523,8 @@ pub(super) fn live(run: &Run, w: usize, height: usize, now: Duration, s: &Styles
     rows.iter().map(|r| line(r, w, s)).collect()
 }
 
-/// The plan while pacman asks: every package, old → new; names only in
-/// columns when that does not fit. Then pacman's question, verbatim.
+/// The plan while pacman asks: lands' header, then the shared plan grouped
+/// by repo in columns. Then pacman's question, verbatim.
 pub(super) fn plan_rows(
     run: &Run,
     prompt: &str,
@@ -539,45 +539,8 @@ pub(super) fn plan_rows(
         out.pop();
     }
     let room = height.saturating_sub(out.len() + 3);
-    let pk = &run.packages;
-    let name_w = pk
-        .iter()
-        .map(|p| p.name.width())
-        .max()
-        .unwrap_or(0)
-        .min(NAME_MAX);
-    if pk.len() < room {
-        out.push(s.dim(&format!("  {:<name_w$}  old {} new", "package", s.arrow())));
-        for p in pk {
-            let v = match (&p.old, &p.new) {
-                (Some(o), Some(n)) => format!("{} {} {}", s.dim(o), s.arrow(), s.title(n)),
-                (None, Some(n)) => s.title(n),
-                _ => String::new(),
-            };
-            out.push(format!("  {:<name_w$}  {v}", cut_plain(&p.name, name_w)));
-        }
-    } else {
-        // Names only, packed in columns, as many rows as there is room for.
-        let cw = name_w.min(24) + 2;
-        let per = (w.saturating_sub(2) / cw).max(1);
-        let lines = pk.len().div_ceil(per);
-        let shown = lines.min(room.max(1));
-        for r in 0..shown {
-            let mut l = String::from("  ");
-            for col in 0..per {
-                if let Some(p) = pk.get(col * lines + r) {
-                    l += &format!("{:<cw$}", cut_plain(&p.name, cw - 2));
-                }
-            }
-            out.push(l.trim_end().to_string());
-        }
-        if shown < lines {
-            out.push(s.dim(&format!(
-                "  +{} more in the transcript",
-                pk.len() - shown * per
-            )));
-        }
-    }
+    // Its first row repeats the totals the `? plan` row already shows.
+    out.extend(compact_plan(run, w, room + 1, s).into_iter().skip(1));
     out.push(String::new());
     out.push(match prompt.rsplit_once('[') {
         Some((q, a)) if !q.contains('\u{1b}') => {
