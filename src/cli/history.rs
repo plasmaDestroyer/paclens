@@ -67,7 +67,7 @@ fn read_sessions(dir: &Path) -> Vec<Session> {
     names.sort();
     let local =
         |t: chrono::DateTime<chrono::FixedOffset>| t.with_timezone(&chrono::Local).fixed_offset();
-    names
+    let mut all: Vec<Session> = names
         .iter()
         .filter_map(|n| std::fs::read_to_string(dir.join(n)).ok())
         .flat_map(|text| sessions::parse(&text))
@@ -76,7 +76,9 @@ fn read_sessions(dir: &Path) -> Vec<Session> {
             s.ended = s.ended.map(local);
             s
         })
-        .collect()
+        .collect();
+    sessions::mark_crossing(&mut all);
+    all
 }
 
 /// The line a session gets on its own, claiming no history row.

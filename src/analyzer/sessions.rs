@@ -175,6 +175,22 @@ pub fn parse(text: &str) -> Vec<Session> {
     done
 }
 
+/// Distrust every closed session whose window crosses another's. Two
+/// processes write two files when their sessions straddle UTC midnight, so
+/// [`parse`] cannot see them; but a run inside both windows could be either
+/// one's. Strict: one ending in the second the next begins does not cross.
+pub fn mark_crossing(sessions: &mut [Session]) {
+    let windows: Vec<_> = sessions.iter().map(|s| (s.started, s.ended)).collect();
+    for (i, s) in sessions.iter_mut().enumerate() {
+        let Some(end) = s.ended else { continue };
+        let crosses = windows
+            .iter()
+            .enumerate()
+            .any(|(j, (from, to))| j != i && to.is_some_and(|to| s.started < to && *from < end));
+        s.overlapped |= crosses;
+    }
+}
+
 /// Where a notable session's line goes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Placement {
@@ -352,6 +368,41 @@ mod tests {
 ";
         let s = parse(log);
         assert_eq!(s.len(), 2);
+        assert!(s.iter().all(Session::trusted), "{s:?}");
+    }
+
+    #[test]
+    fn sessions_crossing_midnight_in_two_files_are_both_distrusted() {
+        // A in yesterday's file, B in today's: neither file shows the other.
+        let mut s = parse(
+            "\
+[2026-11-03T23:58:00Z INFO] update session started
+[2026-11-04T00:10:00Z INFO] update session complete: all sources succeeded
+",
+        );
+        s.extend(parse(
+            "\
+[2026-11-04T00:01:00Z INFO] update session started
+[2026-11-04T00:05:00Z INFO] aur: failed, exit 1
+[2026-11-04T00:05:00Z INFO] update session complete: 1 of 1 sources failed
+",
+        ));
+        assert!(s.iter().all(Session::trusted), "per file, both look clean");
+        mark_crossing(&mut s);
+        assert!(s.iter().all(|x| !x.trusted()), "{s:?}");
+    }
+
+    #[test]
+    fn back_to_back_sessions_do_not_cross() {
+        let mut s = parse(
+            "\
+[2026-11-03T09:00:00Z INFO] update session started
+[2026-11-03T09:00:05Z INFO] update session complete: all sources succeeded
+[2026-11-03T09:00:05Z INFO] update session started
+[2026-11-03T09:00:09Z INFO] update session complete: all sources succeeded
+",
+        );
+        mark_crossing(&mut s);
         assert!(s.iter().all(Session::trusted), "{s:?}");
     }
 
