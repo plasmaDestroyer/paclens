@@ -1,0 +1,21 @@
+[2026-11-18T19:06:42Z INFO] update session started
+[2026-11-18T19:06:42Z INFO] sources: [pacman, aur, flatpak · user, flatpak · system, cargo, rustup, brew, uv, gobin]
+[2026-11-18T19:21:18Z INFO] pacman: running sudo pacman -Syu
+[2026-11-18T19:21:18Z INFO] pacman: completed, exit 0
+[2026-11-18T19:21:18Z INFO] aur: running paru -Sua
+[2026-11-18T19:21:18Z INFO] aur: failed, exit 1
+[2026-11-18T19:21:18Z INFO] flatpak · user: running flatpak update --user --noninteractive
+[2026-11-18T19:21:18Z INFO] flatpak · user: completed, exit 0
+[2026-11-18T19:21:18Z INFO] flatpak · system: running sudo flatpak update --system --noninteractive
+[2026-11-18T19:21:18Z INFO] flatpak · system: completed, exit 0
+[2026-11-18T19:21:18Z INFO] cargo: running cargo install-update -a
+[2026-11-18T19:21:18Z INFO] cargo: completed, exit 0
+[2026-11-18T19:21:18Z INFO] rustup: running rustup update
+[2026-11-18T19:21:18Z INFO] rustup: completed, exit 0
+[2026-11-18T19:21:18Z INFO] brew: running brew upgrade
+[2026-11-18T19:21:18Z INFO] brew: completed, exit 0
+[2026-11-18T19:21:18Z INFO] uv: running uv tool upgrade --all
+[2026-11-18T19:21:18Z INFO] uv: completed, exit 0
+[2026-11-18T19:21:18Z INFO] gobin: running sh -c d=$(go env GOBIN); [ -n "$d" ] || d="$(go env GOPATH)/bin"; for b in "$d"/*; do set -- $(go version -m "$b" 2>/dev/null | awk '$1=="path"{p=$2} $1=="mod"{v=$3} END{print p, v}'); [ -n "$1" ] && [ "$2" != "(devel)" ] && go install "$1@latest"; done; true
+[2026-11-18T19:21:18Z INFO] gobin: completed, exit 0
+[2026-11-18T19:21:18Z INFO] update session complete: 1 of 9 sources failed

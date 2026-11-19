@@ -15,6 +15,7 @@ mod overlap;
 pub mod pacfiles;
 pub mod provenance;
 pub mod services;
+pub mod sessions;
 pub mod shadows;
 pub mod version;
 mod why;
