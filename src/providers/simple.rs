@@ -22,6 +22,11 @@ pub struct SimpleSource {
     /// The update command; `None` for a report-only source, which the plan
     /// skips.
     pub update: Option<fn() -> Vec<String>>,
+    /// The command that refreshes the index the scan compares against, when
+    /// the scan reads a cached one instead of asking upstream. Its counts are
+    /// then a floor, not an answer: a stale index can only miss newer
+    /// versions (#17). `None` = the scan checks upstream itself.
+    pub refresh: Option<&'static str>,
 }
 
 impl SimpleSource {
@@ -38,6 +43,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         enabled: |c| c.sources.rustup,
         scan: super::rustup::scan,
         update: Some(super::rustup::update_command),
+        refresh: None,
     },
     SimpleSource {
         id: "brew",
@@ -46,6 +52,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         enabled: |c| c.sources.brew,
         scan: super::brew::scan,
         update: Some(super::brew::update_command),
+        refresh: Some("brew update"),
     },
     SimpleSource {
         id: "uv",
@@ -54,6 +61,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         enabled: |c| c.sources.uv,
         scan: super::uv::scan,
         update: Some(super::uv::update_command),
+        refresh: None,
     },
     SimpleSource {
         id: "gobin",
@@ -62,6 +70,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         enabled: |c| c.sources.gobin,
         scan: super::gobin::scan,
         update: Some(super::gobin::update_command),
+        refresh: None,
     },
     SimpleSource {
         id: "npm",
@@ -70,6 +79,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         enabled: |c| c.sources.npm,
         scan: super::npm::scan,
         update: None,
+        refresh: None,
     },
     SimpleSource {
         id: "fwupd",
@@ -78,6 +88,7 @@ pub const SIMPLE: &[SimpleSource] = &[
         enabled: |c| c.sources.fwupd,
         scan: super::fwupd::scan,
         update: None,
+        refresh: Some("fwupdmgr refresh"),
     },
 ];
 
@@ -89,6 +100,18 @@ pub fn for_kind(kind: &SourceKind) -> Option<&'static SimpleSource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// brew runs with `HOMEBREW_NO_AUTO_UPDATE=1` and fwupd reads its cached
+    /// LVFS metadata: neither scan asks upstream. The rest do (#17).
+    #[test]
+    fn only_cached_index_sources_name_a_refresh() {
+        let cached: Vec<_> = SIMPLE
+            .iter()
+            .filter(|s| s.refresh.is_some())
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(cached, ["brew", "fwupd"]);
+    }
 
     #[test]
     fn every_row_is_its_own_source() {

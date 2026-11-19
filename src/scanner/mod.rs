@@ -1098,7 +1098,8 @@ fn compose(parts: &Parts, input: &ComposeInput) -> ScanResult {
             available: simple_available & (1 << i) != 0,
             last_scanned: (lanes.simple & (1 << i) != 0 && parts.simple_done(lanes, i))
                 .then_some(now),
-            accurate_updates: true,
+            // A cached index makes the count a floor (#17).
+            accurate_updates: simple.refresh.is_none(),
             scan_error: parts.errors.get(&id).cloned(),
             id,
         });
@@ -2147,6 +2148,57 @@ mod tests {
         assert_eq!(scan.schema_version, SCHEMA_VERSION);
     }
 
+    /// brew's scan runs with `HOMEBREW_NO_AUTO_UPDATE=1`, so its count is
+    /// read against whatever index was last fetched: real, but a floor (#17).
+    #[test]
+    fn brew_counts_are_marked_as_read_from_a_cached_index() {
+        let brew_bit = SIMPLE
+            .iter()
+            .position(|r| r.id == "brew")
+            .expect("brew row");
+        let runner = full_runner()
+            .with(
+                "env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew list --versions",
+                "gcc 15.2.0_1\nxz 5.8.2 5.8.3\n",
+                0,
+            )
+            .with(
+                "env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew outdated --verbose",
+                "gcc (15.2.0_1) < 16.2.0\n",
+                0,
+            );
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+                cargo: false,
+                simple: 1 << brew_bit,
+            },
+            HC::None,
+            None,
+            &|_| {},
+        );
+        let brew = scan
+            .sources
+            .iter()
+            .find(|s| s.id == SourceId::brew())
+            .expect("brew source");
+        assert!(brew.available);
+        assert!(!brew.accurate_updates);
+        assert!(brew.counts_floor());
+        // The updates it did find are still real and still listed.
+        assert_eq!(
+            scan.updates
+                .iter()
+                .filter(|u| u.source_id == SourceId::brew())
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn accurate_updates_flag_follows_checkupdates_availability() {
         let with = assemble(
@@ -2197,8 +2249,11 @@ mod tests {
                 .iter()
                 // Cargo's accuracy follows `cargo-update`, which is its own
                 // question — this one is about checkupdates.
+                // brew and fwupd read cached indexes (#17).
                 .filter(|s| s.id != SourceId::pacman() && s.id != SourceId::cargo())
-                .all(|s| s.accurate_updates)
+                .all(|s| s.accurate_updates
+                    == crate::providers::simple::for_kind(&s.kind)
+                        .is_none_or(|r| r.refresh.is_none()))
         );
     }
 

@@ -134,6 +134,47 @@ mod tests {
             "a scoped id is a predicate waiting to be forgotten"
         );
     }
+
+    #[test]
+    fn counts_floor_needs_a_settled_working_cached_source() {
+        let s = Source {
+            id: SourceId::brew(),
+            kind: SourceKind::Brew,
+            available: true,
+            last_scanned: Some(chrono::Utc::now()),
+            accurate_updates: false,
+            scan_error: None,
+        };
+        assert!(s.counts_floor());
+        assert!(
+            !Source {
+                accurate_updates: true,
+                ..s.clone()
+            }
+            .counts_floor()
+        );
+        assert!(
+            !Source {
+                last_scanned: None,
+                ..s.clone()
+            }
+            .counts_floor()
+        );
+        assert!(
+            !Source {
+                available: false,
+                ..s.clone()
+            }
+            .counts_floor()
+        );
+        assert!(
+            !Source {
+                scan_error: Some("x".into()),
+                ..s
+            }
+            .counts_floor()
+        );
+    }
 }
 
 /// A package source, as recorded in a scan.
@@ -144,8 +185,9 @@ pub struct Source {
     /// Was the source's binary found on PATH at scan time?
     pub available: bool,
     pub last_scanned: Option<DateTime<Utc>>,
-    /// False when update counts came from a possibly-stale local DB (pacman
-    /// without pacman-contrib's checkupdates; design §13, 2026-07-05).
+    /// False when update counts came from a possibly-stale local index
+    /// (pacman without checkupdates, design §13 2026-07-05; brew and fwupd,
+    /// whose scans never refresh theirs, #17).
     #[serde(default = "default_true")]
     pub accurate_updates: bool,
     /// A command failed during this source's scan. Counts from that lane are
@@ -158,6 +200,15 @@ impl Source {
     /// No trustworthy update count came back from this source.
     pub fn updates_unknown(&self) -> bool {
         self.scan_error.is_some() || (self.last_scanned.is_some() && !self.available)
+    }
+
+    /// The count is real but read against a cached index, so it is a floor:
+    /// shown as `N+`, never as "up to date" (#17).
+    pub fn counts_floor(&self) -> bool {
+        self.available
+            && !self.accurate_updates
+            && self.scan_error.is_none()
+            && self.last_scanned.is_some()
     }
 }
 
