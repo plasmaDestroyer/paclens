@@ -2236,6 +2236,25 @@ YYYY-MM-DD | no --noconfirm for pacman
            | 79 upgraded · 3m17s` (pacman's verbs, not `eaten`), then each
            | step the run asked for with its source, reboot last. No eat-in
            | beat. Old layouts stay selectable; `lands` is the default.
+
+2026-11-20 | a count read against a cached index is a floor (#17)
+           | brew scans with HOMEBREW_NO_AUTO_UPDATE=1 (a scan must not
+           | refresh taps as a side effect) and fwupd's get-updates reads
+           | the LVFS metadata last fetched, so both answer against an index
+           | nobody refreshed. Their rows hard-coded accurate_updates, and a
+           | `0` read as "up to date" - a check nobody made (§3 Numbers).
+           | The SIMPLE row now names its `refresh` command (`brew update`,
+           | `fwupdmgr refresh`); with one, accurate_updates is false. Such a
+           | count is real but a floor - a stale index can only miss newer
+           | versions - so it shows `N+`, the summary reads `N+ updates found
+           | · brew from a cached index`, `status --check` exits 2, the note
+           | names the refresh command, and the package list says "no update
+           | found", not "up to date". Index age (the API cache's mtime) was
+           | not used to call a scan fresh: any cut-off would be a number
+           | nobody can back up, and new versions land at any time. pacman's
+           | -Qu fallback gets the same `N+` by the same predicate; its
+           | pacman-contrib hint stays pacman's. rustup, uv, go and npm ask
+           | upstream on every scan and keep accurate counts.
 ```
 
 ---
