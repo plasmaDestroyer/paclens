@@ -20,9 +20,9 @@ pub struct UpdateLog {
 impl UpdateLog {
     /// Open (append, create) today's update log in the default XDG data dir.
     pub fn open_default() -> anyhow::Result<Self> {
-        let dirs = ProjectDirs::from("", "", "paclens")
+        let dir = Self::default_dir()
             .ok_or_else(|| anyhow!("could not determine the data directory for this platform"))?;
-        Self::open_in(&dirs.data_dir().join("logs"))
+        Self::open_in(&dir)
     }
 
     /// Open (append, create) today's update log in `dir`. The injectable seam:
@@ -47,8 +47,16 @@ impl UpdateLog {
     /// `L` log viewer). Update logs are named `YYYY-MM-DD.log`, so the lexical
     /// maximum is the newest.
     pub fn latest_path() -> Option<PathBuf> {
-        let dirs = ProjectDirs::from("", "", "paclens")?;
-        Self::latest_in(&dirs.data_dir().join("logs"))
+        Self::latest_in(&Self::default_dir()?)
+    }
+
+    /// Where [`UpdateLog::open_default`] writes.
+    pub fn default_dir() -> Option<PathBuf> {
+        Some(
+            ProjectDirs::from("", "", "paclens")?
+                .data_dir()
+                .join("logs"),
+        )
     }
 
     fn latest_in(dir: &Path) -> Option<PathBuf> {
