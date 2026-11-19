@@ -3200,7 +3200,12 @@ mod tests {
         let app = App::new(cached_brew_scan(ups), Theme::none(), AppOptions::test());
         for (w, h) in [(80, 24), (120, 30)] {
             let text = render(&app, w, h);
-            assert!(text.contains("100+"), "{w}x{h}:\n{text}");
+            // The table row, not the summary line, which says `100+` too.
+            let row = text
+                .lines()
+                .find(|l| l.contains("brew") && !l.contains("cached index"))
+                .unwrap_or_else(|| panic!("no brew row at {w}x{h}:\n{text}"));
+            assert!(row.contains("100+"), "{w}x{h}: {row:?}");
         }
     }
 
