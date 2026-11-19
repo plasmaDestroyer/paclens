@@ -128,16 +128,16 @@ fn render(
     ));
 
     // paclens's own sessions that failed or cannot be read (#79). When the
-    // tail cut the log, one that ended before its oldest transaction is left
-    // out: its row, if any, was cut off, and "no matching row" would be a
-    // claim the tail can't back. Its start is not the test — `-Syu` syncs
-    // before alpm logs a thing.
+    // tail cut the log, one that started before its oldest transaction is
+    // left out: part of its window was cut off, so neither "this row" nor "no
+    // matching row" can be backed. Only sessions months old, at the tail's
+    // edge, are lost; a whole log keeps every one.
     let oldest = transactions.last().map(|tx| tx.started).filter(|_| cut);
     let mut attached: Vec<Vec<String>> = vec![Vec::new(); runs.len()];
     let mut alone: Vec<&Session> = Vec::new();
     for session in sessions
         .iter()
-        .filter(|x| x.notable() && oldest.is_none_or(|o| x.ended.unwrap_or(x.started) >= o))
+        .filter(|x| x.notable() && oldest.is_none_or(|o| x.started >= o))
     {
         match sessions::place(session, &runs) {
             Placement::Run(i) => attached[i].extend(session.failures()),
@@ -445,6 +445,51 @@ mod tests {
         // A whole log (a rotated one, say) cut nothing: the failure shows.
         let whole = render(&txs, &sessions_of(update), false, None, 10, &ascii());
         assert!(whole.contains("paclens session: aur exited 1"), "{whole}");
+    }
+
+    #[test]
+    fn a_session_straddling_a_cut_tail_claims_no_row() {
+        // The tail starts mid-window: a run cut off before 10:00 may have
+        // shared the window, so attaching to the 10:20 run is not proven.
+        let log = "\
+[2026-07-02T10:20:00+0000] [ALPM] transaction started
+[2026-07-02T10:20:01+0000] [ALPM] upgraded firefox (120.0-1 -> 122.0-1)
+[2026-07-02T10:20:02+0000] [ALPM] transaction completed
+";
+        let update = "\
+[2026-07-02T09:59:00Z INFO] update session started
+[2026-07-02T10:30:00Z INFO] aur: failed, exit 1
+[2026-07-02T10:30:00Z INFO] update session complete: 1 of 1 sources failed
+";
+        let txs = crate::analyzer::history::parse(log);
+        let cut = render(&txs, &sessions_of(update), true, None, 10, &ascii());
+        assert!(!cut.contains("aur exited 1"), "{cut}");
+        let whole = render(&txs, &sessions_of(update), false, None, 10, &ascii());
+        assert!(
+            whole.contains("aur exited 1 — cause/package Unknown [inferred]"),
+            "{whole}"
+        );
+    }
+
+    #[test]
+    fn read_sessions_distrusts_windows_crossing_day_files() {
+        let dir = std::env::temp_dir().join(format!("paclens-cross-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("2026-11-03.log"),
+            "[2026-11-03T23:58:00Z INFO] update session started\n[2026-11-04T00:10:00Z INFO] update session complete: all sources succeeded\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("2026-11-04.log"),
+            "[2026-11-04T00:01:00Z INFO] update session started\n[2026-11-04T00:05:00Z INFO] aur: failed, exit 1\n[2026-11-04T00:05:00Z INFO] update session complete: 1 of 1 sources failed\n",
+        )
+        .unwrap();
+        let got = read_sessions(&dir);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|x| !x.trusted()), "{got:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

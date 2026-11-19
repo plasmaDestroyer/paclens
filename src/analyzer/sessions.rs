@@ -407,6 +407,26 @@ mod tests {
     }
 
     #[test]
+    fn signal_and_launch_lines_parse_as_written() {
+        // The CLI writer's exact wording (executor::run_step).
+        let log = "\
+[2026-11-05T10:00:00Z INFO] update session started
+[2026-11-05T10:00:00Z INFO] pacman: running sudo pacman -Syu
+[2026-11-05T10:00:00Z INFO] cargo: running cargo install-update -a
+[2026-11-05T10:01:00Z INFO] pacman: terminated by signal
+[2026-11-05T10:01:00Z INFO] cargo: failed to launch: failed to launch `cargo`: No such file or directory (os error 2)
+[2026-11-05T10:01:00Z INFO] update session complete: 2 of 2 sources failed
+";
+        assert_eq!(
+            parse(log)[0].failures(),
+            vec![
+                "pacman terminated by signal".to_string(),
+                "cargo failed to launch".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn every_failure_kind_has_words_and_no_package() {
         let step = |o| Step {
             label: "cargo".into(),

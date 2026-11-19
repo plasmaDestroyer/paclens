@@ -2283,7 +2283,7 @@ YYYY-MM-DD | no --noconfirm for pacman
            | Unknown), or one whose window crosses another's (two processes
            | across UTC midnight write two files), says `outcome Unknown`; a step with no outcome line
            | says `no exit recorded`. Nothing is ever read as success. When
-           | the 4 MiB tail cut pacman.log, a session that ended before its
+           | the 4 MiB tail cut pacman.log, a session that started before its
            | oldest transaction is left out. Clean sessions add
            | nothing, so no line never means "nothing failed". paru exits 1
            | even when some packages installed (seen 2026-11-18), so the
