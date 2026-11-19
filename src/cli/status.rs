@@ -43,7 +43,8 @@ pub fn run(
 /// `status --check`, for status bars: the pending count on one line, from
 /// the cache only — never a scan, so a bar can call it every few seconds.
 /// Exit 0 when up to date, 1 when updates are pending, 2 when the answer is
-/// unknown (no cache, or a source whose check failed or never ran).
+/// unknown (no cache, a source whose check failed or never ran, or one read
+/// against a cached index — #17).
 pub fn check() -> std::process::ExitCode {
     let scan = scanner::cache::Cache::locate()
         .and_then(|c| c.read())
@@ -61,11 +62,9 @@ fn check_line(scan: Option<&ScanResult>) -> (String, u8) {
     };
     let total = scan.updates.len();
     // A count with an unchecked source in it is a floor, not an answer.
-    if scan
-        .sources
-        .iter()
-        .any(|s| s.scan_error.is_some() || (s.available && s.last_scanned.is_none()))
-    {
+    if scan.sources.iter().any(|s| {
+        s.scan_error.is_some() || (s.available && s.last_scanned.is_none()) || s.counts_floor()
+    }) {
         return (format!("{total}+"), 2);
     }
     (total.to_string(), u8::from(total > 0))
@@ -99,6 +98,12 @@ fn render_status_since(
         .filter(|s| s.updates_unknown() && s.scan_error.is_none())
         .map(|s| s.id.as_str())
         .collect();
+    let cached: Vec<_> = scan
+        .sources
+        .iter()
+        .filter(|s| s.counts_floor())
+        .map(|s| s.id.as_str())
+        .collect();
     let update_word = if total == 1 { "update" } else { "updates" };
     let summary = if failed > 0 {
         let scan_word = if failed == 1 { "scan" } else { "scans" };
@@ -109,6 +114,12 @@ fn render_status_since(
         s.summary_updates(&format!(
             "{total} {update_word} found · {} unchecked",
             unchecked.join(", ")
+        ))
+    } else if !cached.is_empty() {
+        // Not "up to date": nobody refreshed that index (#17).
+        s.summary_updates(&format!(
+            "{total}+ {update_word} found · {} from a cached index",
+            cached.join(", ")
         ))
     } else if total == 0 {
         s.summary_ok("up to date")
@@ -140,18 +151,15 @@ fn render_status_since(
         // stale pin leaves the aur source fine, and the note alone is easy to
         // read past.
         let warned = scan.source_warning(&source.id);
-        if reason.is_some() || warned || source.scan_error.is_some() {
-            out.push_str(&render_row_because(
-                source.id.as_str(),
-                &summary,
-                reason,
-                warned,
-                source.scan_error.is_some(),
-                s,
-            ));
-        } else {
-            out.push_str(&render_row(source.id.as_str(), &summary, s));
-        }
+        out.push_str(&render_row_because(
+            source.id.as_str(),
+            &summary,
+            reason,
+            warned,
+            source.scan_error.is_some(),
+            source.counts_floor(),
+            s,
+        ));
         out.push('\n');
     }
 
@@ -226,8 +234,9 @@ fn render_status_since(
 /// One source's table row, right-aligning the numeric columns. The numbers are
 /// padded to the column width *before* styling so ANSI codes never break the
 /// alignment.
+#[cfg(test)]
 fn render_row(name: &str, summary: &SourceSummary, s: &Styles) -> String {
-    render_row_because(name, summary, None, false, false, s)
+    render_row_because(name, summary, None, false, false, false, s)
 }
 
 /// [`render_row`], with an optional reason replacing the generic "not found"
@@ -238,6 +247,7 @@ fn render_row_because(
     reason: Option<&str>,
     warned: bool,
     failed: bool,
+    floor: bool,
     s: &Styles,
 ) -> String {
     let installed = if failed {
@@ -247,8 +257,13 @@ fn render_row_because(
     };
     // A source with no update path checked nothing, so it has no count to
     // show — "0" there would read as "none pending" (design §3).
+    // A count read against a cached index is a floor, and says so (#17).
     let updates = if summary.available && !failed {
-        s.updates_count(&format!("{:>7}", summary.updates), summary.updates)
+        let plus = if floor { "+" } else { "" };
+        s.updates_count(
+            &format!("{:>7}", format!("{}{plus}", summary.updates)),
+            summary.updates,
+        )
     } else {
         s.dim(&format!("{:>7}", "—"))
     };
@@ -857,5 +872,66 @@ mod tests {
                 "{choice:?} note presence"
             );
         }
+    }
+
+    /// brew's scan never refreshes its index (#17): its row and the summary
+    /// say the count is a floor, never "up to date".
+    fn with_cached_brew(updates: Vec<PendingUpdate>) -> ScanResult {
+        let mut scan = scan_with(vec![pkg("gcc", SourceId::brew())], updates, true);
+        scan.sources.push(Source {
+            id: SourceId::brew(),
+            kind: SourceKind::Brew,
+            available: true,
+            last_scanned: Some(scan.scanned_at),
+            accurate_updates: false,
+            scan_error: None,
+        });
+        scan
+    }
+
+    #[test]
+    fn a_cached_index_is_never_up_to_date() {
+        let text = render_status(&with_cached_brew(Vec::new()), &plain_styles());
+        assert!(
+            text.starts_with("0+ updates found · brew from a cached index"),
+            "{text}"
+        );
+        let row = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("brew "))
+            .expect("brew row");
+        assert!(row.contains("0+"), "row: {row:?}");
+        assert!(row.contains("ok"), "brew still updates: {row:?}");
+        assert!(
+            text.contains("brew: counts from a cached index - `brew update` refreshes it"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_cached_index_keeps_its_real_updates() {
+        let ups = vec![PendingUpdate {
+            package_name: "gcc".to_string(),
+            current_version: "15.2.0_1".to_string(),
+            available_version: "16.2.0".to_string(),
+            source_id: SourceId::brew(),
+        }];
+        let text = render_status(&with_cached_brew(ups), &plain_styles());
+        assert!(text.starts_with("1+ update found · brew"), "{text}");
+    }
+
+    #[test]
+    fn check_line_reads_a_cached_index_as_a_floor() {
+        assert_eq!(
+            check_line(Some(&with_cached_brew(Vec::new()))),
+            ("0+".to_string(), 2)
+        );
+    }
+
+    #[test]
+    fn a_live_source_row_has_no_floor_marker() {
+        let text = render_status(&scan_with(Vec::new(), Vec::new(), true), &plain_styles());
+        assert!(!text.contains('+'), "{text}");
+        assert!(text.starts_with("up to date"), "{text}");
     }
 }

@@ -146,10 +146,17 @@ impl ScanResult {
         if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
             return Some("cargo: install cargo-update for update detection".to_string());
         }
-        if Self::report_only(id) {
-            return Some(format!("{id}: report-only - paclens does not update it"));
+        let cached = self
+            .cached_index(id)
+            .map(|cmd| format!("counts from a cached index - `{cmd}` refreshes it"));
+        match (Self::report_only(id), cached) {
+            (true, Some(c)) => Some(format!(
+                "{id}: report-only - paclens does not update it; {c}"
+            )),
+            (true, None) => Some(format!("{id}: report-only - paclens does not update it")),
+            (false, Some(c)) => Some(format!("{id}: {c}")),
+            (false, None) => None,
         }
-        None
     }
 
     /// The same sentence, short enough for the dashboard's system pane — one
@@ -170,9 +177,23 @@ impl ScanResult {
             return Some("cargo: inventory only - install cargo-update".to_string());
         }
         if Self::report_only(id) {
+            // The row's `N+` already says the count is a floor.
             return Some(format!("{id}: report-only, not in the plan"));
         }
-        None
+        self.cached_index(id)
+            .map(|cmd| format!("{id}: cached index - {cmd}"))
+    }
+
+    /// The command that refreshes `id`'s index, when this scan's count for
+    /// it was read against a cached one (#17).
+    fn cached_index(&self, id: &super::SourceId) -> Option<&'static str> {
+        if !self.sources.iter().any(|s| &s.id == id && s.counts_floor()) {
+            return None;
+        }
+        crate::providers::simple::SIMPLE
+            .iter()
+            .find(|r| r.id == id.as_str())?
+            .refresh
     }
 
     /// Should this source's row carry the warning marker?
@@ -263,5 +284,57 @@ mod tests {
         assert!(s.packages.is_empty());
         assert!(s.updates.is_empty());
         assert_eq!(s.cache_sizes, CacheSizes::default());
+    }
+
+    fn brew_source(accurate: bool) -> super::super::Source {
+        super::super::Source {
+            id: super::super::SourceId::brew(),
+            kind: super::super::SourceKind::Brew,
+            available: true,
+            last_scanned: Some(chrono::Utc::now()),
+            accurate_updates: accurate,
+            scan_error: None,
+        }
+    }
+
+    #[test]
+    fn cached_brew_note_names_the_refresh_command() {
+        let mut scan = ScanResult::empty();
+        scan.sources.push(brew_source(false));
+        let id = super::super::SourceId::brew();
+        assert_eq!(
+            scan.source_note(&id).as_deref(),
+            Some("brew: counts from a cached index - `brew update` refreshes it")
+        );
+        let compact = scan.source_note_compact(&id).expect("compact");
+        assert_eq!(compact, "brew: cached index - brew update");
+        assert!(compact.chars().count() <= 44);
+    }
+
+    #[test]
+    fn cached_fwupd_note_keeps_report_only_first() {
+        let mut scan = ScanResult::empty();
+        let mut fw = brew_source(false);
+        fw.id = super::super::SourceId("fwupd".to_string());
+        fw.kind = super::super::SourceKind::Fwupd;
+        scan.sources.push(fw);
+        let id = super::super::SourceId("fwupd".to_string());
+        assert_eq!(
+            scan.source_note(&id).as_deref(),
+            Some(
+                "fwupd: report-only - paclens does not update it; counts from a cached index - `fwupdmgr refresh` refreshes it"
+            )
+        );
+        assert_eq!(
+            scan.source_note_compact(&id).as_deref(),
+            Some("fwupd: report-only, not in the plan")
+        );
+    }
+
+    #[test]
+    fn a_live_brew_has_no_note() {
+        let mut scan = ScanResult::empty();
+        scan.sources.push(brew_source(true));
+        assert_eq!(scan.source_note(&super::super::SourceId::brew()), None);
     }
 }
