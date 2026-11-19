@@ -101,40 +101,49 @@ fn outcome(rest: &str) -> Option<Outcome> {
     None
 }
 
-/// Parse update log text (several days' files, concatenated oldest first)
-/// into sessions, oldest first. Lines it does not know are skipped.
+/// Parse one update log file into sessions, oldest first. Lines it does not
+/// know are skipped.
+///
+/// One file at a time: a session writes only to the file it opened, so two
+/// sessions can share lines only inside one file. Within it, every session
+/// that starts while another start is still unmatched by a `complete` is
+/// overlapped, until the markers balance. A session that never closed (a
+/// crash) therefore distrusts the rest of that day's file. That is Unknown,
+/// not a guess: the log has no session id to tell a crash from a second
+/// process.
 pub fn parse(text: &str) -> Vec<Session> {
     let mut done: Vec<Session> = Vec::new();
     let mut open: Option<Session> = None;
+    let mut unmatched = 0usize;
     for line in text.lines() {
         let Some((at, msg)) = split(line) else {
             continue;
         };
         if msg == "update session started" {
-            let overlapped = match open.take() {
-                Some(mut prev) => {
-                    prev.overlapped = true;
-                    done.push(prev);
-                    true
-                }
-                None => false,
-            };
+            if let Some(mut prev) = open.take() {
+                prev.overlapped = true;
+                done.push(prev);
+            }
             open = Some(Session {
                 started: at,
                 ended: None,
-                overlapped,
+                overlapped: unmatched > 0,
                 steps: Vec::new(),
             });
+            unmatched += 1;
+            continue;
+        }
+        if msg.starts_with("update session complete") {
+            unmatched = unmatched.saturating_sub(1);
+            if let Some(mut session) = open.take() {
+                session.ended = Some(at);
+                done.push(session);
+            }
             continue;
         }
         let Some(session) = open.as_mut() else {
             continue;
         };
-        if msg.starts_with("update session complete") {
-            session.ended = Some(at);
-            done.extend(open.take());
-            continue;
-        }
         if msg.starts_with("sources: ") {
             continue;
         }
@@ -163,24 +172,7 @@ pub fn parse(text: &str) -> Vec<Session> {
         }
     }
     done.extend(open);
-    // A session the next one cut into is overlapped; so is the one that cut.
-    // Interleaved markers can also close in either order, so any two windows
-    // that cross are both distrusted.
-    for i in 0..done.len() {
-        for j in 0..done.len() {
-            if i != j && crosses(&done[i], &done[j]) {
-                done[i].overlapped = true;
-            }
-        }
-    }
     done
-}
-
-fn crosses(a: &Session, b: &Session) -> bool {
-    match (a.ended, b.ended) {
-        (Some(a_end), Some(b_end)) => a.started <= b_end && b.started <= a_end,
-        _ => false,
-    }
 }
 
 /// Where a notable session's line goes.
@@ -330,15 +322,37 @@ mod tests {
     }
 
     #[test]
-    fn sessions_whose_windows_cross_are_distrusted_even_when_closed_in_order() {
+    fn a_session_after_an_unbalanced_pair_stays_distrusted() {
+        // A and B start; A's complete closes B early; B's failure is logged
+        // after C starts. Without a count of unmatched starts, C would be
+        // trusted and take B's failure.
+        let log = "\
+[2026-11-03T10:00:00Z INFO] update session started
+[2026-11-03T10:01:00Z INFO] update session started
+[2026-11-03T10:02:00Z INFO] update session complete: all sources succeeded
+[2026-11-03T10:03:00Z INFO] update session started
+[2026-11-03T10:04:00Z INFO] aur: failed, exit 1
+[2026-11-03T10:05:00Z INFO] update session complete: all sources succeeded
+[2026-11-03T10:06:00Z INFO] update session complete: 1 of 1 sources failed
+";
+        let s = parse(log);
+        assert_eq!(s.len(), 3);
+        assert!(s.iter().all(|x| !x.trusted()), "{s:?}");
+    }
+
+    #[test]
+    fn back_to_back_sessions_in_the_same_second_are_both_trusted() {
+        // The file is written in order: B's start after A's complete means
+        // every A line is above it, whatever the stamps say.
         let log = "\
 [2026-11-03T09:00:00Z INFO] update session started
 [2026-11-03T09:00:05Z INFO] update session complete: all sources succeeded
 [2026-11-03T09:00:05Z INFO] update session started
 [2026-11-03T09:00:09Z INFO] update session complete: all sources succeeded
 ";
-        // Touching stamps (same second) cross: the log cannot order them.
-        assert!(parse(log).iter().all(|x| x.overlapped));
+        let s = parse(log);
+        assert_eq!(s.len(), 2);
+        assert!(s.iter().all(Session::trusted), "{s:?}");
     }
 
     #[test]
@@ -395,6 +409,15 @@ mod tests {
         let runs = history::runs(&txs);
         // Window ends one second into the run.
         let s = session("2026-11-05T09:59:00Z", "2026-11-05T10:00:01Z");
+        assert_eq!(place(&s, &runs), Placement::Alone);
+    }
+
+    #[test]
+    fn a_run_that_starts_before_the_window_does_not_attach() {
+        let txs = history::parse(RUN_LOG);
+        let runs = history::runs(&txs);
+        // Window opens one second after the run began.
+        let s = session("2026-11-05T10:00:01Z", "2026-11-05T10:05:00Z");
         assert_eq!(place(&s, &runs), Placement::Alone);
     }
 

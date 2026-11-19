@@ -42,12 +42,14 @@ pub fn read_tail(path: &Path, bytes: u64) -> Result<String> {
 pub fn run(package: Option<&str>, limit: usize, styles: &Styles) -> Result<()> {
     let text = read_tail(Path::new(PACMAN_LOG), TAIL_BYTES)?;
     let transactions = history::parse(&text);
+    // Only a tail that really cut the log can have cut a session's row off.
+    let cut = std::fs::metadata(PACMAN_LOG).is_ok_and(|m| m.len() > TAIL_BYTES);
     let sessions = crate::executor::UpdateLog::default_dir()
         .map(|dir| read_sessions(&dir))
         .unwrap_or_default();
     print!(
         "{}",
-        render(&transactions, &sessions, package, limit, styles)
+        render(&transactions, &sessions, cut, package, limit, styles)
     );
     Ok(())
 }
@@ -63,15 +65,12 @@ fn read_sessions(dir: &Path) -> Vec<Session> {
         .filter(|n| n.ends_with(".log") && !n.starts_with("paclens-"))
         .collect();
     names.sort();
-    let text: String = names
-        .iter()
-        .filter_map(|n| std::fs::read_to_string(dir.join(n)).ok())
-        .collect::<Vec<_>>()
-        .join("\n");
     let local =
         |t: chrono::DateTime<chrono::FixedOffset>| t.with_timezone(&chrono::Local).fixed_offset();
-    sessions::parse(&text)
-        .into_iter()
+    names
+        .iter()
+        .filter_map(|n| std::fs::read_to_string(dir.join(n)).ok())
+        .flat_map(|text| sessions::parse(&text))
         .map(|mut s| {
             s.started = local(s.started);
             s.ended = s.ended.map(local);
@@ -82,11 +81,14 @@ fn read_sessions(dir: &Path) -> Vec<Session> {
 
 /// The line a session gets on its own, claiming no history row.
 fn session_line(session: &Session) -> String {
+    // Overlap first: in an interleaved group a session's `complete` line may
+    // have gone to its partner, so "no end recorded" would be a claim.
+    if session.overlapped {
+        return "paclens session: outcome Unknown — log interleaved with another session [unknown]"
+            .to_string();
+    }
     if session.ended.is_none() {
         return "paclens session: outcome Unknown — no end recorded [unknown]".to_string();
-    }
-    if session.overlapped {
-        return "paclens session: outcome Unknown — overlaps another session [unknown]".to_string();
     }
     format!(
         "paclens session: {} [confirmed]; no matching pacman history row",
@@ -99,6 +101,7 @@ fn session_line(session: &Session) -> String {
 fn render(
     transactions: &[Transaction],
     sessions: &[Session],
+    cut: bool,
     package: Option<&str>,
     limit: usize,
     s: &Styles,
@@ -122,11 +125,12 @@ fn render(
         }
     ));
 
-    // paclens's own sessions that failed or cannot be read (#79). One that
-    // ended before the log tail's oldest transaction is left out: its row, if
-    // any, was cut off, and "no matching row" would be a claim the tail can't
-    // back. Its start is not the test — `-Syu` syncs before alpm logs a thing.
-    let oldest = transactions.last().map(|tx| tx.started);
+    // paclens's own sessions that failed or cannot be read (#79). When the
+    // tail cut the log, one that ended before its oldest transaction is left
+    // out: its row, if any, was cut off, and "no matching row" would be a
+    // claim the tail can't back. Its start is not the test — `-Syu` syncs
+    // before alpm logs a thing.
+    let oldest = transactions.last().map(|tx| tx.started).filter(|_| cut);
     let mut attached: Vec<Vec<String>> = vec![Vec::new(); runs.len()];
     let mut alone: Vec<&Session> = Vec::new();
     for session in sessions
@@ -263,7 +267,7 @@ mod tests {
     #[test]
     fn transactions_list_newest_first_with_counts() {
         let txs = crate::analyzer::history::parse(LOG);
-        let out = render(&txs, &[], None, 10, &ascii());
+        let out = render(&txs, &[], false, None, 10, &ascii());
         assert!(out.contains("2 of 2 runs"), "{out}");
         let newest = out.find("2026-07-02").expect("newest listed");
         let oldest = out.find("2026-03-14").expect("oldest listed");
@@ -285,7 +289,7 @@ mod tests {
 [2026-09-07T20:02:05+0530] [ALPM] transaction completed
 ";
         let txs = crate::analyzer::history::parse(log);
-        let out = render(&txs, &[], None, 10, &ascii());
+        let out = render(&txs, &[], false, None, 10, &ascii());
         assert!(out.contains("1 of 1 runs"), "{out}");
         assert!(out.contains("2 upgraded"), "{out}");
         // The grouping is inferred, so the row says what it grouped.
@@ -295,7 +299,7 @@ mod tests {
     #[test]
     fn the_limit_says_what_it_hid() {
         let txs = crate::analyzer::history::parse(LOG);
-        let out = render(&txs, &[], None, 1, &ascii());
+        let out = render(&txs, &[], false, None, 1, &ascii());
         assert!(out.contains("1 of 2 runs"), "{out}");
         assert!(out.contains("1 more"), "{out}");
         assert!(!out.contains("2026-03-14"), "hid the wrong end:\n{out}");
@@ -304,7 +308,7 @@ mod tests {
     #[test]
     fn one_packages_history_lists_every_line_about_it() {
         let txs = crate::analyzer::history::parse(LOG);
-        let out = render(&txs, &[], Some("firefox"), 10, &ascii());
+        let out = render(&txs, &[], false, Some("firefox"), 10, &ascii());
         assert!(
             out.contains("installed 2026-03-14"),
             "summary missing:\n{out}"
@@ -316,7 +320,7 @@ mod tests {
     #[test]
     fn a_package_the_log_does_not_mention_says_so() {
         let txs = crate::analyzer::history::parse(LOG);
-        let out = render(&txs, &[], Some("ghost"), 10, &ascii());
+        let out = render(&txs, &[], false, Some("ghost"), 10, &ascii());
         assert!(out.contains("nothing about ghost"), "{out}");
         // "may predate it" rather than "never installed": a tail is a window,
         // not the whole history.
@@ -333,7 +337,7 @@ mod tests {
     #[test]
     fn a_failed_step_lands_on_the_run_its_session_holds() {
         let txs = crate::analyzer::history::parse(REAL_PACMAN);
-        let out = render(&txs, &sessions_of(REAL_UPDATE), None, 10, &ascii());
+        let out = render(&txs, &sessions_of(REAL_UPDATE), false, None, 10, &ascii());
         let row = out.find("2026-11-19 00:38").expect("row listed");
         let note = out
             .find("aur exited 1 — cause/package Unknown [inferred]")
@@ -359,7 +363,7 @@ mod tests {
 [2026-07-02T13:04:00Z INFO] update session complete: 1 of 1 sources failed
 ";
         let txs = crate::analyzer::history::parse(log);
-        let out = render(&txs, &sessions_of(update), None, 10, &ascii());
+        let out = render(&txs, &sessions_of(update), false, None, 10, &ascii());
         assert!(
             out.contains(
                 "2026-07-02 13:00  paclens session: aur exited 1 [confirmed]; no matching pacman history row"
@@ -381,12 +385,30 @@ mod tests {
 [2026-07-02T13:00:00Z INFO] pacman: running sudo pacman -Syu
 ";
         let txs = crate::analyzer::history::parse(LOG);
-        let out = render(&txs, &sessions_of(update), None, 10, &ascii());
+        let out = render(&txs, &sessions_of(update), false, None, 10, &ascii());
         assert!(
             out.contains("paclens session: outcome Unknown — no end recorded [unknown]"),
             "{out}"
         );
         assert!(!out.contains("succeeded"), "{out}");
+    }
+
+    #[test]
+    fn an_interleaved_session_says_interleaved_not_unended() {
+        let update = "\
+[2026-07-02T13:00:00Z INFO] update session started
+[2026-07-02T13:00:01Z INFO] update session started
+[2026-07-02T13:00:05Z INFO] update session complete: all sources succeeded
+[2026-07-02T13:00:06Z INFO] update session complete: all sources succeeded
+";
+        let txs = crate::analyzer::history::parse(LOG);
+        let out = render(&txs, &sessions_of(update), false, None, 10, &ascii());
+        assert_eq!(
+            out.matches("log interleaved with another session").count(),
+            2,
+            "{out}"
+        );
+        assert!(!out.contains("no end recorded"), "{out}");
     }
 
     #[test]
@@ -400,13 +422,13 @@ mod tests {
 ";
         let txs = crate::analyzer::history::parse(LOG);
         assert_eq!(
-            render(&txs, &sessions_of(update), None, 10, &ascii()),
-            render(&txs, &[], None, 10, &ascii())
+            render(&txs, &sessions_of(update), false, None, 10, &ascii()),
+            render(&txs, &[], false, None, 10, &ascii())
         );
     }
 
     #[test]
-    fn a_session_older_than_the_log_tail_is_left_out() {
+    fn a_session_older_than_a_cut_tail_is_left_out() {
         // The tail starts 2026-03-14; a failure before it may have a row that
         // was cut off, so "no matching row" is not said.
         let update = "\
@@ -416,8 +438,11 @@ mod tests {
 [2026-01-01T10:04:00Z INFO] update session complete: 1 of 1 sources failed
 ";
         let txs = crate::analyzer::history::parse(LOG);
-        let out = render(&txs, &sessions_of(update), None, 10, &ascii());
-        assert!(!out.contains("paclens session"), "{out}");
+        let cut = render(&txs, &sessions_of(update), true, None, 10, &ascii());
+        assert!(!cut.contains("paclens session"), "{cut}");
+        // A whole log (a rotated one, say) cut nothing: the failure shows.
+        let whole = render(&txs, &sessions_of(update), false, None, 10, &ascii());
+        assert!(whole.contains("paclens session: aur exited 1"), "{whole}");
     }
 
     #[test]
@@ -429,9 +454,9 @@ mod tests {
 [2026-05-01T10:04:00Z INFO] update session complete: 1 of 1 sources failed
 ";
         let txs = crate::analyzer::history::parse(LOG);
-        let hidden = render(&txs, &sessions_of(update), None, 1, &ascii());
+        let hidden = render(&txs, &sessions_of(update), false, None, 1, &ascii());
         assert!(!hidden.contains("paclens session"), "{hidden}");
-        let shown = render(&txs, &sessions_of(update), None, 10, &ascii());
+        let shown = render(&txs, &sessions_of(update), false, None, 10, &ascii());
         let at = shown
             .find("2026-05-01")
             .expect("shown under the full limit");

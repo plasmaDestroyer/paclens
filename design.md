@@ -2277,10 +2277,13 @@ YYYY-MM-DD | no --noconfirm for pacman
            | time window. No unique run — an AUR-only failure, which alpm
            | never logged, or a split or grouped run — gives its own line,
            | `paclens session: aur exited 1 [confirmed]; no matching pacman
-           | history row`. A session with no `complete` line, or one whose
-           | window crosses another's (the log has no session id), says
-           | `outcome Unknown`; a step with no outcome line says `no exit
-           | recorded`. Nothing is ever read as success. Clean sessions add
+           | history row`. A session with no `complete` line, or one that
+           | starts while another start is still unmatched (the log has no
+           | session id, so a crash leaves the rest of that day's file
+           | Unknown), says `outcome Unknown`; a step with no outcome line
+           | says `no exit recorded`. Nothing is ever read as success. When
+           | the 4 MiB tail cut pacman.log, a session that ended before its
+           | oldest transaction is left out. Clean sessions add
            | nothing, so no line never means "nothing failed". paru exits 1
            | even when some packages installed (seen 2026-11-18), so the
            | row can hold upgrades and a failure at once. The TUI history
