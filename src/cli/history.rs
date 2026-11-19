@@ -92,9 +92,23 @@ fn session_line(session: &Session) -> String {
     if session.ended.is_none() {
         return "paclens session: outcome Unknown — no end recorded [unknown]".to_string();
     }
+    let failures = session.failures();
+    let unrecorded = session.unrecorded();
+    let mut parts = Vec::new();
+    if !failures.is_empty() {
+        parts.push(format!("{} [confirmed]", failures.join(", ")));
+    }
+    if !unrecorded.is_empty() {
+        // How a step ended is Unknown, so no row is claimed or denied.
+        parts.push(format!(
+            "{}: no exit recorded [unknown]",
+            unrecorded.join(", ")
+        ));
+        return format!("paclens session: {}", parts.join("; "));
+    }
     format!(
-        "paclens session: {} [confirmed]; no matching pacman history row",
-        session.failures().join(", ")
+        "paclens session: {}; no matching pacman history row",
+        parts.join("; ")
     )
 }
 
@@ -417,6 +431,29 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("no end recorded"), "{out}");
+    }
+
+    #[test]
+    fn a_step_with_no_outcome_is_unknown_and_never_attached() {
+        // A cancelled TUI run: aur logged `running` and nothing else, inside
+        // a window that holds the 2026-07-02 run.
+        let update = "\
+[2026-07-02T09:59:00Z INFO] update session started
+[2026-07-02T09:59:00Z INFO] pacman: running sudo pacman -Syu
+[2026-07-02T09:59:00Z INFO] aur: running paru -Sua
+[2026-07-02T10:05:00Z INFO] pacman: failed, exit 1
+[2026-07-02T10:05:00Z INFO] update session complete: 1 of 2 sources failed
+";
+        let txs = crate::analyzer::history::parse(LOG);
+        let out = render(&txs, &sessions_of(update), false, None, 10, &ascii());
+        assert!(
+            out.contains(
+                "paclens session: pacman exited 1 [confirmed]; aur: no exit recorded [unknown]\n"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("[inferred]"), "attached to a row:\n{out}");
+        assert!(!out.contains("no matching"), "denied a row:\n{out}");
     }
 
     #[test]

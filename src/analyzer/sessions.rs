@@ -40,7 +40,8 @@ impl Step {
             Outcome::Exit(code) => Some(format!("{label} exited {code}")),
             Outcome::Signal => Some(format!("{label} terminated by signal")),
             Outcome::Launch => Some(format!("{label} failed to launch")),
-            Outcome::Unrecorded => Some(format!("{label}: no exit recorded")),
+            // Not a failure: nothing says how it ended (see `unrecorded`).
+            Outcome::Unrecorded => None,
         }
     }
 }
@@ -58,13 +59,24 @@ pub struct Session {
 }
 
 impl Session {
-    /// A session whose step lines can be trusted: closed, and alone.
+    /// A session whose step lines can be trusted: closed, alone, and with
+    /// an outcome for every step it ran. Only a trusted session may claim a
+    /// history row or that none matches.
     pub fn trusted(&self) -> bool {
-        self.ended.is_some() && !self.overlapped
+        self.ended.is_some() && !self.overlapped && self.unrecorded().is_empty()
     }
 
     pub fn failures(&self) -> Vec<String> {
         self.steps.iter().filter_map(Step::failure).collect()
+    }
+
+    /// Steps that logged `running …` and no outcome: Unknown, not failed.
+    pub fn unrecorded(&self) -> Vec<&str> {
+        self.steps
+            .iter()
+            .filter(|s| s.outcome == Outcome::Unrecorded)
+            .map(|s| s.label.as_str())
+            .collect()
     }
 
     /// Worth a line in history: a trusted session with a failed step, or a
@@ -317,8 +329,10 @@ mod tests {
 [2026-11-05T10:03:00Z INFO] update session complete: all sources succeeded
 ";
         let s = &parse(log)[0];
-        assert!(s.trusted());
-        assert_eq!(s.failures(), vec!["aur: no exit recorded".to_string()]);
+        assert!(!s.trusted(), "a missing outcome is Unknown: {s:?}");
+        assert!(s.failures().is_empty(), "not a failure either: {s:?}");
+        assert_eq!(s.unrecorded(), vec!["aur"]);
+        assert!(s.notable());
     }
 
     #[test]
