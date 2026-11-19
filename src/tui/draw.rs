@@ -711,6 +711,11 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
         let style = if failed { theme.error } else { theme.success };
         lines.push(kv("last run", outcome.to_string(), style));
     }
+    // Why the selected source is degraded, while it is the selected row —
+    // above the findings, so a short pane still shows it (#17).
+    if let Some(note) = app.selected_source_note() {
+        lines.push(Line::from(Span::styled(note, theme.accent)));
+    }
     if found.is_empty() && app.scan_settled() {
         lines.push(Line::from(Span::styled(
             "  nothing else needs attention".to_string(),
@@ -723,10 +728,6 @@ fn render_system_pane(frame: &mut Frame, area: Rect, app: &App) {
             "stale? install pacman-contrib",
             theme.accent,
         )));
-    }
-    // Why the selected source is degraded, while it is the selected row.
-    if let Some(note) = app.selected_source_note() {
-        lines.push(Line::from(Span::styled(note, theme.accent)));
     }
     lines.push(Line::from(vec![
         Span::styled(format!("{} ", theme.glyphs.bullet), theme.dim),
@@ -929,10 +930,17 @@ fn summary_line(app: &App) -> Line<'static> {
     } else if !cached.is_empty() {
         // Same sentence as `status` (#17).
         Line::from(Span::styled(
-            format!(
-                "{updates}+ {update_word} found · {} from a cached index",
-                cached.join(", ")
-            ),
+            if updates == 0 {
+                format!(
+                    "no updates found · {} from a cached index",
+                    cached.join(", ")
+                )
+            } else {
+                format!(
+                    "{updates}+ {update_word} found · {} from a cached index",
+                    cached.join(", ")
+                )
+            },
             theme.accent,
         ))
     } else if updates == 0 {
@@ -966,10 +974,12 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
         .max()
         .unwrap_or(4)
         .max(4) as u16;
+    // A floor's `+` takes its own column, so the digits stay aligned (#17).
+    let any_floor = rows.iter().any(|r| r.floor);
     let updates_w = rows
         .iter()
         .filter_map(|r| r.updates)
-        .map(|n| n.to_string().len())
+        .map(|n| n.to_string().len() + usize::from(any_floor))
         .max()
         .unwrap_or(3)
         .max(3) as u16;
@@ -1079,9 +1089,13 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("—", theme.dim)
             } else {
                 // A cached index makes the count a floor (#17).
-                let plus = if r.floor { "+" } else { "" };
+                let plus = match (r.floor, any_floor) {
+                    (true, _) => "+",
+                    (false, true) => " ",
+                    (false, false) => "",
+                };
                 match (r.updates, r.stale) {
-                    (Some(n), true) => approx(n, theme),
+                    (Some(n), true) => Span::styled(format!("{n}{plus}"), theme.dim),
                     (Some(n), false) if n > 0 => Span::styled(format!("{n}{plus}"), theme.accent),
                     (Some(n), false) => Span::styled(format!("{n}{plus}"), theme.dim),
                     (None, _) => waiting(theme),
@@ -3164,7 +3178,7 @@ mod tests {
         );
         let text = render(&app, 120, 30);
         assert!(
-            text.contains("0+ updates found · brew from a cached index"),
+            text.contains("no updates found · brew from a cached index"),
             "{text}"
         );
         assert!(!text.contains("up to date"), "{text}");
@@ -3175,6 +3189,35 @@ mod tests {
             .find(|r| r.id == "brew")
             .expect("brew row");
         assert!(brew.floor);
+    }
+
+    /// The `+` is part of the cell's width: `100+` must not clip to `00+`.
+    #[test]
+    fn a_floor_count_is_never_clipped() {
+        let ups: Vec<_> = (0..100)
+            .map(|i| upd(&format!("f{i}"), "1", "2", SourceId::brew()))
+            .collect();
+        let app = App::new(cached_brew_scan(ups), Theme::none(), AppOptions::test());
+        for (w, h) in [(80, 24), (120, 30)] {
+            let text = render(&app, w, h);
+            assert!(text.contains("100+"), "{w}x{h}:\n{text}");
+        }
+    }
+
+    /// The selected source's note sits above the findings, so the short
+    /// 80x24 pane still says what the `+` means (#17).
+    #[test]
+    fn the_brew_note_survives_a_short_pane() {
+        let ups = vec![upd("linux", "1", "2", SourceId::pacman())];
+        let mut app = App::new(cached_brew_scan(ups), Theme::none(), AppOptions::test());
+        while app.dash_source().is_some_and(|s| s.id != SourceId::brew()) {
+            app.on_next();
+        }
+        let text = render(&app, 80, 24);
+        assert!(
+            text.contains("brew: cached index; run brew update"),
+            "{text}"
+        );
     }
 
     #[test]
