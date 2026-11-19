@@ -54,6 +54,8 @@ pub fn run(package: Option<&str>, limit: usize, styles: &Styles) -> Result<()> {
     Ok(())
 }
 
+// ponytail: reads every day's update log on each call (47 files, 51 KB here);
+// bound it by days if that ever shows.
 /// paclens's own update logs (design §11), every day's file oldest first,
 /// parsed into sessions with their times in local time. A missing or
 /// unreadable directory is no sessions: history still shows what alpm did.
@@ -456,19 +458,47 @@ mod tests {
         assert!(!out.contains("no matching"), "denied a row:\n{out}");
     }
 
+    /// What 454af37 (before #79) printed for `LOG`, captured from that
+    /// build's renderer, so "unchanged" is checked against the old code.
+    const BEFORE_PLAIN: &str = "2 of 2 runs\n  - 2026-07-02 10:00  1 upgraded, 1 removed (did not complete)\n  - 2026-03-14 10:00  2 installed\n";
+    const BEFORE_LIMIT1: &str = "1 of 2 runs\n  - 2026-07-02 10:00  1 upgraded, 1 removed (did not complete)\n\n  1 more — paclens history --limit N\n";
+    const BEFORE_PACKAGE: &str = "firefox - installed 2026-03-14, upgraded once, last 2026-07-02\n  - 2026-07-02 10:00  upgraded     120.0-1 -> 122.0-1\n  - 2026-03-14 10:00  installed    120.0-1\n";
+
     #[test]
-    fn clean_sessions_leave_the_output_byte_identical() {
-        let update = "\
-[2026-07-02T10:00:00Z INFO] update session started
-[2026-07-02T10:00:00Z INFO] pacman: running sudo pacman -Syu
+    fn clean_sessions_leave_the_output_byte_identical_to_before() {
+        let clean = "\
+[2026-07-02T09:59:00Z INFO] update session started
+[2026-07-02T09:59:00Z INFO] pacman: running sudo pacman -Syu
 [2026-07-02T10:00:05Z INFO] pacman: completed, exit 0
 [2026-07-02T10:00:05Z INFO] aur: skipped — no AUR helper found
 [2026-07-02T10:00:05Z INFO] update session complete: all sources succeeded
 ";
+        let failed = "\
+[2026-07-02T09:59:00Z INFO] update session started
+[2026-07-02T10:00:05Z INFO] aur: failed, exit 1
+[2026-07-02T10:00:05Z INFO] update session complete: 1 of 1 sources failed
+";
         let txs = crate::analyzer::history::parse(LOG);
+        let clean = sessions_of(clean);
         assert_eq!(
-            render(&txs, &sessions_of(update), false, None, 10, &ascii()),
-            render(&txs, &[], false, None, 10, &ascii())
+            render(&txs, &clean, false, None, 10, &ascii()),
+            BEFORE_PLAIN
+        );
+        assert_eq!(
+            render(&txs, &clean, false, None, 1, &ascii()),
+            BEFORE_LIMIT1
+        );
+        // `--package` never shows sessions, failed or not.
+        assert_eq!(
+            render(
+                &txs,
+                &sessions_of(failed),
+                false,
+                Some("firefox"),
+                10,
+                &ascii()
+            ),
+            BEFORE_PACKAGE
         );
     }
 
