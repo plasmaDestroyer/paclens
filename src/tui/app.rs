@@ -183,6 +183,9 @@ pub struct SourceRow {
     /// lane is still out. Real numbers, possibly stale — rendered as
     /// approximate so they cannot be read as this run's answer.
     pub stale: bool,
+    /// The update count was read against a cached index: a floor, drawn
+    /// `N+` (#17).
+    pub floor: bool,
     pub available: bool,
     /// Included in the update plan (Space toggles; None = nothing to update).
     pub enabled: Option<bool>,
@@ -764,6 +767,7 @@ impl App {
                     installed,
                     updates,
                     stale,
+                    floor: s.counts_floor(),
                     available: s.available,
                     enabled,
                 }
@@ -1062,12 +1066,14 @@ impl App {
         crate::analyzer::reboot_status(self.scan.kernel.as_ref(), &self.scan.packages)
     }
 
-    /// The pacman source scanned via the stale `-Qu` fallback, if so.
+    /// The pacman source scanned via the stale `-Qu` fallback, if so. Only
+    /// pacman: the hint names pacman-contrib, and brew or fwupd reading a
+    /// cached index is said by their own notes (#17).
     pub fn stale_update_counts(&self) -> bool {
         self.scan
             .sources
             .iter()
-            .any(|s| s.available && !s.accurate_updates)
+            .any(|s| s.id == SourceId::pacman() && s.available && !s.accurate_updates)
     }
 
     /// Space on the dashboard: toggle the selected source in/out of the
@@ -1401,6 +1407,18 @@ impl App {
             return vec![("", scored.into_iter().map(|(_, _, p)| p).collect())];
         }
         pkgs.sort_by(|a, b| a.name.cmp(&b.name));
+        // A cached index found no update for these; that is not the same as
+        // knowing they are current (#17).
+        let rest_label = if self
+            .scan
+            .sources
+            .iter()
+            .any(|s| &s.id == source && s.counts_floor())
+        {
+            "no update found"
+        } else {
+            "up to date"
+        };
         match self.pkg_sort {
             PkgSort::Name => vec![("", pkgs)],
             PkgSort::Size => {
@@ -1419,7 +1437,7 @@ impl App {
                 if pending.is_empty() {
                     vec![("", rest)]
                 } else {
-                    vec![("pending updates", pending), ("up to date", rest)]
+                    vec![("pending updates", pending), (rest_label, rest)]
                 }
             }
             PkgSort::UpdatesFirst => {
@@ -1429,7 +1447,7 @@ impl App {
                     // Nothing pending: headers would be noise.
                     vec![("", rest)]
                 } else {
-                    vec![("pending updates", pending), ("up to date", rest)]
+                    vec![("pending updates", pending), (rest_label, rest)]
                 }
             }
             PkgSort::Reason => {
@@ -2993,5 +3011,37 @@ mod tests {
             scan_error: None,
         }]));
         assert!(app.is_enabled(&SourceId::pacman())); // toggles reset to on
+    }
+
+    /// A cached brew index found no update for the rest; the header must not
+    /// claim they are current (#17).
+    #[test]
+    fn cached_index_list_does_not_call_the_rest_up_to_date() {
+        let brew = |accurate| Source {
+            id: SourceId::brew(),
+            kind: SourceKind::Brew,
+            available: true,
+            last_scanned: Some(Utc::now()),
+            accurate_updates: accurate,
+            scan_error: None,
+        };
+        for (accurate, want) in [(false, "no update found"), (true, "up to date")] {
+            let mut scan = scan_with_sources(vec![brew(accurate)]);
+            scan.packages = vec![pkg("gcc", SourceId::brew()), pkg("xz", SourceId::brew())];
+            scan.updates = vec![upd("gcc", SourceId::brew())];
+            let mut app = App::new(scan, Theme::none(), AppOptions::test());
+            app.dash_selected = Some(0);
+            app.open_packages();
+            app.pkg_sort = PkgSort::UpdatesFirst;
+            let headers: Vec<_> = app
+                .pkg_rows()
+                .into_iter()
+                .filter_map(|r| match r {
+                    PkgRow::Header(l, _) => Some(l),
+                    PkgRow::Pkg(_) => None,
+                })
+                .collect();
+            assert_eq!(headers, ["pending updates", want]);
+        }
     }
 }

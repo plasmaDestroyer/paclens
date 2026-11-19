@@ -778,6 +778,9 @@ fn render_updates_pane(frame: &mut Frame, area: Rect, app: &App) {
             format!("{name} scan failed")
         } else if source.is_some_and(|s| s.updates_unknown()) {
             format!("{name} update check unavailable")
+        } else if source.is_some_and(|s| s.counts_floor()) {
+            // Not "up to date": nobody refreshed that index (#17).
+            format!("none in {name}'s cached index")
         } else if source.is_none_or(|s| app.source_counted(&s.id)) {
             format!("{name} is up to date")
         } else {
@@ -896,6 +899,13 @@ fn summary_line(app: &App) -> Line<'static> {
         .filter(|s| s.updates_unknown() && s.scan_error.is_none())
         .map(|s| s.id.as_str())
         .collect();
+    let cached: Vec<_> = app
+        .scan()
+        .sources
+        .iter()
+        .filter(|s| s.counts_floor())
+        .map(|s| s.id.as_str())
+        .collect();
     let update_word = if updates == 1 { "update" } else { "updates" };
     if !app.scan_settled() {
         Line::from(Span::styled(
@@ -913,6 +923,15 @@ fn summary_line(app: &App) -> Line<'static> {
             format!(
                 "{updates} {update_word} found · {} unchecked",
                 unchecked.join(", ")
+            ),
+            theme.accent,
+        ))
+    } else if !cached.is_empty() {
+        // Same sentence as `status` (#17).
+        Line::from(Span::styled(
+            format!(
+                "{updates}+ {update_word} found · {} from a cached index",
+                cached.join(", ")
             ),
             theme.accent,
         ))
@@ -1059,10 +1078,12 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
             let updates = if failed {
                 Span::styled("—", theme.dim)
             } else {
+                // A cached index makes the count a floor (#17).
+                let plus = if r.floor { "+" } else { "" };
                 match (r.updates, r.stale) {
                     (Some(n), true) => approx(n, theme),
-                    (Some(n), false) if n > 0 => Span::styled(n.to_string(), theme.accent),
-                    (Some(n), false) => Span::styled(n.to_string(), theme.dim),
+                    (Some(n), false) if n > 0 => Span::styled(format!("{n}{plus}"), theme.accent),
+                    (Some(n), false) => Span::styled(format!("{n}{plus}"), theme.dim),
                     (None, _) => waiting(theme),
                 }
             };
@@ -3117,6 +3138,55 @@ mod tests {
         app.focus_sources();
         app.on_next();
         assert_eq!(app.selected(), Some(1));
+    }
+
+    fn cached_brew_scan(ups: Vec<PendingUpdate>) -> ScanResult {
+        let mut s = scan_with(ups);
+        s.sources.push(Source {
+            id: SourceId::brew(),
+            kind: SourceKind::Brew,
+            available: true,
+            last_scanned: Some(s.scanned_at),
+            accurate_updates: false,
+            scan_error: None,
+        });
+        s
+    }
+
+    /// A cached brew index is a floor on the dashboard too (#17): never
+    /// "up to date", and the pacman-contrib hint stays pacman's.
+    #[test]
+    fn a_cached_brew_index_reads_as_a_floor() {
+        let app = App::new(
+            cached_brew_scan(Vec::new()),
+            Theme::none(),
+            AppOptions::test(),
+        );
+        let text = render(&app, 120, 30);
+        assert!(
+            text.contains("0+ updates found · brew from a cached index"),
+            "{text}"
+        );
+        assert!(!text.contains("up to date"), "{text}");
+        assert!(!text.contains("pacman-contrib"), "{text}");
+        let brew = app
+            .rows()
+            .into_iter()
+            .find(|r| r.id == "brew")
+            .expect("brew row");
+        assert!(brew.floor);
+    }
+
+    #[test]
+    fn a_cached_brew_with_nothing_pending_does_not_say_up_to_date() {
+        // pacman has one, so the pane shows brew's own line, not the total.
+        let ups = vec![upd("linux", "1", "2", SourceId::pacman())];
+        let mut app = App::new(cached_brew_scan(ups), Theme::none(), AppOptions::test());
+        while app.dash_source().is_some_and(|s| s.id != SourceId::brew()) {
+            app.on_next();
+        }
+        let text = render(&app, 120, 30);
+        assert!(text.contains("none in brew's cached index"), "{text}");
     }
 
     #[test]
