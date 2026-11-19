@@ -133,6 +133,12 @@ fn render(
     // matching row" can be backed. Only sessions months old, at the tail's
     // edge, are lost; a whole log keeps every one.
     let oldest = transactions.last().map(|tx| tx.started).filter(|_| cut);
+    // A cut tail with no transaction left in it can back no claim at all.
+    let sessions = if cut && transactions.is_empty() {
+        &[]
+    } else {
+        sessions
+    };
     let mut attached: Vec<Vec<String>> = vec![Vec::new(); runs.len()];
     let mut alone: Vec<&Session> = Vec::new();
     for session in sessions
@@ -469,6 +475,19 @@ mod tests {
             whole.contains("aur exited 1 — cause/package Unknown [inferred]"),
             "{whole}"
         );
+    }
+
+    #[test]
+    fn a_cut_tail_with_no_transactions_shows_no_sessions() {
+        let update = "\
+[2026-07-02T13:00:00Z INFO] update session started
+[2026-07-02T13:04:00Z INFO] aur: failed, exit 1
+[2026-07-02T13:04:00Z INFO] update session complete: 1 of 1 sources failed
+";
+        let cut = render(&[], &sessions_of(update), true, None, 10, &ascii());
+        assert!(!cut.contains("paclens session"), "{cut}");
+        let whole = render(&[], &sessions_of(update), false, None, 10, &ascii());
+        assert!(whole.contains("paclens session: aur exited 1"), "{whole}");
     }
 
     #[test]
