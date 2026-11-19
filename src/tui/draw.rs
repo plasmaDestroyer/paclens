@@ -3214,8 +3214,14 @@ mod tests {
             app.on_next();
         }
         let text = render(&app, 80, 24);
+        // Directly under `plan`, before anything the pane might clip.
+        let lines: Vec<&str> = text.lines().collect();
+        let plan = lines
+            .iter()
+            .position(|l| l.contains("plan "))
+            .expect("plan line");
         assert!(
-            text.contains("brew: cached index; run brew update"),
+            lines[plan + 1].contains("brew: cached index; run brew update"),
             "{text}"
         );
     }
