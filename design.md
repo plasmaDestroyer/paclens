@@ -2280,8 +2280,15 @@ YYYY-MM-DD | no --noconfirm for pacman
            | history row`. A session with no `complete` line, one that
            | starts while another start is still unmatched (the log has no
            | session id, so a crash leaves the rest of that day's file
-           | Unknown), or one whose window crosses another's (two processes
-           | across UTC midnight write two files), says `outcome Unknown`; a step with no outcome line
+           | Unknown), says `outcome Unknown`. A window that crosses one in
+           | another day file (two processes across UTC midnight write two
+           | files) keeps its own failures `[confirmed]`, since each session
+           | writes only its own file, but says `history row not
+           | determined`. A session with no end may still be running, so its
+           | window has none — unless it started before this boot (btime in
+           | /proc/stat; unreadable means no end), or its interleaved group
+           | later balanced. Boot time is a fact the kernel records; a time
+           | cap would be a guess about how long an update can take; a step with no outcome line
            | says `no exit recorded`. Nothing is ever read as success. When
            | the 4 MiB tail cut pacman.log, a session that started before its
            | oldest transaction is left out. Clean sessions add

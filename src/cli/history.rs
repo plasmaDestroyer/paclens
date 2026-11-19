@@ -44,8 +44,11 @@ pub fn run(package: Option<&str>, limit: usize, styles: &Styles) -> Result<()> {
     let transactions = history::parse(&text);
     // Only a tail that really cut the log can have cut a session's row off.
     let cut = std::fs::metadata(PACMAN_LOG).is_ok_and(|m| m.len() > TAIL_BYTES);
+    let boot = std::fs::read_to_string("/proc/stat")
+        .ok()
+        .and_then(|t| boot_time(&t));
     let sessions = crate::executor::UpdateLog::default_dir()
-        .map(|dir| read_sessions(&dir))
+        .map(|dir| read_sessions(&dir, boot))
         .unwrap_or_default();
     print!(
         "{}",
@@ -59,7 +62,7 @@ pub fn run(package: Option<&str>, limit: usize, styles: &Styles) -> Result<()> {
 /// paclens's own update logs (design §11), every day's file oldest first,
 /// parsed into sessions with their times in local time. A missing or
 /// unreadable directory is no sessions: history still shows what alpm did.
-fn read_sessions(dir: &Path) -> Vec<Session> {
+fn read_sessions(dir: &Path, boot: Option<chrono::DateTime<chrono::FixedOffset>>) -> Vec<Session> {
     let mut names: Vec<_> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -79,8 +82,15 @@ fn read_sessions(dir: &Path) -> Vec<Session> {
             s
         })
         .collect();
-    sessions::mark_crossing(&mut all);
+    sessions::mark_crossing(&mut all, boot);
     all
+}
+
+/// When this boot began: `btime` (epoch seconds) from `/proc/stat` text.
+fn boot_time(stat: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let secs = stat.lines().find_map(|l| l.strip_prefix("btime "))?;
+    let at = chrono::DateTime::from_timestamp(secs.trim().parse().ok()?, 0)?;
+    Some(at.fixed_offset())
 }
 
 /// The line a session gets on its own, claiming no history row.
@@ -108,10 +118,11 @@ fn session_line(session: &Session) -> String {
         ));
         return format!("paclens session: {}", parts.join("; "));
     }
-    format!(
-        "paclens session: {}; no matching pacman history row",
-        parts.join("; ")
-    )
+    let row = match session.row_blocked {
+        true => "history row not determined",
+        false => "no matching pacman history row",
+    };
+    format!("paclens session: {}; {row}", parts.join("; "))
 }
 
 /// The whole report. Pure, like the other CLI renderers, so the no-color
@@ -163,7 +174,7 @@ fn render(
     {
         match sessions::place(session, &runs) {
             Placement::Run(i) => attached[i].extend(session.failures()),
-            Placement::Alone => alone.push(session),
+            Placement::Alone | Placement::Undetermined => alone.push(session),
         }
     }
     // Newest first, like the runs; a lone session prints before the first run
@@ -558,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn read_sessions_distrusts_windows_crossing_day_files() {
+    fn read_sessions_blocks_rows_for_windows_crossing_day_files() {
         let dir = std::env::temp_dir().join(format!("paclens-cross-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -572,9 +583,16 @@ mod tests {
             "[2026-11-04T00:01:00Z INFO] update session started\n[2026-11-04T00:05:00Z INFO] aur: failed, exit 1\n[2026-11-04T00:05:00Z INFO] update session complete: 1 of 1 sources failed\n",
         )
         .unwrap();
-        let got = read_sessions(&dir);
+        let got = read_sessions(&dir, None);
         assert_eq!(got.len(), 2);
-        assert!(got.iter().all(|x| !x.trusted()), "{got:?}");
+        assert!(got.iter().all(|x| x.row_blocked), "{got:?}");
+        // Through to the screen: the failure stays confirmed, the row is not
+        // claimed or denied.
+        let out = render(&[], &got, false, None, 10, &ascii());
+        assert!(
+            out.contains("aur exited 1 [confirmed]; history row not determined"),
+            "{out}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -612,12 +630,20 @@ mod tests {
         std::fs::write(dir.join("2026-07-02.log"), day("2026-07-02")).unwrap();
         std::fs::write(dir.join("2026-07-01.log"), day("2026-07-01")).unwrap();
         std::fs::write(dir.join("paclens-2026-07-02-100000.log"), day("2026-07-03")).unwrap();
-        let got = read_sessions(&dir);
+        let got = read_sessions(&dir, None);
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].started < got[1].started, "not oldest first");
         assert!(got.iter().all(Session::trusted), "{got:?}");
-        assert!(read_sessions(&dir.join("missing")).is_empty());
+        assert!(read_sessions(&dir.join("missing"), None).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boot_time_reads_btime_and_nothing_else() {
+        let stat = "cpu  1 2 3\nbtime 1794941665\nprocesses 9\n";
+        assert_eq!(boot_time(stat).map(|t| t.timestamp()), Some(1_794_941_665));
+        assert_eq!(boot_time("cpu 1 2 3\n"), None);
+        assert_eq!(boot_time("btime soon\n"), None);
     }
 
     #[test]

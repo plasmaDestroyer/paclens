@@ -55,6 +55,15 @@ pub struct Session {
     /// Another session started while this one was open. The log carries no
     /// session id, so whose step lines are whose cannot be told.
     pub overlapped: bool,
+    /// Its window crosses a session in another day file (see
+    /// [`mark_crossing`]). Its own lines are certain — each session writes
+    /// its own file — but a run inside both windows could be either one's,
+    /// so it claims no row and denies none.
+    pub row_blocked: bool,
+    /// For a session with no end of its own: the `complete` line that
+    /// balanced its interleaved group. Every session started in the group has
+    /// ended by then, this one included — whichever `complete` was its own.
+    pub ended_by: Option<DateTime<FixedOffset>>,
     pub steps: Vec<Step>,
 }
 
@@ -127,6 +136,8 @@ pub fn parse(text: &str) -> Vec<Session> {
     let mut done: Vec<Session> = Vec::new();
     let mut open: Option<Session> = None;
     let mut unmatched = 0usize;
+    // Where in `done` the current interleaved group began.
+    let mut group = 0usize;
     for line in text.lines() {
         let Some((at, msg)) = split(line) else {
             continue;
@@ -136,10 +147,15 @@ pub fn parse(text: &str) -> Vec<Session> {
                 prev.overlapped = true;
                 done.push(prev);
             }
+            if unmatched == 0 {
+                group = done.len();
+            }
             open = Some(Session {
                 started: at,
                 ended: None,
                 overlapped: unmatched > 0,
+                row_blocked: false,
+                ended_by: None,
                 steps: Vec::new(),
             });
             unmatched += 1;
@@ -150,6 +166,11 @@ pub fn parse(text: &str) -> Vec<Session> {
             if let Some(mut session) = open.take() {
                 session.ended = Some(at);
                 done.push(session);
+            }
+            if unmatched == 0 {
+                for s in done.iter_mut().skip(group).filter(|s| s.ended.is_none()) {
+                    s.ended_by = Some(at);
+                }
             }
             continue;
         }
@@ -187,19 +208,32 @@ pub fn parse(text: &str) -> Vec<Session> {
     done
 }
 
-/// Distrust every closed session whose window crosses another's. Two
-/// processes write two files when their sessions straddle UTC midnight, so
-/// [`parse`] cannot see them; but a run inside both windows could be either
-/// one's. Strict: one ending in the second the next begins does not cross.
-pub fn mark_crossing(sessions: &mut [Session]) {
-    let windows: Vec<_> = sessions.iter().map(|s| (s.started, s.ended)).collect();
+/// Block row claims for every closed session whose window crosses
+/// another's. Two processes write two files when their sessions straddle
+/// UTC midnight, so [`parse`] cannot see them; a run inside both windows
+/// could be either one's. Strict: one ending in the second the next begins
+/// does not cross.
+///
+/// A session with no end may still be running, so its window is open-ended
+/// — unless it started before `boot`: nothing from an earlier boot is still
+/// running, so its window ends at boot. Boot time is a fact the kernel
+/// records; any time cap would be a guess. `None` (unreadable) keeps every
+/// open window open-ended, the safe side.
+pub fn mark_crossing(sessions: &mut [Session], boot: Option<DateTime<FixedOffset>>) {
+    let windows: Vec<_> = sessions
+        .iter()
+        .map(|s| {
+            let to = s.ended.or(s.ended_by).or(boot.filter(|b| s.started < *b));
+            (s.started, to)
+        })
+        .collect();
     for (i, s) in sessions.iter_mut().enumerate() {
         let Some(end) = s.ended else { continue };
         let crosses = windows
             .iter()
             .enumerate()
-            .any(|(j, (from, to))| j != i && to.is_some_and(|to| s.started < to && *from < end));
-        s.overlapped |= crosses;
+            .any(|(j, (from, to))| j != i && to.is_none_or(|to| s.started < to) && *from < end);
+        s.row_blocked |= crosses;
     }
 }
 
@@ -209,8 +243,11 @@ pub enum Placement {
     /// Index into the runs: this run lies wholly inside the session's window
     /// and no other run touches it. The link is inferred.
     Run(usize),
-    /// Its own line: nothing claimed about any row.
+    /// Its own line: no run in the window is the session's alone.
     Alone,
+    /// Its own line: another session's window crosses this one, so which
+    /// run is whose cannot be told.
+    Undetermined,
 }
 
 /// Match a trusted session to the one run its whole window holds. Anything
@@ -220,6 +257,9 @@ pub fn place(session: &Session, runs: &[Run<'_>]) -> Placement {
     let Some(ended) = session.ended.filter(|_| session.trusted()) else {
         return Placement::Alone;
     };
+    if session.row_blocked {
+        return Placement::Undetermined;
+    }
     // A run's newest transaction may never have completed; its last event
     // is then the latest thing alpm logged for it.
     let span = |run: &Run<'_>| {
@@ -276,7 +316,7 @@ mod tests {
         let runs = history::runs(&txs);
         let i = match place(&sessions[0], &runs) {
             Placement::Run(i) => i,
-            Placement::Alone => panic!("did not attach"),
+            other => panic!("did not attach: {other:?}"),
         };
         // The run inside the window: pacman -Syu at 00:38 local plus the
         // three AUR installs, not the 01:23 one after it.
@@ -386,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_crossing_midnight_in_two_files_are_both_distrusted() {
+    fn sessions_crossing_midnight_in_two_files_claim_no_row() {
         // A in yesterday's file, B in today's: neither file shows the other.
         let mut s = parse(
             "\
@@ -401,9 +441,71 @@ mod tests {
 [2026-11-04T00:05:00Z INFO] update session complete: 1 of 1 sources failed
 ",
         ));
-        assert!(s.iter().all(Session::trusted), "per file, both look clean");
-        mark_crossing(&mut s);
-        assert!(s.iter().all(|x| !x.trusted()), "{s:?}");
+        mark_crossing(&mut s, None);
+        // Their own lines stay certain; only the row is undetermined.
+        assert!(s.iter().all(Session::trusted), "{s:?}");
+        assert_eq!(place(&s[1], &[]), Placement::Undetermined);
+    }
+
+    /// An open session from yesterday's file and a closed one today.
+    fn open_then_closed() -> Vec<Session> {
+        let mut s = parse("[2026-11-03T23:58:00Z INFO] update session started\n");
+        s.extend(parse(
+            "\
+[2026-11-04T00:01:00Z INFO] update session started
+[2026-11-04T00:05:00Z INFO] aur: failed, exit 1
+[2026-11-04T00:05:00Z INFO] update session complete: 1 of 1 sources failed
+",
+        ));
+        s
+    }
+
+    #[test]
+    fn an_open_session_in_this_boot_blocks_a_later_row() {
+        let mut s = open_then_closed();
+        mark_crossing(&mut s, Some(at("2026-11-03T20:00:00Z")));
+        assert_eq!(place(&s[1], &[]), Placement::Undetermined);
+    }
+
+    #[test]
+    fn an_open_session_before_boot_ends_at_boot() {
+        let mut s = open_then_closed();
+        // Booted between the two: the crashed one cannot still be running.
+        mark_crossing(&mut s, Some(at("2026-11-04T00:00:00Z")));
+        assert_eq!(place(&s[1], &[]), Placement::Alone);
+    }
+
+    #[test]
+    fn an_interleaved_pair_ends_where_its_markers_balance() {
+        // Real shape: two starts, two completes. The first has no end of its
+        // own in the parse, but both have ended by the second complete, so a
+        // session in another file after that is not blocked.
+        let mut s = parse(
+            "\
+[2026-11-03T08:52:26Z INFO] update session started
+[2026-11-03T08:52:26Z INFO] update session started
+[2026-11-03T08:52:30Z INFO] update session complete: all sources succeeded
+[2026-11-03T08:52:31Z INFO] update session complete: all sources succeeded
+",
+        );
+        assert_eq!(s[0].ended, None);
+        assert_eq!(s[0].ended_by, Some(at("2026-11-03T08:52:31Z")));
+        s.extend(parse(
+            "\
+[2026-11-04T10:00:00Z INFO] update session started
+[2026-11-04T10:05:00Z INFO] aur: failed, exit 1
+[2026-11-04T10:05:00Z INFO] update session complete: 1 of 1 sources failed
+",
+        ));
+        mark_crossing(&mut s, None);
+        assert_eq!(place(&s[2], &[]), Placement::Alone);
+    }
+
+    #[test]
+    fn an_unreadable_boot_time_keeps_open_windows_open() {
+        let mut s = open_then_closed();
+        mark_crossing(&mut s, None);
+        assert_eq!(place(&s[1], &[]), Placement::Undetermined);
     }
 
     #[test]
@@ -416,8 +518,8 @@ mod tests {
 [2026-11-03T09:00:09Z INFO] update session complete: all sources succeeded
 ",
         );
-        mark_crossing(&mut s);
-        assert!(s.iter().all(Session::trusted), "{s:?}");
+        mark_crossing(&mut s, None);
+        assert!(s.iter().all(|x| x.trusted() && !x.row_blocked), "{s:?}");
     }
 
     #[test]
@@ -473,6 +575,8 @@ mod tests {
             started: at(from),
             ended: Some(at(to)),
             overlapped: false,
+            row_blocked: false,
+            ended_by: None,
             steps: vec![Step {
                 label: "aur".into(),
                 outcome: Outcome::Exit(1),
