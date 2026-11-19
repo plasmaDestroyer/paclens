@@ -2246,10 +2246,13 @@ YYYY-MM-DD | no --noconfirm for pacman
            | The SIMPLE row now names its `refresh` command (`brew update`,
            | `fwupdmgr refresh`); with one, accurate_updates is false. Such a
            | count is real but a floor - a stale index can only miss newer
-           | versions - so it shows `N+`, the summary reads `N+ updates found
-           | · brew from a cached index`, `status --check` exits 2, the note
-           | names the refresh command, and the package list says "no update
-           | found", not "up to date". Index age (the API cache's mtime) was
+           | versions - so it shows `N+` (the `+` in its own column), the
+           | summary reads `N+ updates found · brew from a cached index` (or
+           | `no updates found · …`), `status --check` prints `N+` and exits
+           | 1 if it found any and 2 if not, the note names the refresh
+           | command, and the package list says "no update found", not "up
+           | to date". A cache written before this is corrected on read, as
+           | `--check` never rescans. Index age (the API cache's mtime) was
            | not used to call a scan fresh: any cut-off would be a number
            | nobody can back up, and new versions land at any time. pacman's
            | -Qu fallback gets the same `N+` by the same predicate; its
