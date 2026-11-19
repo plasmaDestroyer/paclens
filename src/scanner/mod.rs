@@ -2150,6 +2150,55 @@ mod tests {
 
     /// brew's scan runs with `HOMEBREW_NO_AUTO_UPDATE=1`, so its count is
     /// read against whatever index was last fetched: real, but a floor (#17).
+    /// The fixtures are a real Linuxbrew prefix whose cached index found
+    /// nothing outdated — the "0 updates" nobody checked.
+    #[test]
+    fn brew_zero_from_a_cached_index_is_a_floor_not_up_to_date() {
+        let brew_bit = SIMPLE
+            .iter()
+            .position(|r| r.id == "brew")
+            .expect("brew row");
+        let runner = full_runner()
+            .with(
+                "env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew list --versions",
+                include_str!("../../tests/fixtures/brew/list-versions.txt"),
+                0,
+            )
+            .with(
+                "env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew outdated --verbose",
+                include_str!("../../tests/fixtures/brew/outdated-verbose-empty.txt"),
+                0,
+            );
+        let scan = assemble(
+            &runner,
+            &Config::default(),
+            Availability {
+                pacman: true,
+                flatpak: true,
+                checkupdates: true,
+                cargo: false,
+                simple: 1 << brew_bit,
+            },
+            HC::None,
+            None,
+            &|_| {},
+        );
+        let brew = scan
+            .sources
+            .iter()
+            .find(|s| s.id == SourceId::brew())
+            .expect("brew source");
+        assert!(brew.counts_floor());
+        assert_eq!(
+            scan.packages
+                .iter()
+                .filter(|p| p.source_id == SourceId::brew())
+                .count(),
+            10
+        );
+        assert!(!scan.updates.iter().any(|u| u.source_id == SourceId::brew()));
+    }
+
     #[test]
     fn brew_counts_are_marked_as_read_from_a_cached_index() {
         let brew_bit = SIMPLE

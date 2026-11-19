@@ -1,0 +1,10 @@
+binutils 2.47
+gcc 16.2.0
+gmp 6.3.0
+isl 0.28
+libmpc 1.4.1
+lz4 1.11.1
+mpfr 4.2.2
+xz 5.8.4
+zlib-ng-compat 2.3.3_1
+zstd 1.5.7_1
