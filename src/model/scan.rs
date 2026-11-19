@@ -146,15 +146,14 @@ impl ScanResult {
         if id == &super::SourceId::cargo() && self.cargo_cannot_update() {
             return Some("cargo: install cargo-update for update detection".to_string());
         }
-        let cached = self
-            .cached_index(id)
-            .map(|cmd| format!("counts from a cached index - `{cmd}` refreshes it"));
-        match (Self::report_only(id), cached) {
-            (true, Some(c)) => Some(format!(
-                "{id}: report-only - paclens does not update it; {c}"
+        match (Self::report_only(id), self.cached_index(id)) {
+            (true, Some(cmd)) => Some(format!(
+                "{id}: report-only, cached index - `{cmd}` refreshes it"
             )),
             (true, None) => Some(format!("{id}: report-only - paclens does not update it")),
-            (false, Some(c)) => Some(format!("{id}: {c}")),
+            (false, Some(cmd)) => Some(format!(
+                "{id}: counts from a cached index - `{cmd}` refreshes it"
+            )),
             (false, None) => None,
         }
     }
@@ -181,7 +180,7 @@ impl ScanResult {
             return Some(format!("{id}: report-only, not in the plan"));
         }
         self.cached_index(id)
-            .map(|cmd| format!("{id}: cached index - {cmd}"))
+            .map(|cmd| format!("{id}: cached index; run {cmd}"))
     }
 
     /// The command that refreshes `id`'s index, when this scan's count for
@@ -307,7 +306,7 @@ mod tests {
             Some("brew: counts from a cached index - `brew update` refreshes it")
         );
         let compact = scan.source_note_compact(&id).expect("compact");
-        assert_eq!(compact, "brew: cached index - brew update");
+        assert_eq!(compact, "brew: cached index; run brew update");
         assert!(compact.chars().count() <= 44);
     }
 
@@ -321,9 +320,7 @@ mod tests {
         let id = super::super::SourceId("fwupd".to_string());
         assert_eq!(
             scan.source_note(&id).as_deref(),
-            Some(
-                "fwupd: report-only - paclens does not update it; counts from a cached index - `fwupdmgr refresh` refreshes it"
-            )
+            Some("fwupd: report-only, cached index - `fwupdmgr refresh` refreshes it")
         );
         assert_eq!(
             scan.source_note_compact(&id).as_deref(),

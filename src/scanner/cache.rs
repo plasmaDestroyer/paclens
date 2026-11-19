@@ -62,7 +62,18 @@ impl Cache {
         let text = fs::read_to_string(&self.path)
             .with_context(|| format!("failed to read cache: {}", self.path.display()))?;
         match toml::from_str::<ScanResult>(&text) {
-            Ok(scan) => Ok(Some(scan)),
+            Ok(mut scan) => {
+                // A cache written before #17 says brew's and fwupd's counts
+                // were accurate; `status --check` reads it without a rescan.
+                for s in &mut scan.sources {
+                    if crate::providers::simple::for_kind(&s.kind)
+                        .is_some_and(|r| r.refresh.is_some())
+                    {
+                        s.accurate_updates = false;
+                    }
+                }
+                Ok(Some(scan))
+            }
             Err(err) => {
                 tracing::warn!(error = %err, "scan cache is corrupt; ignoring it");
                 Ok(None)
@@ -359,5 +370,25 @@ mod tests {
         fs::write(&cache.path, "this is { not valid toml").expect("seed corrupt");
         assert!(cache.read().expect("read returns Ok").is_none());
         let _ = fs::remove_dir_all(cache.path.parent().unwrap());
+    }
+
+    /// A cache written before #17 claims brew's count was accurate; reading
+    /// it must not carry that claim forward.
+    #[test]
+    fn an_old_cache_cannot_call_brew_accurate() {
+        let cache = scratch_cache("old-brew");
+        let mut scan = ScanResult::empty();
+        scan.sources.push(crate::model::Source {
+            id: crate::model::SourceId::brew(),
+            kind: crate::model::SourceKind::Brew,
+            available: true,
+            last_scanned: Some(chrono::Utc::now()),
+            accurate_updates: true,
+            scan_error: None,
+        });
+        cache.write(&scan).expect("write");
+        let back = cache.read().expect("read").expect("some");
+        assert!(!back.sources[0].accurate_updates);
+        assert!(back.sources[0].counts_floor());
     }
 }

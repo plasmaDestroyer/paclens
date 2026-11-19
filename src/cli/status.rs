@@ -62,10 +62,16 @@ fn check_line(scan: Option<&ScanResult>) -> (String, u8) {
     };
     let total = scan.updates.len();
     // A count with an unchecked source in it is a floor, not an answer.
-    if scan.sources.iter().any(|s| {
-        s.scan_error.is_some() || (s.available && s.last_scanned.is_none()) || s.counts_floor()
-    }) {
+    if scan
+        .sources
+        .iter()
+        .any(|s| s.scan_error.is_some() || (s.available && s.last_scanned.is_none()))
+    {
         return (format!("{total}+"), 2);
+    }
+    // A cached index is a floor too, but what it found is pending (#17).
+    if scan.sources.iter().any(|s| s.counts_floor()) {
+        return (format!("{total}+"), if total > 0 { 1 } else { 2 });
     }
     (total.to_string(), u8::from(total > 0))
 }
@@ -117,8 +123,13 @@ fn render_status_since(
         ))
     } else if !cached.is_empty() {
         // Not "up to date": nobody refreshed that index (#17).
+        let found = if total == 0 {
+            "no updates found".to_string()
+        } else {
+            format!("{total}+ {update_word} found")
+        };
         s.summary_updates(&format!(
-            "{total}+ {update_word} found · {} from a cached index",
+            "{found} · {} from a cached index",
             cached.join(", ")
         ))
     } else if total == 0 {
@@ -259,13 +270,11 @@ fn render_row_because(
     // show — "0" there would read as "none pending" (design §3).
     // A count read against a cached index is a floor, and says so (#17).
     let updates = if summary.available && !failed {
-        let plus = if floor { "+" } else { "" };
-        s.updates_count(
-            &format!("{:>7}", format!("{}{plus}", summary.updates)),
-            summary.updates,
-        )
+        // Digits keep their column; the marker gets its own (#17).
+        let plus = if floor { "+" } else { " " };
+        s.updates_count(&format!("{:>6}{plus}", summary.updates), summary.updates)
     } else {
-        s.dim(&format!("{:>7}", "—"))
+        s.dim(&format!("{:>6} ", "—"))
     };
     let status = if failed {
         s.warned("scan failed")
@@ -878,6 +887,10 @@ mod tests {
     /// say the count is a floor, never "up to date".
     fn with_cached_brew(updates: Vec<PendingUpdate>) -> ScanResult {
         let mut scan = scan_with(vec![pkg("gcc", SourceId::brew())], updates, true);
+        // Every other source settled, so only the floor is in question.
+        for s in &mut scan.sources {
+            s.last_scanned = Some(scan.scanned_at);
+        }
         scan.sources.push(Source {
             id: SourceId::brew(),
             kind: SourceKind::Brew,
@@ -893,7 +906,7 @@ mod tests {
     fn a_cached_index_is_never_up_to_date() {
         let text = render_status(&with_cached_brew(Vec::new()), &plain_styles());
         assert!(
-            text.starts_with("0+ updates found · brew from a cached index"),
+            text.starts_with("no updates found · brew from a cached index"),
             "{text}"
         );
         let row = text
@@ -926,6 +939,36 @@ mod tests {
             check_line(Some(&with_cached_brew(Vec::new()))),
             ("0+".to_string(), 2)
         );
+    }
+
+    #[test]
+    fn check_line_a_floor_with_pending_updates_exits_1() {
+        let ups = vec![PendingUpdate {
+            package_name: "gcc".to_string(),
+            current_version: "15.2.0_1".to_string(),
+            available_version: "16.2.0".to_string(),
+            source_id: SourceId::brew(),
+        }];
+        assert_eq!(
+            check_line(Some(&with_cached_brew(ups))),
+            ("1+".to_string(), 1)
+        );
+    }
+
+    #[test]
+    fn the_floor_marker_keeps_the_digits_aligned() {
+        let text = render_status(&with_cached_brew(Vec::new()), &plain_styles());
+        let col = |name: &str| {
+            let row = text
+                .lines()
+                .find(|l| l.trim_start().starts_with(name))
+                .expect("row");
+            let digit = row.rfind(|c: char| c.is_ascii_digit()).expect("digit");
+            (digit, row.to_string())
+        };
+        let (pacman, a) = col("pacman ");
+        let (brew, b) = col("brew ");
+        assert_eq!(pacman, brew, "\n{a}\n{b}");
     }
 
     #[test]
