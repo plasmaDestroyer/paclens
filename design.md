@@ -1584,9 +1584,10 @@ YYYY-MM-DD | no --noconfirm for pacman
            | should not pretend otherwise. A build that fails never
            | reaches alpm, so `/var/log/pacman.log` has no line for it —
            | not a failure line, not an attempt. Knowing what was tried
-           | needs the helper's output, which paclens already captures
-           | for runs started inside it; cross-referencing that with the
-           | log is its own feature, not a patch to this one.
+           | needs the helper's output, which paclens does not keep
+           | (corrected 2026-11-20: this line said it already captured it;
+           | it never did — see #79 below); cross-referencing is its own
+           | feature, not a patch to this one.
 
 2026-09-07 | what a source is, and what a screen may ask it (#10)
            | The prerequisite for every non-alpm source. The question
@@ -2258,6 +2259,33 @@ YYYY-MM-DD | no --noconfirm for pacman
            | -Qu fallback gets the same `N+` by the same predicate; its
            | pacman-contrib hint stays pacman's. rustup, uv, go and npm ask
            | upstream on every scan and keep accurate counts.
+2026-11-20 | history shows a session's failed steps, never a failed package (#79)
+           | #79 asked for "3 upgraded, 1 build failed" by parsing the AUR
+           | helper's output. paclens never kept it: the CLI runs the
+           | helper on the user's terminal and the TUI console holds the
+           | screen in memory only; 2026-07-08 (commands and exit codes) was
+           | never amended for it. Keeping it was weighed and rejected:
+           | recording the CLI step means a new pty (a second sudo prompt,
+           | PKGBUILD review through a recorder), build logs on disk, and a
+           | parser for decorated, version-unstable text where a wrong name
+           | is worse than none. 2026-07-08 stands.
+           | Instead `paclens history` reads the update log it already
+           | writes. A session whose step exited non-zero (any source, not
+           | only the AUR) and whose `started`…`complete` window holds one
+           | run and nothing else gets `aur exited 1 — cause/package Unknown
+           | [inferred]` under that row: the code is fact, the link is a
+           | time window. No unique run — an AUR-only failure, which alpm
+           | never logged, or a split or grouped run — gives its own line,
+           | `paclens session: aur exited 1 [confirmed]; no matching pacman
+           | history row`. A session with no `complete` line, or one whose
+           | window crosses another's (the log has no session id), says
+           | `outcome Unknown`; a step with no outcome line says `no exit
+           | recorded`. Nothing is ever read as success. Clean sessions add
+           | nothing, so no line never means "nothing failed". paru exits 1
+           | even when some packages installed (seen 2026-11-18), so the
+           | row can hold upgrades and a failure at once. The TUI history
+           | screen does not show these yet.
+
 ```
 
 ---
