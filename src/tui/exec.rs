@@ -516,7 +516,9 @@ mod tests {
         let log = std::fs::read_to_string(&report.log_path).unwrap();
         assert!(log.contains("flatpak: failed, exit 3"), "{log}");
         assert!(
-            log.contains("ignored by update.ignore_failures, not counted against the run: flatpak"),
+            log.contains(
+                "ignored by update.ignore_failures, not counted against the run — flatpak"
+            ),
             "{log}"
         );
         let _ = std::fs::remove_dir_all(&dir);

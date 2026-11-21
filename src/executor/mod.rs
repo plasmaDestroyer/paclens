@@ -453,7 +453,8 @@ pub fn execute_concurrent(
 
 /// The log line that marks the failures the user chose to ignore (#23), or
 /// `None` when there are none. Written after the session's own summary, which
-/// stays the raw count.
+/// stays the raw count. No `: ` in it, so the history parser never reads it
+/// as a step of a session open at the time.
 pub fn ignored_line(
     report: &ExecutionReport,
     ignores: impl Fn(&SourceId) -> bool,
@@ -466,7 +467,7 @@ pub fn ignored_line(
         .collect();
     (!names.is_empty()).then(|| {
         format!(
-            "ignored by update.ignore_failures, not counted against the run: {}",
+            "ignored by update.ignore_failures, not counted against the run — {}",
             names.join(", ")
         )
     })
@@ -1120,7 +1121,7 @@ mod tests {
         assert_eq!(ignored_line(&report, |_| false), None);
         assert_eq!(
             ignored_line(&report, |id| *id != SourceId::aur()).as_deref(),
-            Some("ignored by update.ignore_failures, not counted against the run: flatpak")
+            Some("ignored by update.ignore_failures, not counted against the run — flatpak")
         );
     }
 }

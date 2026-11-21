@@ -328,6 +328,31 @@ mod tests {
     }
 
     #[test]
+    fn an_ignored_failures_line_is_never_a_step() {
+        // Another run's #23 line, landing inside this open session.
+        let text = format!(
+            "[2026-11-03T08:49:08Z INFO] update session started\n[2026-11-03T08:49:09Z INFO] {}\n",
+            crate::executor::ignored_line(
+                &crate::executor::ExecutionReport {
+                    steps: vec![crate::executor::StepReport {
+                        source_id: crate::model::SourceId::uv(),
+                        label: "uv".to_string(),
+                        targets: 0,
+                        status: crate::executor::StepStatus::Failed {
+                            detail: "exit 1".to_string(),
+                        },
+                    }],
+                    log_path: std::path::PathBuf::new(),
+                },
+                |_| true,
+            )
+            .unwrap_or_default()
+        );
+        let s = parse(&text);
+        assert!(s[0].steps.is_empty(), "{s:?}");
+    }
+
+    #[test]
     fn a_clean_session_is_not_notable() {
         let log = "\
 [2026-11-03T08:49:08Z INFO] update session started
