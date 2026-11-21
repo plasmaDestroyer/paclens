@@ -34,9 +34,6 @@ pub struct AppOptions {
     /// `config.cleanup.diff_prog` — the program the `.pacnew` review command
     /// names. Empty defers to `$DIFFPROG`, then `vimdiff`.
     pub diff_prog: String,
-    /// `config.update.sudo_loop` and its interval (#24). `None` when the loop
-    /// is off, which is the default.
-    pub sudo_loop: Option<std::time::Duration>,
 }
 
 impl AppOptions {
@@ -49,7 +46,6 @@ impl AppOptions {
             min_confidence: config.overlap.min_confidence(),
             orphan_ignore: config.cleanup.orphan_ignore.clone(),
             diff_prog: config.cleanup.diff_prog.clone(),
-            sudo_loop: config.update.loop_interval(),
         }
     }
 
@@ -66,7 +62,6 @@ impl AppOptions {
             // Named rather than resolved, so a test never depends on whatever
             // $DIFFPROG happens to be on the machine running it.
             diff_prog: "vimdiff".to_string(),
-            sudo_loop: None,
         }
     }
 }
@@ -1023,11 +1018,6 @@ impl App {
         )
     }
 
-    /// How often to refresh the sudo timestamp during a run, if at all (#24).
-    pub fn sudo_loop(&self) -> Option<std::time::Duration> {
-        self.opts.sudo_loop
-    }
-
     /// Packages in no configured repository (#77) — pacman manages them,
     /// nothing can update them.
     pub fn unowned_packages(&self) -> Vec<&crate::model::Package> {
@@ -1173,13 +1163,22 @@ impl App {
     /// After the console is dismissed: back to the dashboard, with the run's
     /// outcome kept in the attention pane until the next run — a flash would
     /// be gone at the next key press (#21).
-    pub fn finish_update(&mut self, report: &ExecutionReport) {
+    /// An ignored source's failure is named, marked, and does not turn the
+    /// outcome red (#23).
+    pub fn finish_update(
+        &mut self,
+        report: &ExecutionReport,
+        update: &crate::config::schema::Update,
+    ) {
         self.screen = Screen::Dashboard;
-        let failed: Vec<&str> = report
+        let failed: Vec<String> = report
             .steps
             .iter()
             .filter(|s| matches!(s.status, crate::executor::StepStatus::Failed { .. }))
-            .map(|s| s.label.as_str())
+            .map(|s| match update.ignores(&s.source_id) {
+                true => format!("{} (ignored)", s.label),
+                false => s.label.clone(),
+            })
             .collect();
         let executed = report.executed();
         self.last_run = Some(if executed == 0 {
@@ -1189,7 +1188,7 @@ impl App {
         } else {
             (
                 format!("{} failed · L for the log", failed.join(", ")),
-                true,
+                report.fatal(|id| update.ignores(id)) > 0,
             )
         });
     }
@@ -2008,7 +2007,7 @@ mod tests {
     #[test]
     fn finish_update_lands_on_the_dashboard_and_keeps_the_outcome() {
         let mut app = app();
-        app.finish_update(&sample_report());
+        app.finish_update(&sample_report(), &Default::default());
         assert_eq!(app.screen(), Screen::Dashboard);
         assert_eq!(app.last_run(), Some(("1 ok", false)));
         // Unlike a flash, a key press does not clear it.
@@ -2039,11 +2038,36 @@ mod tests {
             ],
             log_path: std::path::PathBuf::from("/tmp/x.log"),
         };
-        app.finish_update(&report);
+        app.finish_update(&report, &Default::default());
         let (outcome, failed) = app.last_run().expect("outcome kept");
         assert!(failed);
         assert!(outcome.contains("pacman failed"), "{outcome}");
         assert!(outcome.contains("L for the log"), "{outcome}");
+    }
+
+    #[test]
+    fn finish_update_marks_an_ignored_failure_and_stays_calm() {
+        use crate::executor::{StepReport, StepStatus};
+        let mut app = app();
+        let report = ExecutionReport {
+            steps: vec![StepReport {
+                label: "flatpak".to_string(),
+                source_id: SourceId::flatpak(),
+                targets: 0,
+                status: StepStatus::Failed {
+                    detail: "exit 1".to_string(),
+                },
+            }],
+            log_path: std::path::PathBuf::from("/tmp/x.log"),
+        };
+        let update = crate::config::schema::Update {
+            ignore_failures: vec!["flatpak".to_string()],
+            ..Default::default()
+        };
+        app.finish_update(&report, &update);
+        let (outcome, failed) = app.last_run().expect("outcome kept");
+        assert!(!failed, "an ignored failure must not turn the outcome red");
+        assert!(outcome.contains("flatpak (ignored) failed"), "{outcome}");
     }
 
     // --- package list ---

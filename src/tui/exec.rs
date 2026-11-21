@@ -49,14 +49,12 @@ pub fn start(
     tool: Option<String>,
     size: (u16, u16),
     log_dir: Option<std::path::PathBuf>,
-    sudo_loop: Option<std::time::Duration>,
+    update: crate::config::schema::Update,
 ) -> ExecSession {
     let (event_tx, events) = mpsc::channel();
     let (input, input_rx) = mpsc::channel::<Vec<u8>>();
 
-    std::thread::spawn(move || {
-        run_session(plan, tool, size, log_dir, sudo_loop, event_tx, input_rx)
-    });
+    std::thread::spawn(move || run_session(plan, tool, size, log_dir, &update, event_tx, input_rx));
 
     ExecSession { events, input }
 }
@@ -66,7 +64,7 @@ fn run_session(
     tool: Option<String>,
     size: (u16, u16),
     log_dir: Option<std::path::PathBuf>,
-    sudo_loop: Option<std::time::Duration>,
+    update: &crate::config::schema::Update,
     events: mpsc::Sender<ExecEvent>,
     input: mpsc::Receiver<Vec<u8>>,
 ) {
@@ -130,7 +128,7 @@ fn run_session(
     let script = session_script(
         &runnable,
         executor::sudo::worth_priming(&plan, tool),
-        sudo_loop,
+        update.loop_interval(),
         &status_file,
     );
     tracing::info!(script = %script, "executing update session (pty)");
@@ -175,6 +173,9 @@ fn run_session(
             format!("{failed} of {executed} sources failed")
         }
     ));
+    if let Some(line) = executor::ignored_line(&report, |id| update.ignores(id)) {
+        log.line(&line);
+    }
     let _ = events.send(ExecEvent::Done(report));
 }
 
@@ -364,7 +365,10 @@ mod tests {
             Some("sudo".to_string()),
             (24, 80),
             Some(dir.clone()),
-            Some(std::time::Duration::from_secs(240)),
+            crate::config::schema::Update {
+                sudo_loop: true,
+                ..Default::default()
+            },
         );
         let (text, report) = drain(&session, None);
         assert!(
@@ -418,7 +422,7 @@ mod tests {
         let mut second = plan.steps[0].clone();
         second.command = vec!["sh".into(), "-c".into(), "echo SECOND-RAN".into()];
         plan.steps.push(second);
-        let session = start(plan, None, (24, 80), Some(dir.clone()), None);
+        let session = start(plan, None, (24, 80), Some(dir.clone()), Default::default());
         let (text, report) = drain(&session, None);
         assert!(!text.contains("SECOND-RAN"), "the run carried on:\n{text}");
         assert!(
@@ -436,7 +440,7 @@ mod tests {
         let mut second = plan.steps[0].clone();
         second.label = "second".to_string();
         plan.steps.push(second);
-        let session = start(plan, None, (24, 80), Some(dir.clone()), None);
+        let session = start(plan, None, (24, 80), Some(dir.clone()), Default::default());
         let (text, report) = drain(&session, None);
         assert_eq!(report.succeeded(), 2, "{text}");
         // The device name alone: the next step's header can land on the
@@ -465,7 +469,7 @@ mod tests {
             None,
             (24, 80),
             Some(dir.clone()),
-            None,
+            Default::default(),
         );
         let (text, report) = drain(&session, Some(("hello", b"world\r")));
         assert!(text.contains("hello"), "{text:?}");
@@ -485,7 +489,7 @@ mod tests {
             None,
             (24, 80),
             Some(dir.clone()),
-            None,
+            Default::default(),
         );
         let (text, report) = drain(&session, None);
         assert!(text.contains("IS_A_TTY"), "{text:?}");
@@ -494,9 +498,40 @@ mod tests {
     }
 
     #[test]
+    fn an_ignored_failure_is_marked_in_the_log() {
+        let dir = std::env::temp_dir().join(format!("paclens-exec-ignore-{}", std::process::id()));
+        let update = crate::config::schema::Update {
+            ignore_failures: vec!["flatpak".to_string()],
+            ..Default::default()
+        };
+        let session = start(
+            plan_for("exit 3"),
+            None,
+            (24, 80),
+            Some(dir.clone()),
+            update,
+        );
+        let (_, report) = drain(&session, None);
+        assert_eq!(report.failed(), 1, "the failure itself is still reported");
+        let log = std::fs::read_to_string(&report.log_path).unwrap();
+        assert!(log.contains("flatpak: failed, exit 3"), "{log}");
+        assert!(
+            log.contains("ignored by update.ignore_failures, not counted against the run: flatpak"),
+            "{log}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn failing_step_reports_its_exit_code() {
         let dir = std::env::temp_dir().join(format!("paclens-exec-fail-{}", std::process::id()));
-        let session = start(plan_for("exit 3"), None, (24, 80), Some(dir.clone()), None);
+        let session = start(
+            plan_for("exit 3"),
+            None,
+            (24, 80),
+            Some(dir.clone()),
+            Default::default(),
+        );
         let (_, report) = drain(&session, None);
         assert_eq!(report.failed(), 1);
         assert_eq!(

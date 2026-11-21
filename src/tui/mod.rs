@@ -328,7 +328,7 @@ fn run_loop(
                         tool.map(String::from),
                         (rows, cols),
                         None,
-                        app.sudo_loop(),
+                        config.update.clone(),
                     ));
                 }
             }
@@ -362,7 +362,13 @@ fn run_loop(
                                 .unwrap_or((24, 80));
                             app.start_exec(rows, cols, app::ExecKind::Migrate);
                             // Copy steps never escalate — no tool.
-                            exec_session = Some(exec::start(plan, None, (rows, cols), None, None));
+                            exec_session = Some(exec::start(
+                                plan,
+                                None,
+                                (rows, cols),
+                                None,
+                                Default::default(),
+                            ));
                         }
                     }
                 }
@@ -385,7 +391,7 @@ fn run_loop(
                             tool.map(String::from),
                             (rows, cols),
                             None,
-                            app.sudo_loop(),
+                            config.update.clone(),
                         ));
                     }
                 }
@@ -426,7 +432,7 @@ fn finish_exec(app: &mut App, job: &mut Option<ScanJob>, config: &Config) {
         *job = Some(spawn_scan(config.clone()));
     }
     match app.exec_kind() {
-        app::ExecKind::Update => app.finish_update(&report),
+        app::ExecKind::Update => app.finish_update(&report, &config.update),
         app::ExecKind::Migrate => app.finish_migration(&report),
         app::ExecKind::Removal => app.finish_removal(&report),
     }

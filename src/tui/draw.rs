@@ -3385,7 +3385,7 @@ mod tests {
             Theme::none(),
             AppOptions::test(),
         );
-        app.finish_update(&report());
+        app.finish_update(&report(), &Default::default());
         let text = render(&app, 96, 24);
         assert!(text.contains("paclens"), "{text}");
         assert!(
