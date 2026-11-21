@@ -120,9 +120,13 @@ fn execute_flow(
     println!();
     print!("{}", render_report(&report, &config.update, styles));
 
-    // An ignored source's failure is in the report above, never in the exit
-    // code (#23).
-    let fatal = report.fatal(|id| config.update.ignores(id));
+    outcome(&report, &config.update)
+}
+
+/// The run's exit: an ignored source's failure is in the report, never in the
+/// exit code (#23).
+fn outcome(report: &ExecutionReport, update: &crate::config::schema::Update) -> anyhow::Result<()> {
+    let fatal = report.fatal(|id| update.ignores(id));
     if fatal > 0 {
         anyhow::bail!(
             "{fatal} of {} sources failed — see the log above",
@@ -595,6 +599,26 @@ mod tests {
             "log path missing:\n{text}"
         );
         assert!(!text.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn only_a_fatal_failure_fails_the_run() {
+        let failed = || StepStatus::Failed {
+            detail: "exit 1".to_string(),
+        };
+        let update = crate::config::schema::Update {
+            ignore_failures: vec!["flatpak".to_string()],
+            ..Default::default()
+        };
+        let ignored_only = report(vec![step(SourceId::flatpak(), 0, failed())]);
+        assert!(outcome(&ignored_only, &update).is_ok());
+        assert!(outcome(&ignored_only, &Default::default()).is_err());
+        let mixed = report(vec![
+            step(SourceId::flatpak(), 0, failed()),
+            step(SourceId::aur(), 0, failed()),
+        ]);
+        let err = outcome(&mixed, &update).expect_err("aur is not ignored");
+        assert_eq!(err.to_string(), "1 of 2 sources failed — see the log above");
     }
 
     #[test]
