@@ -2296,6 +2296,20 @@ YYYY-MM-DD | no --noconfirm for pacman
            | even when some packages installed (seen 2026-11-18), so the
            | row can hold upgrades and a failure at once. The TUI history
            | screen does not show these yet.
+2026-11-21 | `update.ignore_failures`: a source's failure, shown but not fatal (#23)
+           | Steps never stopped on a failure — every step of a plan runs
+           | whatever the one before did — so this changes only the
+           | outcome: the exit code of `paclens update`, the report
+           | headline and the dashboard's last-run line. The failed step
+           | still shows as failed, with `· ignored` (CLI) or `(ignored)`
+           | (dashboard), and the log gets one line naming it after the
+           | session's raw summary, which stays the plain count. Default
+           | empty. Never pacman, by the harm test: a failed `-Syu` can
+           | leave the sync db newer than the installed packages, and a run
+           | that exits 0 over that hides the state §3 exists to prevent.
+           | Listing it warns and does nothing. Unknown ids and the
+           | report-only sources (npm, fwupd) warn too — an entry that
+           | changes nothing is a knob nobody consumed.
 
 ```
 
