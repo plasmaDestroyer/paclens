@@ -114,6 +114,15 @@ impl Update {
         source.0 != "pacman" && self.ignore_failures.contains(&source.0)
     }
 
+    /// The settings a removal session runs with: the sudo loop, never the
+    /// ignore list — a failed removal is a failed removal (#23).
+    pub fn for_removal(&self) -> Self {
+        Self {
+            ignore_failures: Vec::new(),
+            ..self.clone()
+        }
+    }
+
     /// How often to refresh the sudo timestamp during a run, or `None` when
     /// the loop is off (the default). Never faster than every 30s.
     pub fn loop_interval(&self) -> Option<std::time::Duration> {

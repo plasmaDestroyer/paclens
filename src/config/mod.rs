@@ -225,6 +225,20 @@ mod tests {
     }
 
     #[test]
+    fn a_removal_ignores_nothing_but_keeps_the_sudo_loop() {
+        use crate::model::SourceId;
+        let loaded =
+            parse_config("[update]\nsudo_loop = true\nignore_failures = [\"flatpak\"]\n").unwrap();
+        let removal = loaded.config.update.for_removal();
+        assert!(!removal.ignores(&SourceId::flatpak()));
+        assert_eq!(
+            removal.loop_interval(),
+            loaded.config.update.loop_interval()
+        );
+        assert!(removal.loop_interval().is_some());
+    }
+
+    #[test]
     fn ignore_failures_warns_on_pacman_and_unknown_ids() {
         let loaded = parse_config(
             "[update]\nignore_failures = [\"pacman\", \"flatpak-system\", \"npm\", \"aur\"]\n",

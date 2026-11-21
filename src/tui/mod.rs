@@ -393,10 +393,7 @@ fn run_loop(
                             None,
                             // The sudo loop, never the update's ignore list:
                             // a failed removal is a failed removal (#23).
-                            crate::config::schema::Update {
-                                ignore_failures: Vec::new(),
-                                ..config.update.clone()
-                            },
+                            config.update.for_removal(),
                         ));
                     }
                 }
