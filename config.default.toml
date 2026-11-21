@@ -192,3 +192,10 @@ layout = "lands"
 
 # Motif on top of the layout: subtle | arcade (chosen by trial, #81).
 motif = "subtle"
+
+# Sources whose failure should not fail the run (#23): the failed step still
+# shows, marked ignored, in the report, the dashboard and the log, but
+# `paclens update` exits 0 if nothing else failed. Ids: aur, flatpak, cargo,
+# rustup, brew, uv, gobin. Never pacman — a failed system upgrade always
+# fails the run.
+ignore_failures = []

@@ -209,6 +209,35 @@ mod tests {
     }
 
     #[test]
+    fn ignore_failures_parses_and_never_covers_pacman() {
+        use crate::model::SourceId;
+        let loaded =
+            parse_config("[update]\nignore_failures = [\"flatpak\", \"pacman\"]\n").unwrap();
+        let update = &loaded.config.update;
+        assert!(update.ignores(&SourceId::flatpak()));
+        assert!(!update.ignores(&SourceId::aur()));
+        assert!(!update.ignores(&SourceId::pacman()));
+        assert!(
+            !crate::config::Config::default()
+                .update
+                .ignores(&SourceId::flatpak())
+        );
+    }
+
+    #[test]
+    fn ignore_failures_warns_on_pacman_and_unknown_ids() {
+        let loaded = parse_config(
+            "[update]\nignore_failures = [\"pacman\", \"flatpak-system\", \"npm\", \"aur\"]\n",
+        )
+        .unwrap();
+        let warnings = loaded.config.validation_warnings();
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].contains("\"pacman\" is never ignored"));
+        assert!(warnings[1].contains("\"flatpak-system\""));
+        assert!(warnings[2].contains("\"npm\""));
+    }
+
+    #[test]
     fn invalid_motif_produces_validation_warning() {
         let loaded = parse_config("[update]\nmotif = \"neon\"\n").unwrap();
         assert_eq!(loaded.config.update.motif(), Motif::Subtle);

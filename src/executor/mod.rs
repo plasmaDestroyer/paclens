@@ -119,6 +119,15 @@ impl ExecutionReport {
         self.count(|s| matches!(s, StepStatus::Skipped { .. }))
     }
 
+    /// Failed steps that fail the run: every failure except those of a source
+    /// the user chose to ignore (#23). Ignored failures stay in `steps`.
+    pub fn fatal(&self, ignores: impl Fn(&SourceId) -> bool) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| matches!(s.status, StepStatus::Failed { .. }) && !ignores(&s.source_id))
+            .count()
+    }
+
     fn count(&self, pred: impl Fn(&StepStatus) -> bool) -> usize {
         self.steps.iter().filter(|s| pred(&s.status)).count()
     }
@@ -440,6 +449,27 @@ pub fn execute_concurrent(
     }
 
     close_session(plan, outcomes, log)
+}
+
+/// The log line that marks the failures the user chose to ignore (#23), or
+/// `None` when there are none. Written after the session's own summary, which
+/// stays the raw count.
+pub fn ignored_line(
+    report: &ExecutionReport,
+    ignores: impl Fn(&SourceId) -> bool,
+) -> Option<String> {
+    let names: Vec<&str> = report
+        .steps
+        .iter()
+        .filter(|s| matches!(s.status, StepStatus::Failed { .. }) && ignores(&s.source_id))
+        .map(|s| s.label.as_str())
+        .collect();
+    (!names.is_empty()).then(|| {
+        format!(
+            "ignored by update.ignore_failures, not counted against the run: {}",
+            names.join(", ")
+        )
+    })
 }
 
 fn session_summary(report: &ExecutionReport) -> String {
@@ -1061,5 +1091,36 @@ mod tests {
             log_text(&dir)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fatal_leaves_out_only_ignored_failures() {
+        let step = |id: SourceId, status| StepReport {
+            label: id.0.clone(),
+            source_id: id,
+            targets: 0,
+            status,
+        };
+        let failed = || StepStatus::Failed {
+            detail: "exit 1".to_string(),
+        };
+        let report = ExecutionReport {
+            steps: vec![
+                step(SourceId::aur(), failed()),
+                step(SourceId::flatpak(), failed()),
+                step(SourceId::cargo(), StepStatus::Succeeded),
+            ],
+            log_path: PathBuf::from("/tmp/x.log"),
+        };
+        assert_eq!(report.fatal(|_| false), 2);
+        assert_eq!(report.fatal(|id| *id == SourceId::flatpak()), 1);
+        // Ignoring a source that succeeded changes nothing.
+        assert_eq!(report.fatal(|id| *id == SourceId::cargo()), 2);
+        assert_eq!(report.failed(), 2);
+        assert_eq!(ignored_line(&report, |_| false), None);
+        assert_eq!(
+            ignored_line(&report, |id| *id != SourceId::aur()).as_deref(),
+            Some("ignored by update.ignore_failures, not counted against the run: flatpak")
+        );
     }
 }

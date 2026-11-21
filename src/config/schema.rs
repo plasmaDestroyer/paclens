@@ -5,6 +5,7 @@
 //! deserialization; they are validated through typed accessors that fall back to the default. Call
 //! [`Config::validation_warnings`] to surface invalid values to the user.
 
+use crate::model::SourceId;
 use serde::Deserialize;
 use tracing::level_filters::LevelFilter;
 
@@ -89,6 +90,9 @@ pub struct Update {
     pub layout: String,
     /// Decoration on top of the layout (#81). See [`Motif`].
     pub motif: String,
+    /// Sources whose failed step is still shown, marked ignored, but does not
+    /// fail the run (#23). Never pacman: see [`Update::ignores`].
+    pub ignore_failures: Vec<String>,
 }
 
 impl Update {
@@ -100,6 +104,14 @@ impl Update {
     /// Validated motif, falling back to the default on an invalid value.
     pub fn motif(&self) -> Motif {
         Motif::parse(&self.motif).unwrap_or_default()
+    }
+
+    /// Whether a failed step of `source` leaves the run's outcome alone. Never
+    /// for pacman: a failed `-Syu` can leave the sync db newer than the
+    /// installed packages, and a run that exits 0 over that hides it (design
+    /// §13, 2026-11-21).
+    pub fn ignores(&self, source: &SourceId) -> bool {
+        source.0 != "pacman" && self.ignore_failures.contains(&source.0)
     }
 
     /// How often to refresh the sudo timestamp during a run, or `None` when
@@ -117,6 +129,7 @@ impl Default for Update {
             sudo_loop_interval: 240,
             layout: "lands".to_string(),
             motif: "subtle".to_string(),
+            ignore_failures: Vec::new(),
         }
     }
 }
@@ -426,9 +439,25 @@ impl Config {
                 self.update.motif
             ));
         }
+        for id in &self.update.ignore_failures {
+            if id == "pacman" {
+                warnings.push(
+                    "update.ignore_failures: \"pacman\" is never ignored — a failed system upgrade always fails the run".to_string(),
+                );
+            } else if !UPDATABLE.contains(&id.as_str()) {
+                warnings.push(format!(
+                    "update.ignore_failures: {id:?} is not a source with an update step ({})",
+                    UPDATABLE.join(", ")
+                ));
+            }
+        }
         warnings
     }
 }
+
+/// Source ids that put a step in the update plan; npm and fwupd are
+/// report-only, so ignoring them would change nothing.
+const UPDATABLE: &[&str] = &["aur", "flatpak", "cargo", "rustup", "brew", "uv", "gobin"];
 
 #[cfg(test)]
 mod tests {

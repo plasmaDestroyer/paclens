@@ -113,14 +113,19 @@ fn execute_flow(
     } else {
         executor::execute(plan, &runner, &mut log, tool)
     };
+    if let Some(line) = executor::ignored_line(&report, |id| config.update.ignores(id)) {
+        log.line(&line);
+    }
 
     println!();
-    print!("{}", render_report(&report, styles));
+    print!("{}", render_report(&report, &config.update, styles));
 
-    if report.failed() > 0 {
+    // An ignored source's failure is in the report above, never in the exit
+    // code (#23).
+    let fatal = report.fatal(|id| config.update.ignores(id));
+    if fatal > 0 {
         anyhow::bail!(
-            "{} of {} sources failed — see the log above",
-            report.failed(),
+            "{fatal} of {} sources failed — see the log above",
             report.executed()
         );
     }
@@ -203,7 +208,11 @@ fn render_plan(
 /// Render the post-execution report: a headline, one line per step
 /// (✓ succeeded / ✗ failed / · skipped), and the log path. Pure for the same
 /// reason as `render_plan`.
-fn render_report(report: &ExecutionReport, s: &Styles) -> String {
+fn render_report(
+    report: &ExecutionReport,
+    update: &crate::config::schema::Update,
+    s: &Styles,
+) -> String {
     let log = s.dim(&format!("log {}", report.log_path.display()));
     if report.failed() == 0 && report.skipped() == 0 && report.executed() > 0 {
         return format!(
@@ -221,14 +230,20 @@ fn render_report(report: &ExecutionReport, s: &Styles) -> String {
         report.succeeded(),
         b = s.bullet()
     );
+    let fatal = report.fatal(|id| update.ignores(id));
+    let ignored = report.failed() - fatal;
     let headline = if report.failed() == 0 {
         s.summary_ok(&counts)
     } else {
-        s.error(&format!(
-            "{counts} {b} {} failed",
-            report.failed(),
-            b = s.bullet()
-        ))
+        let mut text = format!("{counts} {b} {} failed", report.failed(), b = s.bullet());
+        if ignored > 0 {
+            text.push_str(&format!(" ({ignored} ignored)"));
+        }
+        if fatal > 0 {
+            s.error(&text)
+        } else {
+            s.summary_ok(&text)
+        }
     };
 
     let mut out = String::new();
@@ -255,12 +270,18 @@ fn render_report(report: &ExecutionReport, s: &Styles) -> String {
                 s.title(&name),
                 executor::target_noun(&st.source_id, st.targets),
             ),
-            StepStatus::Failed { detail } => format!(
-                "  {} {}  {}",
-                s.error(s.cross()),
-                s.title(&name),
-                s.error(&format!("failed ({detail})")),
-            ),
+            StepStatus::Failed { detail } => {
+                let mut line = format!(
+                    "  {} {}  {}",
+                    s.error(s.cross()),
+                    s.title(&name),
+                    s.error(&format!("failed ({detail})")),
+                );
+                if update.ignores(&st.source_id) {
+                    line.push_str(&format!(" {}", s.dim(&format!("{} ignored", s.bullet()))));
+                }
+                line
+            }
             StepStatus::Skipped { reason } => format!(
                 "  {} {}",
                 s.bullet(),
@@ -540,7 +561,7 @@ mod tests {
                 },
             ),
         ]);
-        let text = render_report(&r, &plain());
+        let text = render_report(&r, &Default::default(), &plain());
 
         assert!(
             text.contains("2 sources ran · 1 succeeded · 1 failed"),
@@ -577,9 +598,40 @@ mod tests {
     }
 
     #[test]
+    fn an_ignored_failure_is_marked_and_pacman_never_is() {
+        let failed = || StepStatus::Failed {
+            detail: "exit 1".to_string(),
+        };
+        let r = report(vec![
+            step(SourceId::pacman(), 0, failed()),
+            step(SourceId::flatpak(), 0, failed()),
+        ]);
+        let update = crate::config::schema::Update {
+            ignore_failures: vec!["pacman".to_string(), "flatpak".to_string()],
+            ..Default::default()
+        };
+        let text = render_report(&r, &update, &plain());
+        assert!(text.contains("2 failed (1 ignored)"), "{text}");
+        let row = |id: &str| {
+            text.lines()
+                .find(|l| l.contains(id))
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert!(
+            row("flatpak").contains("failed (exit 1) · ignored"),
+            "{text}"
+        );
+        assert!(!row("pacman").contains("ignored"), "{text}");
+        // Nothing ignored: no mark anywhere.
+        let plain_text = render_report(&r, &Default::default(), &plain());
+        assert!(!plain_text.contains("ignored"), "{plain_text}");
+    }
+
+    #[test]
     fn an_all_green_report_is_one_line() {
         let r = report(vec![step(SourceId::flatpak(), 1, StepStatus::Succeeded)]);
-        let text = render_report(&r, &plain());
+        let text = render_report(&r, &Default::default(), &plain());
         // Everything worked: one line, and the log for the detail.
         assert_eq!(text.lines().count(), 1, "{text}");
         assert!(text.contains("1 done"), "{text}");
@@ -599,7 +651,7 @@ mod tests {
                 },
             ),
         ]);
-        let text = render_report(&r, &ascii());
+        let text = render_report(&r, &Default::default(), &ascii());
         assert!(text.contains("x flatpak"), "{text}");
         assert!(text.contains("! flatpak"), "{text}");
         assert!(!text.contains('✓'));
